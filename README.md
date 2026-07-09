@@ -108,7 +108,10 @@ Every push to `main` that touches `agent/**` triggers GitHub Actions to:
 3. Upload `latest.yml` metadata so installed apps can auto-update via `electron-updater`
 
 **Download installers:**
-- [GitHub Releases](https://github.com/DanTahir/KlennyCode/releases) — permanent, public downloads (recommended)
+- [GitHub Releases](https://github.com/DanTahir/KlennyCode/releases/latest) — scroll past "Source code" to the installer assets
+  - Windows: `Klenny-Setup-<version>.exe` (installer) or `Klenny-<version>.exe` (portable)
+  - macOS: `Klenny-<version>-arm64.dmg` or `.zip`
+  - Linux: `Klenny-<version>.AppImage` or `.deb`
 - [Actions artifacts](https://github.com/DanTahir/KlennyCode/actions) — backup copies on each workflow run
 
 Packaged Klenny apps check for updates on startup and download from the latest GitHub Release.

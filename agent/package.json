@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "Klenny — a desktop coding agent powered by OpenRouter, with memory, skills, subagents, and plan mode.",
   "main": "./out/main/index.js",
-  "author": "Dan Tahir",
+  "author": "Dan Tahir <dantahir@gmail.com>",
+  "homepage": "https://github.com/DanTahir/KlennyCode",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -89,7 +90,10 @@
         "deb"
       ],
       "icon": "build/icons/icon.png",
-      "category": "Development"
+      "category": "Development",
+      "maintainer": "Dan Tahir <dantahir@gmail.com>",
+      "synopsis": "Desktop coding agent",
+      "description": "Klenny — a desktop coding agent powered by OpenRouter, with memory, skills, subagents, and plan mode."
     },
     "nsis": {
       "oneClick": false,
