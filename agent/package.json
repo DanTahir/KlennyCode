@@ -62,6 +62,10 @@
       "build/icons/**/*",
       "package.json"
     ],
+    "asarUnpack": [
+      "**/node_modules/@vscode/ripgrep/**",
+      "**/node_modules/@vscode/ripgrep-*/**"
+    ],
     "publish": {
       "provider": "github",
       "owner": "DanTahir",

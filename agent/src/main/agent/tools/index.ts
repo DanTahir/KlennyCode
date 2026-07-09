@@ -1,9 +1,9 @@
 import { readFile, writeFile, unlink, stat, mkdir } from 'node:fs/promises'
 import { dirname, resolve, isAbsolute } from 'node:path'
-import { rgPath } from '@vscode/ripgrep'
 import { spawn } from 'node:child_process'
 import fg from 'fast-glob'
 import type { ToolName, ToolResultPayload } from '@shared/types'
+import { getRgPath } from '../../ripgrep'
 import { assertInWorkspace, getWorkspace } from '../../workspace'
 
 const fileReadCache = new Map<string, { mtimeMs: number; content: string }>()
@@ -109,24 +109,28 @@ export async function grepTool(args: {
   if (args.case_insensitive) rgArgs.unshift('-i')
   if (args.glob) rgArgs.unshift('--glob', args.glob)
 
-  const output = await runProcess(rgPath, rgArgs, ws, 30_000)
-  const hits: Array<{ file: string; line: number; text: string }> = []
-  for (const line of output.stdout.split('\n')) {
-    if (!line.trim()) continue
-    try {
-      const j = JSON.parse(line) as { type: string; data?: { path?: { text: string }; line_number?: number; lines?: { text: string } } }
-      if (j.type === 'match' && j.data?.path?.text) {
-        hits.push({
-          file: j.data.path.text.replace(ws + '/', '').replace(ws + '\\', ''),
-          line: j.data.line_number ?? 0,
-          text: (j.data.lines?.text ?? '').trimEnd()
-        })
+  try {
+    const output = await runProcess(getRgPath(), rgArgs, ws, 30_000)
+    const hits: Array<{ file: string; line: number; text: string }> = []
+    for (const line of output.stdout.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const j = JSON.parse(line) as { type: string; data?: { path?: { text: string }; line_number?: number; lines?: { text: string } } }
+        if (j.type === 'match' && j.data?.path?.text) {
+          hits.push({
+            file: j.data.path.text.replace(ws + '/', '').replace(ws + '\\', ''),
+            line: j.data.line_number ?? 0,
+            text: (j.data.lines?.text ?? '').trimEnd()
+          })
+        }
+      } catch {
+        // ignore
       }
-    } catch {
-      // ignore
     }
+    return { ok: true, summary: `Found ${hits.length} matches`, data: { hits } }
+  } catch (err) {
+    return { ok: false, summary: 'grep failed', error: err instanceof Error ? err.message : String(err) }
   }
-  return { ok: true, summary: `Found ${hits.length} matches`, data: { hits } }
 }
 
 export async function globTool(args: { pattern: string; cwd?: string }): Promise<ToolResultPayload> {
@@ -220,6 +224,10 @@ function runProcess(
 
     child.stdout.on('data', (d) => (stdout += d.toString()))
     child.stderr.on('data', (d) => (stderr += d.toString()))
+    child.on('error', (err) => {
+      clearTimeout(timer)
+      resolve({ stdout, stderr: `${stderr}${err.message}`, exitCode: 1, timedOut: false })
+    })
     child.on('close', (code) => {
       clearTimeout(timer)
       if (!timedOut || !allowBackground) {
