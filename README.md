@@ -99,9 +99,19 @@ agent/
 └── tests/             # Bun test suite
 ```
 
-## CI builds
+## CI builds and auto-update
 
-GitHub Actions builds Windows, macOS, and Linux installers on push to `main` and on release tags. Download artifacts from the Actions tab or Releases page.
+Every push to `main` that touches `agent/**` triggers GitHub Actions to:
+
+1. Build Windows, macOS, and Linux installers
+2. **Publish a GitHub Release** (version `0.1.<run_number>`, e.g. `v0.1.42`)
+3. Upload `latest.yml` metadata so installed apps can auto-update via `electron-updater`
+
+**Download installers:**
+- [GitHub Releases](https://github.com/DanTahir/KlennyCode/releases) — permanent, public downloads (recommended)
+- [Actions artifacts](https://github.com/DanTahir/KlennyCode/actions) — backup copies on each workflow run
+
+Packaged Klenny apps check for updates on startup and download from the latest GitHub Release.
 
 ## License
 

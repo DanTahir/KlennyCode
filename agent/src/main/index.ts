@@ -1,6 +1,5 @@
 import { app, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
 import { createMainWindow, registerIpcHandlers } from './ipc'
 import electronUpdater from 'electron-updater'
 const { autoUpdater } = electronUpdater
@@ -25,11 +24,8 @@ app.whenReady().then(async () => {
   createMainWindow()
 
   if (app.isPackaged) {
-    const updateConfig = join(process.resourcesPath, 'app-update.yml')
-    if (existsSync(updateConfig)) {
-      autoUpdater.autoDownload = true
-      autoUpdater.checkForUpdatesAndNotify().catch(() => {})
-    }
+    autoUpdater.autoDownload = true
+    autoUpdater.checkForUpdatesAndNotify().catch(() => {})
   }
 
   app.on('activate', () => {

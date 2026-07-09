@@ -1,5 +1,4 @@
 import { app, BrowserWindow, ipcMain, shell, Menu } from 'electron'
-import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import electronUpdater from 'electron-updater'
 const { autoUpdater } = electronUpdater
@@ -105,8 +104,6 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.appVersion, async () => app.getVersion())
   ipcMain.handle(IPC.checkForUpdates, async () => {
     if (!app.isPackaged) return
-    const updateConfig = join(process.resourcesPath, 'app-update.yml')
-    if (!existsSync(updateConfig)) return
     await autoUpdater.checkForUpdatesAndNotify()
   })
 }

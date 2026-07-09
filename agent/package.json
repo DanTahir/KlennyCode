@@ -64,7 +64,8 @@
     "publish": {
       "provider": "github",
       "owner": "DanTahir",
-      "repo": "KlennyCode"
+      "repo": "KlennyCode",
+      "releaseType": "release"
     },
     "win": {
       "target": [
