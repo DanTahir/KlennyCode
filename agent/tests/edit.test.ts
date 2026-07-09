@@ -4,11 +4,16 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 // Inline edit logic test (mirrors edit_file uniqueness check)
-function applyEdit(content: string, oldStr: string, newStr: string): string | 'not_found' | 'ambiguous' {
+function applyEdit(
+  content: string,
+  oldStr: string,
+  newStr: string,
+  replaceAll = false
+): string | 'not_found' | 'ambiguous' {
   const count = content.split(oldStr).length - 1
   if (count === 0) return 'not_found'
-  if (count > 1) return 'ambiguous'
-  return content.replace(oldStr, newStr)
+  if (!replaceAll && count > 1) return 'ambiguous'
+  return replaceAll ? content.replaceAll(oldStr, newStr) : content.replace(oldStr, newStr)
 }
 
 describe('edit_file semantics', () => {
@@ -18,6 +23,10 @@ describe('edit_file semantics', () => {
 
   test('rejects ambiguous replacement', () => {
     expect(applyEdit('foo foo', 'foo', 'bar')).toBe('ambiguous')
+  })
+
+  test('replace_all replaces every occurrence', () => {
+    expect(applyEdit('foo foo', 'foo', 'bar', true)).toBe('bar bar')
   })
 
   test('rejects missing string', () => {

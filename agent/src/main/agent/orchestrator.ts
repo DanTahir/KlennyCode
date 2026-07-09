@@ -379,7 +379,9 @@ async function dispatchTool(
     case 'write_file':
       return writeFileTool(args as { path: string; content: string })
     case 'edit_file':
-      return editFileTool(args as { path: string; old_string: string; new_string: string })
+      return editFileTool(
+        args as { path: string; old_string: string; new_string: string; replace_all?: boolean }
+      )
     case 'delete_file':
       return deleteFileTool(args as { path: string })
     case 'grep':

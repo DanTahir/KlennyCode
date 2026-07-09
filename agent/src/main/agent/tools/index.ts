@@ -48,7 +48,12 @@ export async function writeFileTool(args: { path: string; content: string }): Pr
   }
 }
 
-export async function editFileTool(args: { path: string; old_string: string; new_string: string }): Promise<ToolResultPayload> {
+export async function editFileTool(args: {
+  path: string
+  old_string: string
+  new_string: string
+  replace_all?: boolean
+}): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path)
   if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   const content = await readFile(abs, 'utf8')
@@ -64,15 +69,24 @@ export async function editFileTool(args: { path: string; old_string: string; new
   }
   const count = content.split(args.old_string).length - 1
   if (count === 0) return { ok: false, summary: 'old_string not found', error: 'not_found' }
-  if (count > 1) return { ok: false, summary: 'old_string is not unique', error: 'ambiguous' }
-  const next = content.replace(args.old_string, args.new_string)
+  if (!args.replace_all && count > 1) {
+    return {
+      ok: false,
+      summary: `old_string appears ${count} times; use replace_all or provide more context`,
+      error: 'ambiguous',
+      data: { path: args.path, occurrences: count }
+    }
+  }
+  const next = args.replace_all
+    ? content.replaceAll(args.old_string, args.new_string)
+    : content.replace(args.old_string, args.new_string)
   await writeFile(abs, next, 'utf8')
   const st2 = await stat(abs)
   fileReadCache.set(abs, { mtimeMs: st2.mtimeMs, content: next })
   return {
     ok: true,
-    summary: `Edited ${args.path}`,
-    data: { path: args.path, diff: makeDiff(content, next, args.path) }
+    summary: args.replace_all ? `Edited ${args.path} (${count} replacements)` : `Edited ${args.path}`,
+    data: { path: args.path, diff: makeDiff(content, next, args.path), replacements: count }
   }
 }
 
@@ -172,6 +186,16 @@ export async function runCommandTool(
 ): Promise<ToolResultPayload> {
   const ws = getWorkspace()
   if (!ws) return { ok: false, summary: 'No workspace', error: 'no_workspace' }
+  if (looksLikeFileEditCommand(args.command)) {
+    return {
+      ok: false,
+      summary: 'Use edit_file or write_file to change files — not shell commands',
+      error: 'use_native_edit_tools',
+      data: {
+        hint: 'read_file the target, then edit_file with old_string/new_string (set replace_all: true for renames)'
+      }
+    }
+  }
   const cwd = args.cwd ? resolveWorkspacePath(args.cwd) : ws
   if (!assertInWorkspace(cwd)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   const timeout = args.timeout_ms ?? 30_000
@@ -205,6 +229,22 @@ export function killBackgroundProcess(pid: number): boolean {
   } catch {
     return false
   }
+}
+
+function looksLikeFileEditCommand(command: string): boolean {
+  const patterns = [
+    /writefilesync|\.writefile\s*\(/i,
+    /createwritestream/i,
+    /\bsed\s+[^\n|]*-i/,
+    /\bperl\s+-pi/,
+    /\becho\s+[^\n|]*>>?/,
+    /\btee\s+/,
+    /\bnode\s+[^\n]*(-e|--eval)[^\n]*(writefilesync|writefile|createwritestream)/i,
+    /\bpython\s+[^\n]*(-c|--command)[^\n]*\bopen\s*\(/i,
+    /\bpowershell\b[^\n]*(set-content|out-file|add-content)/i,
+    /\b(ex|ed)\s+[^\n]*<<</
+  ]
+  return patterns.some((p) => p.test(command))
 }
 
 function runProcess(

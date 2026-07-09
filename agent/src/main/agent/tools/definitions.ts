@@ -35,13 +35,18 @@ export function getToolDefinitions(mode: 'agent' | 'plan'): ToolDef[] {
       type: 'function',
       function: {
         name: 'edit_file',
-        description: 'Replace a unique old_string with new_string in a file.',
+        description:
+          'Edit a file by replacing old_string with new_string. Read the file first. Use replace_all when renaming or changing every occurrence.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string' },
             old_string: { type: 'string' },
-            new_string: { type: 'string' }
+            new_string: { type: 'string' },
+            replace_all: {
+              type: 'boolean',
+              description: 'Replace every occurrence (use for renames across a file)'
+            }
           },
           required: ['path', 'old_string', 'new_string']
         }
@@ -92,7 +97,8 @@ export function getToolDefinitions(mode: 'agent' | 'plan'): ToolDef[] {
       type: 'function',
       function: {
         name: 'run_command',
-        description: 'Run a shell command in the workspace.',
+        description:
+          'Run a shell command for builds, tests, git, and package managers. Do NOT use this to create or edit files — use write_file or edit_file instead.',
         parameters: {
           type: 'object',
           properties: {
