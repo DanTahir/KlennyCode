@@ -209,6 +209,7 @@ export type AgentStreamEvent =
   | { type: 'thinking_delta'; tabId: string; messageId: string; delta: string }
   | { type: 'tool_call_start'; tabId: string; messageId: string; block: ToolCallBlock }
   | { type: 'tool_call_result'; tabId: string; messageId: string; toolCallId: string; result: ToolResultPayload; status: ToolCallBlock['status'] }
+  | { type: 'user_message'; tabId: string; message: ChatMessage }
   | { type: 'message_start'; tabId: string; message: ChatMessage }
   | { type: 'message_end'; tabId: string; messageId: string; usage?: ChatMessage['usage'] }
   | { type: 'turn_end'; tabId: string }

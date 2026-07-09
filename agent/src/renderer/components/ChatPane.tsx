@@ -8,7 +8,7 @@ import { QuestionCard } from './QuestionCard'
 import { ModeToggle } from './ModeToggle'
 
 export function ChatPane() {
-  const { tabs, activeTabId, pendingActions, pendingQuestions, streamingTabIds, workspace, settings } = useAppStore()
+  const { tabs, activeTabId, pendingActions, pendingQuestions, streamingTabIds, workspace, settings, tabErrors } = useAppStore()
   const tab = getActiveTab(tabs, activeTabId)
   const [text, setText] = useState('')
   const [images, setImages] = useState<string[]>([])
@@ -26,6 +26,8 @@ export function ChatPane() {
 
   const tabPendingActions = pendingActions.filter((a) => a.tabId === tab.id)
   const tabQuestions = pendingQuestions.filter((q) => q.tabId === tab.id)
+  const tabError = tabErrors[tab.id]
+  const visibleMessages = tab.messages.filter((m) => m.role !== 'tool')
 
   const send = () => {
     if (!canSend) return
@@ -68,7 +70,12 @@ export function ChatPane() {
             Earlier messages were compacted to save context.
           </div>
         )}
-        {tab.messages.map((m) => (
+        {tabError && (
+          <div className="text-sm text-red-400 bg-red-400/10 border border-red-400/30 rounded px-3 py-2">
+            {tabError}
+          </div>
+        )}
+        {visibleMessages.map((m) => (
           <MessageBubble key={m.id} message={m} />
         ))}
         {tabPendingActions.map((a) => (

@@ -207,10 +207,6 @@ export async function* streamChatCompletion(opts: {
                 }
               }
             }
-
-            if (parsed.choices?.[0]?.finish_reason === 'tool_calls' && toolCalls.size) {
-              yield { type: 'tool_calls', toolCalls: [...toolCalls.values()] }
-            }
           } catch {
             // skip malformed SSE chunks
           }

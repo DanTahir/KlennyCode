@@ -27,6 +27,7 @@ interface AppState {
   skills: SkillSummary[]
   panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans'
   streamingTabIds: Set<string>
+  tabErrors: Record<string, string>
   setSettings: (s: AppSettings) => void
   setWorkspace: (w: string | null) => void
   setModels: (m: ModelInfo[]) => void
@@ -52,6 +53,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   skills: [],
   panel: 'chat',
   streamingTabIds: new Set(),
+  tabErrors: {},
   setSettings: (settings) => set({ settings }),
   setWorkspace: (workspace) => set({ workspace }),
   setModels: (models) => set({ models }),
@@ -71,6 +73,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   applyStreamEvent: (e) => {
     const state = get()
     switch (e.type) {
+      case 'user_message': {
+        const tabs = state.tabs.map((t) =>
+          t.id === e.tabId ? { ...t, messages: [...t.messages, e.message] } : t
+        )
+        set({ tabs, tabErrors: { ...state.tabErrors, [e.tabId]: '' } })
+        break
+      }
       case 'message_start': {
         const tabs = state.tabs.map((t) =>
           t.id === e.tabId ? { ...t, messages: [...t.messages, e.message] } : t
@@ -137,11 +146,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           const messages = t.messages.map((m) =>
             m.id === e.messageId ? { ...m, usage: e.usage ?? m.usage } : m
           )
-          return { ...t, messages, totalCostUsd: t.totalCostUsd + (e.usage?.costUsd ?? 0) }
+          return { ...t, messages }
         })
         set({ tabs })
         break
       }
+      case 'error':
+        set({ tabErrors: { ...state.tabErrors, [e.tabId]: e.message } })
+        break
       case 'turn_end': {
         const streaming = new Set(state.streamingTabIds)
         streaming.delete(e.tabId)
