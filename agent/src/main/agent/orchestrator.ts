@@ -40,9 +40,20 @@ type Emit = (event: AgentStreamEvent) => void
 const abortControllers = new Map<string, AbortController>()
 const questionWaiters = new Map<string, (answers: QuestionAnswer[]) => void>()
 const pendingQuestions = new Map<string, PendingQuestion>()
+const endedTurns = new Set<string>()
 
 let dailySpend = 0
 let dailySpendDate = new Date().toDateString()
+
+function endTurn(tabId: string, emit: Emit = emitToAll): void {
+  if (endedTurns.has(tabId)) return
+  endedTurns.add(tabId)
+  emit({ type: 'turn_end', tabId })
+}
+
+function throwIfAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+}
 
 export function resolveQuestion(questionId: string, answers: QuestionAnswer[]): void {
   const waiter = questionWaiters.get(questionId)
@@ -55,6 +66,19 @@ export function resolveQuestion(questionId: string, answers: QuestionAnswer[]): 
 
 export function stopGeneration(tabId: string): void {
   abortControllers.get(tabId)?.abort()
+
+  for (const [questionId, question] of pendingQuestions) {
+    if (question.tabId !== tabId) continue
+    resolveQuestion(questionId, [])
+    emitToAll({ type: 'pending_question_resolved', tabId, questionId })
+  }
+
+  for (const action of approvalManager.getPending(tabId)) {
+    emitToAll({ type: 'pending_action_resolved', tabId, actionId: action.id })
+  }
+  approvalManager.cancelForTab(tabId)
+
+  endTurn(tabId)
 }
 
 function emitToAll(event: AgentStreamEvent): void {
@@ -87,11 +111,22 @@ export async function runUserTurn(tabId: string, userText: string, images?: stri
 
   const ac = new AbortController()
   abortControllers.set(tabId, ac)
+  endedTurns.delete(tabId)
 
   try {
     await agentLoop(tab, apiKey, settings.subagentModel, emitToAll, ac.signal)
+  } catch (e) {
+    if (!ac.signal.aborted) {
+      emitToAll({
+        type: 'error',
+        tabId,
+        message: e instanceof Error ? e.message : String(e)
+      })
+    }
   } finally {
+    endTurn(tabId)
     abortControllers.delete(tabId)
+    endedTurns.delete(tabId)
   }
 }
 
@@ -104,9 +139,10 @@ async function agentLoop(
   depth = 0
 ): Promise<void> {
   if (depth > 30) return
+  throwIfAborted(signal)
 
   const settings = await loadSettings()
-  const models = await fetchModels(apiKey)
+  const models = await fetchModels(apiKey, false, signal)
   const modelInfo = models.find((m) => m.id === tab.model) ?? models[0]
   if (!modelInfo) {
     emit({ type: 'error', tabId: tab.id, message: 'Model not found.' })
@@ -146,6 +182,7 @@ async function agentLoop(
     signal,
     includeReasoning: modelInfo.supportsReasoning
   })) {
+    if (signal.aborted) break
     if (chunk.type === 'text' && chunk.text) {
       textBuf += chunk.text
       emit({ type: 'text_delta', tabId: tab.id, messageId: assistantId, delta: chunk.text })
@@ -171,12 +208,13 @@ async function agentLoop(
     }
   }
 
+  if (signal.aborted) return
+
   if (thinkingBuf) assistantMsg.blocks.push({ type: 'thinking', text: thinkingBuf })
   if (textBuf) assistantMsg.blocks.push({ type: 'text', text: textBuf })
 
   if (!toolCalls.length) {
     emit({ type: 'message_end', tabId: tab.id, messageId: assistantId, usage: assistantMsg.usage })
-    emit({ type: 'turn_end', tabId: tab.id })
     await sessionStore.updateTab(tab)
     return
   }
@@ -203,12 +241,16 @@ async function agentLoop(
   emit({ type: 'message_end', tabId: tab.id, messageId: assistantId, usage: assistantMsg.usage })
   await sessionStore.updateTab(tab)
 
+  if (signal.aborted) return
+
   // Execute tools (parallel where independent)
   const results = await Promise.all(
     toolCalls.map((tc) =>
       executeTool(tc, tab, apiKey, subagentModel, settings.approvalMode, emit, signal, depth)
     )
   )
+
+  if (signal.aborted) return
 
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i]
@@ -246,6 +288,7 @@ async function agentLoop(
   }
 
   await sessionStore.updateTab(tab)
+  if (signal.aborted) return
   await agentLoop(tab, apiKey, subagentModel, emit, signal, depth + 1)
 }
 
@@ -335,11 +378,11 @@ async function dispatchTool(
     case 'delete_file':
       return deleteFileTool(args as { path: string })
     case 'grep':
-      return grepTool(args as { pattern: string; path?: string; glob?: string; case_insensitive?: boolean })
+      return grepTool(args as { pattern: string; path?: string; glob?: string; case_insensitive?: boolean }, signal)
     case 'glob':
       return globTool(args as { pattern: string; cwd?: string })
     case 'run_command':
-      return runCommandTool(args as { command: string; cwd?: string; timeout_ms?: number })
+      return runCommandTool(args as { command: string; cwd?: string; timeout_ms?: number }, signal)
     case 'web_search':
       return webSearchTool(args as { query: string })
     case 'fetch_url':

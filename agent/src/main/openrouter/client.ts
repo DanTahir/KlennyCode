@@ -40,11 +40,13 @@ export interface StreamChunk {
 let modelsCache: ModelInfo[] | null = null
 let modelsCacheAt = 0
 
-export async function fetchModels(apiKey: string, force = false): Promise<ModelInfo[]> {
+export async function fetchModels(apiKey: string, force = false, signal?: AbortSignal): Promise<ModelInfo[]> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
   if (!force && modelsCache && Date.now() - modelsCacheAt < 5 * 60_000) return modelsCache
 
   const res = await fetch(`${BASE}/models`, {
-    headers: { Authorization: `Bearer ${apiKey}` }
+    headers: { Authorization: `Bearer ${apiKey}` },
+    signal
   })
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`)
   const json = (await res.json()) as { data: Array<Record<string, unknown>> }
@@ -113,7 +115,7 @@ export async function* streamChatCompletion(opts: {
 
       if (res.status === 429 || res.status >= 500) {
         if (attempt < 4) {
-          await sleep(500 * 2 ** attempt)
+          await abortableSleep(500 * 2 ** attempt, opts.signal)
           continue
         }
         yield { type: 'error', error: `OpenRouter error ${res.status}` }
@@ -137,6 +139,10 @@ export async function* streamChatCompletion(opts: {
       const toolCalls: Map<number, ToolCall> = new Map()
 
       while (true) {
+        if (opts.signal?.aborted) {
+          await reader.cancel().catch(() => {})
+          return
+        }
         const { done, value } = await reader.read()
         if (done) break
         buffer += decoder.decode(value, { stream: true })
@@ -217,7 +223,7 @@ export async function* streamChatCompletion(opts: {
     } catch (e) {
       if (opts.signal?.aborted) return
       if (attempt < 4) {
-        await sleep(500 * 2 ** attempt)
+        await abortableSleep(500 * 2 ** attempt, opts.signal)
         continue
       }
       yield { type: 'error', error: e instanceof Error ? e.message : String(e) }
@@ -246,6 +252,17 @@ export async function summarizeMessages(apiKey: string, model: string, text: str
   return out.trim()
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms))
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener(
+      'abort',
+      () => {
+        clearTimeout(timer)
+        reject(new DOMException('Aborted', 'AbortError'))
+      },
+      { once: true }
+    )
+  })
 }

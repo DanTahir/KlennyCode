@@ -94,12 +94,15 @@ export async function deleteFileTool(args: { path: string }): Promise<ToolResult
   }
 }
 
-export async function grepTool(args: {
-  pattern: string
-  path?: string
-  glob?: string
-  case_insensitive?: boolean
-}): Promise<ToolResultPayload> {
+export async function grepTool(
+  args: {
+    pattern: string
+    path?: string
+    glob?: string
+    case_insensitive?: boolean
+  },
+  signal?: AbortSignal
+): Promise<ToolResultPayload> {
   const ws = getWorkspace()
   if (!ws) return { ok: false, summary: 'No workspace', error: 'no_workspace' }
   const searchPath = args.path ? resolveWorkspacePath(args.path) : ws
@@ -110,7 +113,7 @@ export async function grepTool(args: {
   if (args.glob) rgArgs.unshift('--glob', args.glob)
 
   try {
-    const output = await runProcess(getRgPath(), rgArgs, ws, 30_000)
+    const output = await runProcess(getRgPath(), rgArgs, ws, 30_000, false, signal)
     const hits: Array<{ file: string; line: number; text: string }> = []
     for (const line of output.stdout.split('\n')) {
       if (!line.trim()) continue
@@ -159,11 +162,14 @@ export async function fetchUrlTool(args: { url: string }): Promise<ToolResultPay
 
 const backgroundProcs = new Map<string, { pid: number; command: string }>()
 
-export async function runCommandTool(args: {
-  command: string
-  cwd?: string
-  timeout_ms?: number
-}): Promise<ToolResultPayload> {
+export async function runCommandTool(
+  args: {
+    command: string
+    cwd?: string
+    timeout_ms?: number
+  },
+  signal?: AbortSignal
+): Promise<ToolResultPayload> {
   const ws = getWorkspace()
   if (!ws) return { ok: false, summary: 'No workspace', error: 'no_workspace' }
   const cwd = args.cwd ? resolveWorkspacePath(args.cwd) : ws
@@ -172,7 +178,7 @@ export async function runCommandTool(args: {
   const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh'
   const shellArgs = process.platform === 'win32' ? ['/d', '/s', '/c', args.command] : ['-c', args.command]
 
-  const result = await runProcess(shell, shellArgs, cwd, timeout, true)
+  const result = await runProcess(shell, shellArgs, cwd, timeout, true, signal)
   if (result.timedOut) {
     if (result.pid) {
       backgroundProcs.set(String(result.pid), { pid: result.pid, command: args.command })
@@ -206,17 +212,44 @@ function runProcess(
   args: string[],
   cwd: string,
   timeoutMs: number,
-  allowBackground = false
+  allowBackground = false,
+  signal?: AbortSignal
 ): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut: boolean; pid?: number }> {
   return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve({ stdout: '', stderr: 'Aborted', exitCode: 1, timedOut: false })
+      return
+    }
+
     const child = spawn(cmd, args, { cwd, shell: false })
     let stdout = ''
     let stderr = ''
     let timedOut = false
+    let settled = false
+
+    const finish = (result: { stdout: string; stderr: string; exitCode: number; timedOut: boolean; pid?: number }) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', onAbort)
+      resolve(result)
+    }
+
+    const onAbort = () => {
+      timedOut = false
+      try {
+        child.kill()
+      } catch {
+        // ignore
+      }
+      finish({ stdout, stderr, exitCode: 1, timedOut: false })
+    }
+    signal?.addEventListener('abort', onAbort)
+
     const timer = setTimeout(() => {
       timedOut = true
       if (allowBackground) {
-        resolve({ stdout, stderr, exitCode: -1, timedOut: true, pid: child.pid })
+        finish({ stdout, stderr, exitCode: -1, timedOut: true, pid: child.pid })
         return
       }
       child.kill()
@@ -225,13 +258,11 @@ function runProcess(
     child.stdout.on('data', (d) => (stdout += d.toString()))
     child.stderr.on('data', (d) => (stderr += d.toString()))
     child.on('error', (err) => {
-      clearTimeout(timer)
-      resolve({ stdout, stderr: `${stderr}${err.message}`, exitCode: 1, timedOut: false })
+      finish({ stdout, stderr: `${stderr}${err.message}`, exitCode: 1, timedOut: false })
     })
     child.on('close', (code) => {
-      clearTimeout(timer)
       if (!timedOut || !allowBackground) {
-        resolve({ stdout, stderr, exitCode: code ?? 1, timedOut })
+        finish({ stdout, stderr, exitCode: code ?? 1, timedOut })
       }
     })
   })

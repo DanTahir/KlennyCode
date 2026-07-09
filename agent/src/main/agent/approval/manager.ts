@@ -70,6 +70,18 @@ export class ApprovalManager {
     this.pending.delete(actionId)
   }
 
+  cancelForTab(tabId: string): void {
+    for (const [actionId, action] of this.pending) {
+      if (action.tabId !== tabId) continue
+      const resolver = this.resolvers.get(actionId)
+      if (resolver) {
+        resolver('reject')
+        this.resolvers.delete(actionId)
+      }
+      this.pending.delete(actionId)
+    }
+  }
+
   buildPendingFromTool(
     tabId: string,
     toolCallId: string,
