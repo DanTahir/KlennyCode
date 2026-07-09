@@ -1,0 +1,64 @@
+name: Build Klenny
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agent/**'
+      - '.github/workflows/build.yml'
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+          - os: macos-latest
+            platform: mac
+          - os: ubuntu-latest
+            platform: linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        working-directory: agent
+        run: npm install
+
+      - name: Generate icons
+        working-directory: agent
+        run: npm run icons
+
+      - name: Build app
+        working-directory: agent
+        run: npm run build
+
+      - name: Package (${{ matrix.platform }})
+        working-directory: agent
+        run: npm run dist:${{ matrix.platform }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: klenny-${{ matrix.platform }}
+          path: |
+            agent/dist/*.exe
+            agent/dist/*.dmg
+            agent/dist/*.zip
+            agent/dist/*.AppImage
+            agent/dist/*.deb
+          if-no-files-found: warn
