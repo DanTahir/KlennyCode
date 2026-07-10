@@ -5,8 +5,13 @@ import fg from 'fast-glob'
 import type { ToolName, ToolResultPayload } from '@shared/types'
 import { getRgPath } from '../../ripgrep'
 import { buildEditNotFoundHelp, countOccurrences, resolveEditMatch } from './edit-match'
+import { detectEol, fromLf, toLf } from './eol'
 import { assertInWorkspace, getWorkspace } from '../../workspace'
 
+// `content` in this cache is always normalized to LF, regardless of the file's on-disk
+// EOL style or the machine's `core.autocrlf` setting — see ./eol.ts. This keeps matching,
+// line numbering, and diffing consistent no matter how the file (or model output) is
+// line-ended; the original EOL style is restored when writing back to disk.
 const fileReadCache = new Map<string, { mtimeMs: number; content: string }>()
 
 export function resolveWorkspacePath(relOrAbs: string): string {
@@ -18,7 +23,8 @@ export function resolveWorkspacePath(relOrAbs: string): string {
 export async function readFileTool(args: { path: string; offset?: number; limit?: number }): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path)
   if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
-  const content = await readFile(abs, 'utf8')
+  const raw = await readFile(abs, 'utf8')
+  const content = toLf(raw)
   const st = await stat(abs)
   fileReadCache.set(abs, { mtimeMs: st.mtimeMs, content })
   const lines = content.split('\n')
@@ -32,20 +38,28 @@ export async function readFileTool(args: { path: string; offset?: number; limit?
 export async function writeFileTool(args: { path: string; content: string }): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path)
   if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
-  let oldContent = ''
+  let oldRaw = ''
+  let hadExisting = false
   try {
-    oldContent = await readFile(abs, 'utf8')
+    oldRaw = await readFile(abs, 'utf8')
+    hadExisting = true
   } catch {
     // new file
   }
+  // Preserve the existing file's EOL convention (default to LF for new files) so we don't
+  // rewrite an entire CRLF file to LF (or vice versa) just because the model's content
+  // string happens to use a different style. Model output is normalized to LF first.
+  const eol = hadExisting ? detectEol(oldRaw) : '\n'
+  const normalized = toLf(args.content)
+  const finalContent = fromLf(normalized, eol)
   await mkdir(dirname(abs), { recursive: true })
-  await writeFile(abs, args.content, 'utf8')
+  await writeFile(abs, finalContent, 'utf8')
   const st = await stat(abs)
-  fileReadCache.set(abs, { mtimeMs: st.mtimeMs, content: args.content })
+  fileReadCache.set(abs, { mtimeMs: st.mtimeMs, content: normalized })
   return {
     ok: true,
     summary: `Wrote ${args.path}`,
-    data: { path: args.path, diff: makeDiff(oldContent, args.content, args.path) }
+    data: { path: args.path, diff: makeDiff(toLf(oldRaw), normalized, args.path) }
   }
 }
 
@@ -57,7 +71,9 @@ export async function editFileTool(args: {
 }): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path)
   if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
-  const content = await readFile(abs, 'utf8')
+  const raw = await readFile(abs, 'utf8')
+  const eol = detectEol(raw)
+  const content = toLf(raw)
   const cached = fileReadCache.get(abs)
   const st = await stat(abs)
   if (cached && cached.mtimeMs !== st.mtimeMs) {
@@ -91,7 +107,10 @@ export async function editFileTool(args: {
   const next = args.replace_all
     ? content.replaceAll(match.oldString, match.newString)
     : content.replace(match.oldString, match.newString)
-  await writeFile(abs, next, 'utf8')
+  // Write back using the file's original EOL style so we don't churn the whole file's
+  // line endings on a small edit (which would happen if we always wrote LF-only, and
+  // would produce a noisy diff/unwanted git changes when core.autocrlf converts on checkout).
+  await writeFile(abs, fromLf(next, eol), 'utf8')
   const st2 = await stat(abs)
   fileReadCache.set(abs, { mtimeMs: st2.mtimeMs, content: next })
   return {
@@ -106,7 +125,7 @@ export async function deleteFileTool(args: { path: string }): Promise<ToolResult
   if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   let oldContent = ''
   try {
-    oldContent = await readFile(abs, 'utf8')
+    oldContent = toLf(await readFile(abs, 'utf8'))
   } catch {
     return { ok: false, summary: 'File not found', error: 'not_found' }
   }

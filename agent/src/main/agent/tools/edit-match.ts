@@ -21,6 +21,9 @@ export function resolveEditMatch(
     variants.push({ oldString: old, newString: next })
   }
 
+  // `content` passed in here is always LF-normalized by the caller (see ./eol.ts), so
+  // normalizing old_string/new_string to LF too is what lets matching succeed
+  // regardless of whether the model produced LF or CRLF text.
   const transforms = [
     (s: string) => s,
     (s: string) => s.replace(/\r\n/g, '\n'),
