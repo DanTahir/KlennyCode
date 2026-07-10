@@ -6,6 +6,7 @@ import type { ToolName, ToolResultPayload } from '@shared/types'
 import { getRgPath } from '../../ripgrep'
 import { buildEditNotFoundHelp, countOccurrences, resolveEditMatch } from './edit-match'
 import { detectEol, fromLf, toLf } from './eol'
+import { makeDiff } from './diff'
 import { assertInWorkspace, getWorkspace } from '../../workspace'
 import { buildShellInvocation, resolveShell } from '../../shells'
 
@@ -338,21 +339,6 @@ function runProcess(
       }
     })
   })
-}
-
-function makeDiff(oldText: string, newText: string, path: string): string {
-  const oldLines = oldText.split('\n')
-  const newLines = newText.split('\n')
-  const out: string[] = [`--- a/${path}`, `+++ b/${path}`]
-  const max = Math.max(oldLines.length, newLines.length)
-  for (let i = 0; i < max; i++) {
-    const o = oldLines[i]
-    const n = newLines[i]
-    if (o === n) continue
-    if (o !== undefined) out.push(`-${o}`)
-    if (n !== undefined) out.push(`+${n}`)
-  }
-  return out.join('\n')
 }
 
 export const READ_ONLY_TOOLS: ToolName[] = [

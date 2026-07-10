@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@vscode/ripgrep": "^1.15.14",
+    "diff": "^7.0.0",
     "electron-updater": "^6.3.9",
     "fast-glob": "^3.3.3",
     "gray-matter": "^4.0.3",
@@ -36,6 +37,7 @@
     "zustand": "^5.0.2"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.17",
     "@types/react-dom": "^18.3.5",

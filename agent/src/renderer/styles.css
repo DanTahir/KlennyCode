@@ -32,3 +32,8 @@ body {
 .diff-del {
   background: rgba(239, 68, 68, 0.15);
 }
+.diff-hunk {
+  color: #94a3b8;
+  border-top: 1px solid rgba(148, 163, 184, 0.25);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+}
