@@ -58,11 +58,31 @@ export function SettingsPanel() {
         <div className="flex gap-2">
           <button
             className="px-3 py-1 rounded bg-klenny-accent text-black text-sm"
-            onClick={() => apiKey && void window.klenny.setApiKey(apiKey).then(() => window.klenny.getSettings().then(setSettings))}
+            onClick={() =>
+              apiKey &&
+              void window.klenny
+                .setApiKey(apiKey)
+                .then(() => window.klenny.getSettings())
+                .then((s) => {
+                  setSettings(s)
+                  setApiKey('')
+                })
+            }
           >
             Save key
           </button>
-          <button className="px-3 py-1 rounded border border-klenny-border text-sm" onClick={() => void window.klenny.clearApiKey().then(() => window.klenny.getSettings().then(setSettings))}>
+          <button
+            className="px-3 py-1 rounded border border-klenny-border text-sm"
+            onClick={() =>
+              void window.klenny
+                .clearApiKey()
+                .then(() => window.klenny.getSettings())
+                .then((s) => {
+                  setSettings(s)
+                  setApiKey('')
+                })
+            }
+          >
             Clear
           </button>
         </div>
