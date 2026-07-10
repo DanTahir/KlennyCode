@@ -66,7 +66,9 @@ export function SettingsPanel() {
                 .then((s) => {
                   setSettings(s)
                   setApiKey('')
+                  return window.klenny.listModels(true)
                 })
+                .then(setModels)
             }
           >
             Save key
@@ -80,7 +82,9 @@ export function SettingsPanel() {
                 .then((s) => {
                   setSettings(s)
                   setApiKey('')
+                  return window.klenny.listModels(true)
                 })
+                .then(setModels)
             }
           >
             Clear
