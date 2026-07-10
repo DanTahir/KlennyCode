@@ -1,5 +1,0 @@
-Show klenny.gif animation while agent is working
-
-Replaced the empty placeholder box that appeared while the assistant's
-message was streaming (before any content blocks arrived) with the
-klenny.gif animation, sized reasonably (48x48).
