@@ -1,7 +1,7 @@
 import type { ToolName } from '@shared/types'
 import type { ToolDef } from '../../openrouter/client'
 
-export function getToolDefinitions(mode: 'agent' | 'plan'): ToolDef[] {
+export function getToolDefinitions(mode: 'agent' | 'plan', restrictTo?: ToolName[] | 'all'): ToolDef[] {
   const all: ToolDef[] = [
     {
       type: 'function',
@@ -268,5 +268,15 @@ export function getToolDefinitions(mode: 'agent' | 'plan'): ToolDef[] {
   ])
 
   const allowed = mode === 'plan' ? planAllowed : agentAllowed
-  return all.filter((t) => allowed.has(t.function.name as ToolName))
+  let defs = all.filter((t) => allowed.has(t.function.name as ToolName))
+
+  if (restrictTo && restrictTo !== 'all') {
+    const restrictSet = new Set<ToolName>(restrictTo)
+    // Always keep 'task' out for restricted (non-'all') subagent types — sub-subagents
+    // are not supported — and always allow ask_question to be filtered out separately
+    // by the caller for headless (subagent) runs.
+    defs = defs.filter((t) => restrictSet.has(t.function.name as ToolName))
+  }
+
+  return defs
 }

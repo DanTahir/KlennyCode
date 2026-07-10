@@ -10,6 +10,7 @@ import type {
   SubagentRun,
   TabSession,
   ToolCallBlock,
+  ToolName,
   ToolResultPayload
 } from '@shared/types'
 import { getApiKey, loadSettings } from '../settings'
@@ -132,13 +133,19 @@ export async function runUserTurn(tabId: string, userText: string, images?: stri
   }
 }
 
+interface SubagentContext {
+  /** tool restriction for this subagent type ('all' = no restriction beyond mode defaults) */
+  allowedTools: ToolName[] | 'all'
+}
+
 async function agentLoop(
   tab: TabSession,
   apiKey: string,
   subagentModel: string,
   emit: Emit,
   signal: AbortSignal,
-  depth = 0
+  depth = 0,
+  subagentCtx?: SubagentContext
 ): Promise<void> {
   if (depth > 30) return
   throwIfAborted(signal)
@@ -193,7 +200,11 @@ async function agentLoop(
     apiKey,
     model: tab.model,
     messages: orMessages,
-    tools: getToolDefinitions(tab.mode),
+    // Subagents can't spawn nested subagents — there's no UI to surface a deeper
+    // level's approvals/questions, and it would risk runaway recursion.
+    tools: getToolDefinitions(tab.mode, subagentCtx?.allowedTools).filter(
+      (t) => !subagentCtx || t.function.name !== 'task'
+    ),
     signal,
     includeReasoning: modelInfo.supportsReasoning,
     sessionId: tab.id,
@@ -278,10 +289,13 @@ async function agentLoop(
 
   if (signal.aborted) return
 
-  // Execute tools (parallel where independent)
+  // Execute tools (parallel where independent).
+  // Subagents run headless (no UI to answer approvals/questions), so force
+  // auto-approval for their mutating tool calls to avoid deadlocking forever.
+  const effectiveApprovalMode = subagentCtx ? 'auto' : settings.approvalMode
   const results = await Promise.all(
     toolCalls.map((tc) =>
-      executeTool(tc, tab, apiKey, subagentModel, settings.approvalMode, emit, signal, depth)
+      executeTool(tc, tab, apiKey, subagentModel, effectiveApprovalMode, emit, signal, depth, subagentCtx)
     )
   )
 
@@ -324,7 +338,7 @@ async function agentLoop(
 
   await sessionStore.updateTab(tab)
   if (signal.aborted) return
-  await agentLoop(tab, apiKey, subagentModel, emit, signal, depth + 1)
+  await agentLoop(tab, apiKey, subagentModel, emit, signal, depth + 1, subagentCtx)
 }
 
 async function executeTool(
@@ -335,7 +349,8 @@ async function executeTool(
   approvalMode: 'manual' | 'auto',
   emit: Emit,
   signal: AbortSignal,
-  depth: number
+  depth: number,
+  subagentCtx?: SubagentContext
 ): Promise<{ payload: ToolResultPayload; status: ToolCallBlock['status'] }> {
   let args: Record<string, unknown> = {}
   try {
@@ -347,6 +362,18 @@ async function executeTool(
   const name = tc.function.name
 
   if (name === 'ask_question') {
+    // Subagents run headless — there is no UI to ever answer this, so it would
+    // hang forever waiting on a promise that never resolves. Fail fast instead.
+    if (subagentCtx) {
+      return {
+        payload: {
+          ok: false,
+          summary: 'ask_question is not available inside a subagent. Make a reasonable assumption and continue, or report the ambiguity in your final summary.',
+          error: 'unsupported_in_subagent'
+        },
+        status: 'error'
+      }
+    }
     const questions = (args.questions as PendingQuestion['questions']) ?? []
     const pq: PendingQuestion = {
       id: nanoid(),
@@ -488,11 +515,18 @@ async function runSubagent(
     totalSavingsUsd: 0
   }
 
+  // Forward the subagent's events to the UI (so its messages/tool calls are visible,
+  // e.g. in a subagent detail view) in addition to tracking them for the summary below.
   const events: AgentStreamEvent[] = []
-  const capture = (e: AgentStreamEvent) => events.push(e)
+  const capture = (e: AgentStreamEvent) => {
+    events.push(e)
+    emit(e)
+  }
+
+  const subagentCtx: SubagentContext = { allowedTools: typeDef.tools }
 
   try {
-    await agentLoop(subTab, apiKey, defaultSubModel, capture, signal, depth + 1)
+    await agentLoop(subTab, apiKey, defaultSubModel, capture, signal, depth + 1, subagentCtx)
     const summary =
       subTab.messages
         .filter((m) => m.role === 'assistant')
@@ -505,6 +539,7 @@ async function runSubagent(
     run.summary = summary.slice(0, 8000)
     run.finishedAt = Date.now()
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
+    emit({ type: 'turn_end', tabId: subTab.id })
 
     if (!BrowserWindow.getFocusedWindow()) {
       new Notification({ title: 'Klenny Code subagent finished', body: `${agentType}: ${desc}` }).show()
@@ -516,6 +551,7 @@ async function runSubagent(
     run.summary = e instanceof Error ? e.message : String(e)
     run.finishedAt = Date.now()
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
+    emit({ type: 'turn_end', tabId: subTab.id })
     return { ok: false, summary: run.summary, error: 'subagent_error' }
   }
 }
