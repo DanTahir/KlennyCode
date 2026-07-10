@@ -62,7 +62,7 @@ export function ChatPane() {
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {tab.messages.length === 0 && (
           <div className="text-klenny-muted text-sm">
-            Ask Klenny to explore, plan, or edit your project. Use Plan mode to research before making changes.
+            Ask Klenny Code to explore, plan, or edit your project. Use Plan mode to research before making changes.
           </div>
         )}
         {tab.compactedThroughMessageId && (

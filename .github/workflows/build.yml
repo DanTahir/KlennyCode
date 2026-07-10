@@ -1,4 +1,4 @@
-name: Build Klenny
+name: Build Klenny Code
 
 on:
   push:
@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: klenny-release-${{ github.ref }}
+  group: klennycode-release-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -63,7 +63,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: klenny-${{ matrix.platform }}
+          name: klennycode-${{ matrix.platform }}
           path: |
             agent/dist/*.exe
             agent/dist/*.dmg

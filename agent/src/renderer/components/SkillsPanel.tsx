@@ -25,7 +25,7 @@ export function SkillsPanel() {
     <div className="flex-1 overflow-y-auto p-6 max-w-3xl space-y-4">
       <h2 className="text-xl font-semibold">Skills</h2>
       <p className="text-sm text-klenny-muted">
-        Cursor-style skills are auto-discovered. Klenny reads the catalog and loads full instructions when relevant.
+        Cursor-style skills are auto-discovered. Klenny Code reads the catalog and loads full instructions when relevant.
       </p>
       <ul className="space-y-2">
         {skills.map((s) => (

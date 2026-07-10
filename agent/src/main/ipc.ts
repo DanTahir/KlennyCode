@@ -116,7 +116,7 @@ export function createMainWindow(): BrowserWindow {
     height: 860,
     minWidth: 900,
     minHeight: 600,
-    title: 'Klenny',
+    title: 'Klenny Code',
     show: false,
     autoHideMenuBar: true,
     icon: join(__dirname, '../../build/icons/icon.png'),

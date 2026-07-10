@@ -172,14 +172,14 @@ export async function globTool(args: { pattern: string; cwd?: string }): Promise
 
 export async function webSearchTool(args: { query: string }): Promise<ToolResultPayload> {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(args.query)}`
-  const res = await fetch(url, { headers: { 'User-Agent': 'Klenny/0.1' } })
+  const res = await fetch(url, { headers: { 'User-Agent': 'KlennyCode/0.1' } })
   const html = await res.text()
   const snippets = [...html.matchAll(/class="result__a"[^>]*>([^<]+)</g)].slice(0, 8).map((m) => m[1])
   return { ok: true, summary: `Search: ${args.query}`, data: { query: args.query, snippets } }
 }
 
 export async function fetchUrlTool(args: { url: string }): Promise<ToolResultPayload> {
-  const res = await fetch(args.url, { headers: { 'User-Agent': 'Klenny/0.1' } })
+  const res = await fetch(args.url, { headers: { 'User-Agent': 'KlennyCode/0.1' } })
   const text = await res.text()
   const stripped = text.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
   return { ok: true, summary: `Fetched ${args.url}`, data: { url: args.url, content: stripped.slice(0, 12_000) } }

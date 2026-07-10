@@ -18,8 +18,8 @@ export function Sidebar() {
   return (
     <aside className="w-52 border-r border-klenny-border bg-klenny-panel flex flex-col">
       <div className="p-3 border-b border-klenny-border flex items-center gap-2">
-        <img src={klennyImg} alt="Klenny" className="w-10 h-10 rounded-full object-cover" />
-        <span className="font-semibold text-sm text-klenny-accent">Klenny</span>
+        <img src={klennyImg} alt="Klenny Code" className="w-10 h-10 rounded-full object-cover" />
+        <span className="font-semibold text-sm text-klenny-accent">Klenny Code</span>
       </div>
       <nav className="flex-1 p-2 space-y-1">
         {items.map((item) => (

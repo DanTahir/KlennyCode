@@ -1,7 +1,7 @@
 {
-  "name": "klenny",
+  "name": "klennycode",
   "version": "0.1.0",
-  "description": "Klenny — a desktop coding agent powered by OpenRouter, with memory, skills, subagents, and plan mode.",
+  "description": "Klenny Code — a desktop coding agent powered by OpenRouter, with memory, skills, subagents, and plan mode.",
   "main": "./out/main/index.js",
   "author": "Dan Tahir <dantahir@gmail.com>",
   "homepage": "https://github.com/DanTahir/KlennyCode",
@@ -51,8 +51,9 @@
     "vite": "^5.4.11"
   },
   "build": {
-    "appId": "com.dantahir.klenny",
-    "productName": "Klenny",
+    "appId": "com.dantahir.klennycode",
+    "productName": "Klenny Code",
+    "executableName": "KlennyCode",
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -97,7 +98,7 @@
       "category": "Development",
       "maintainer": "Dan Tahir <dantahir@gmail.com>",
       "synopsis": "Desktop coding agent",
-      "description": "Klenny — a desktop coding agent powered by OpenRouter, with memory, skills, subagents, and plan mode."
+      "description": "Klenny Code — a desktop coding agent powered by OpenRouter, with memory, skills, subagents, and plan mode."
     },
     "nsis": {
       "oneClick": false,

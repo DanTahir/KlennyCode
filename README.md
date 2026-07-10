@@ -1,10 +1,10 @@
-# Klenny
+# Klenny Code
 
 <p align="center">
-  <img src="Klenny.jpg" alt="Klenny" width="160" />
+  <img src="Klenny.jpg" alt="Klenny Code" width="160" />
 </p>
 
-**Klenny** is a desktop coding agent for Windows, macOS, and Linux. Give it an [OpenRouter](https://openrouter.ai) API key and use frontier models — Claude Sonnet 5, Claude Opus 4.8, the latest OpenAI and Google models, and hundreds more.
+**Klenny Code** is a desktop coding agent for Windows, macOS, and Linux. Give it an [OpenRouter](https://openrouter.ai) API key and use frontier models — Claude Sonnet 5, Claude Opus 4.8, the latest OpenAI and Google models, and hundreds more.
 
 Built with **Electron + React + TypeScript**, developed with **Bun** as the package manager.
 
@@ -59,7 +59,7 @@ Installers are written to `agent/dist/`.
 
 ## Configuration
 
-1. Launch Klenny
+1. Launch Klenny Code
 2. Go to **Settings** → paste your OpenRouter API key
 3. Click **Open folder** in the sidebar to select your project
 4. Pick a model (curated frontier models are pinned at the top; full catalog is searchable)
@@ -72,7 +72,7 @@ Installers are written to `agent/dist/`.
 | Manual review (default) | Every edit/delete/command shows a diff or preview — accept or reject |
 | Auto-apply | Changes apply immediately; shadow-git checkpoints enable revert |
 
-### Project layout (created by Klenny)
+### Project layout (created by Klenny Code)
 
 ```
 your-project/
@@ -109,12 +109,12 @@ Every push to `main` that touches `agent/**` triggers GitHub Actions to:
 
 **Download installers:**
 - [GitHub Releases](https://github.com/DanTahir/KlennyCode/releases/latest) — scroll past "Source code" to the installer assets
-  - Windows: `Klenny-Setup-<version>.exe` (installer) or `Klenny-<version>.exe` (portable)
-  - macOS: `Klenny-<version>-arm64.dmg` or `.zip`
-  - Linux: `Klenny-<version>.AppImage` or `.deb`
+  - Windows: `KlennyCode-Setup-<version>.exe` (installer) or `KlennyCode-<version>.exe` (portable)
+  - macOS: `KlennyCode-<version>-arm64.dmg` or `.zip`
+  - Linux: `KlennyCode-<version>.AppImage` or `.deb`
 - [Actions artifacts](https://github.com/DanTahir/KlennyCode/actions) — backup copies on each workflow run
 
-Packaged Klenny apps check for updates on startup and download from the latest GitHub Release.
+Packaged Klenny Code apps check for updates on startup and download from the latest GitHub Release.
 
 ## License
 

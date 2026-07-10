@@ -1,6 +1,6 @@
-# Klenny Help
+# Klenny Code Help
 
-Klenny is a desktop coding agent that uses OpenRouter to access frontier models (Claude, GPT, Gemini, and more).
+Klenny Code is a desktop coding agent that uses OpenRouter to access frontier models (Claude, GPT, Gemini, and more).
 
 ## Getting started
 
@@ -14,7 +14,7 @@ Klenny is a desktop coding agent that uses OpenRouter to access frontier models 
 Full tool access: read/write/edit/delete files, grep, glob, run shell commands, web search, subagents, and memory.
 
 ### Plan mode
-Read-only tools only. Klenny will ask clarifying questions, research your codebase, and save a plan to `.klenny/plans/`. Review it in the **Plans** panel, then approve to switch back to Agent mode.
+Read-only tools only. Klenny Code will ask clarifying questions, research your codebase, and save a plan to `.klenny/plans/`. Review it in the **Plans** panel, then approve to switch back to Agent mode.
 
 ## Tools
 
@@ -44,11 +44,11 @@ Toggle this in **Settings**.
 
 - **Project**: `KLENNY.md` in your project root (shared via git).
 - **Global**: `~/.klenny/KLENNY.md` (personal, all projects).
-- **Auto-memory**: Klenny can write topic files under `.klenny/memory/` and index them in `MEMORY.md`.
+- **Auto-memory**: Klenny Code can write topic files under `.klenny/memory/` and index them in `MEMORY.md`.
 
 ## Skills
 
-Create skills under `.klenny/skills/<name>/SKILL.md` (project) or `~/.klenny/skills/` (global). Klenny sees a lightweight catalog and loads full instructions when relevant — you don't need to invoke them manually.
+Create skills under `.klenny/skills/<name>/SKILL.md` (project) or `~/.klenny/skills/` (global). Klenny Code sees a lightweight catalog and loads full instructions when relevant — you don't need to invoke them manually.
 
 ## Subagents
 
@@ -60,7 +60,7 @@ Use **+** or `Ctrl+T` for a new chat tab. `Ctrl+W` closes the active tab. Closin
 
 ## Spending cap
 
-Set a per-session or daily USD cap in Settings. Klenny warns as you approach it and blocks further model calls when exceeded.
+Set a per-session or daily USD cap in Settings. Klenny Code warns as you approach it and blocks further model calls when exceeded.
 
 ## Keyboard shortcuts
 

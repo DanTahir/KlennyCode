@@ -28,7 +28,7 @@ export function QuestionCard({ question }: { question: PendingQuestion }) {
 
   return (
     <div className="border border-blue-500/40 rounded-lg p-4 bg-klenny-panel2">
-      <div className="font-medium mb-3">Klenny needs your input</div>
+      <div className="font-medium mb-3">Klenny Code needs your input</div>
       <div className="space-y-4">
         {question.questions.map((q) => (
           <div key={q.id}>

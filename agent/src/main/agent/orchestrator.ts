@@ -476,7 +476,7 @@ async function runSubagent(
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
 
     if (!BrowserWindow.getFocusedWindow()) {
-      new Notification({ title: 'Klenny subagent finished', body: `${agentType}: ${desc}` }).show()
+      new Notification({ title: 'Klenny Code subagent finished', body: `${agentType}: ${desc}` }).show()
     }
 
     return { ok: true, summary: run.summary, data: { run } }

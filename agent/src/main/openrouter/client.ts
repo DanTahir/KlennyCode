@@ -107,7 +107,7 @@ export async function* streamChatCompletion(opts: {
           Authorization: `Bearer ${opts.apiKey}`,
           'Content-Type': 'application/json',
           'HTTP-Referer': 'https://github.com/DanTahir/KlennyCode',
-          'X-Title': 'Klenny'
+          'X-Title': 'Klenny Code'
         },
         body: JSON.stringify(body),
         signal: opts.signal

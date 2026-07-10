@@ -14,9 +14,9 @@ export function WelcomeScreen({ onOpenWorkspace, onOpenSettings }: WelcomeScreen
   return (
     <div className="flex-1 flex items-center justify-center p-8 bg-klenny-bg">
       <div className="max-w-lg w-full text-center space-y-6">
-        <img src={klennyImg} alt="Klenny" className="w-24 h-24 rounded-full object-cover mx-auto border-2 border-klenny-accent/40" />
+        <img src={klennyImg} alt="Klenny Code" className="w-24 h-24 rounded-full object-cover mx-auto border-2 border-klenny-accent/40" />
         <div>
-          <h1 className="text-2xl font-semibold text-klenny-accent">Welcome to Klenny</h1>
+          <h1 className="text-2xl font-semibold text-klenny-accent">Welcome to Klenny Code</h1>
           <p className="text-klenny-muted text-sm mt-2">
             A desktop coding agent powered by OpenRouter. Open a project folder, add your API key, and start chatting.
           </p>
@@ -36,7 +36,7 @@ export function WelcomeScreen({ onOpenWorkspace, onOpenSettings }: WelcomeScreen
             done={!needsWorkspace}
             number={2}
             title="Open a project folder"
-            detail="Point Klenny at a git repo or any codebase directory"
+            detail="Point Klenny Code at a git repo or any codebase directory"
             action={needsWorkspace ? 'Open project folder' : workspace ?? 'Project open'}
             onAction={needsWorkspace ? onOpenWorkspace : onOpenWorkspace}
             disabled={false}
