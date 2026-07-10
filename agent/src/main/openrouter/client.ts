@@ -1,7 +1,16 @@
-import type { ModelInfo } from '@shared/types'
+import type { ModelInfo, ProviderPreference } from '@shared/types'
 import { CURATED_MODEL_IDS } from '@shared/types'
+import { applyCacheControl, isExplicitCacheFamily } from './caching'
 
 const BASE = 'https://openrouter.ai/api/v1'
+
+export interface CacheControl {
+  type: 'ephemeral'
+}
+
+export type ContentPart =
+  | { type: 'text'; text: string; cache_control?: CacheControl }
+  | { type: 'image_url'; image_url: { url: string }; cache_control?: CacheControl }
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -9,10 +18,6 @@ export interface ChatMessage {
   tool_call_id?: string
   tool_calls?: ToolCall[]
 }
-
-export type ContentPart =
-  | { type: 'text'; text: string }
-  | { type: 'image_url'; image_url: { url: string } }
 
 export interface ToolCall {
   id: string
@@ -29,11 +34,19 @@ export interface ToolDef {
   }
 }
 
+export interface UsageChunk {
+  promptTokens: number
+  completionTokens: number
+  cachedTokens: number
+  cacheWriteTokens: number
+  costUsd: number
+}
+
 export interface StreamChunk {
   type: 'text' | 'reasoning' | 'tool_calls' | 'usage' | 'done' | 'error'
   text?: string
   toolCalls?: ToolCall[]
-  usage?: { promptTokens: number; completionTokens: number; costUsd: number }
+  usage?: UsageChunk
   error?: string
 }
 
@@ -53,7 +66,7 @@ export async function fetchModels(apiKey: string, force = false, signal?: AbortS
 
   modelsCache = json.data.map((m) => {
     const id = String(m.id)
-    const pricing = (m.pricing as { prompt?: string; completion?: string }) ?? {}
+    const pricing = (m.pricing as { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string }) ?? {}
     const supported = (m.supported_parameters as string[]) ?? []
     return {
       id,
@@ -61,6 +74,9 @@ export async function fetchModels(apiKey: string, force = false, signal?: AbortS
       contextLength: Number(m.context_length ?? 128_000),
       promptPrice: Number(pricing.prompt ?? 0),
       completionPrice: Number(pricing.completion ?? 0),
+      cacheReadPrice: pricing.input_cache_read != null ? Number(pricing.input_cache_read) : null,
+      cacheWritePrice: pricing.input_cache_write != null ? Number(pricing.input_cache_write) : null,
+      supportsExplicitCaching: isExplicitCacheFamily(id),
       supportsTools: supported.includes('tools'),
       supportsReasoning: supported.includes('reasoning') || supported.includes('include_reasoning'),
       supportsVision: ((m.architecture as { input_modalities?: string[] })?.input_modalities ?? []).includes('image'),
@@ -85,10 +101,23 @@ export async function* streamChatCompletion(opts: {
   tools?: ToolDef[]
   signal?: AbortSignal
   includeReasoning?: boolean
+  /** stable key for OpenRouter provider sticky-routing, keeps prompt caches warm across turns */
+  sessionId?: string
+  /** advanced: force/restrict specific upstream providers (see @shared/types ProviderPreference) */
+  providerPreference?: ProviderPreference
+  /** true when this model family (Anthropic/Qwen/DeepSeek-v3.2) needs explicit cache_control markers */
+  supportsExplicitCaching?: boolean
+  /** skip the "last message" cache breakpoint on the very first request of a conversation (nothing to read back yet) */
+  includeLastMessageCacheBreakpoint?: boolean
 }): AsyncGenerator<StreamChunk> {
+  const messages = applyCacheControl(
+    opts.messages,
+    Boolean(opts.supportsExplicitCaching),
+    opts.includeLastMessageCacheBreakpoint ?? true
+  )
   const body: Record<string, unknown> = {
     model: opts.model,
-    messages: opts.messages,
+    messages,
     stream: true
   }
   if (opts.tools?.length) {
@@ -96,6 +125,13 @@ export async function* streamChatCompletion(opts: {
     body.tool_choice = 'auto'
   }
   if (opts.includeReasoning) body.include_reasoning = true
+  if (opts.sessionId) body.session_id = opts.sessionId
+  if (opts.providerPreference && (opts.providerPreference.only?.length || opts.providerPreference.order?.length)) {
+    const provider: Record<string, unknown> = {}
+    if (opts.providerPreference.only?.length) provider.only = opts.providerPreference.only
+    if (opts.providerPreference.order?.length) provider.order = opts.providerPreference.order
+    body.provider = provider
+  }
 
   let attempt = 0
   while (attempt < 4) {
@@ -176,6 +212,10 @@ export async function* streamChatCompletion(opts: {
                 prompt_tokens?: number
                 completion_tokens?: number
                 cost?: number
+                prompt_tokens_details?: {
+                  cached_tokens?: number
+                  cache_write_tokens?: number
+                }
               }
             }
 
@@ -203,6 +243,8 @@ export async function* streamChatCompletion(opts: {
                 usage: {
                   promptTokens: parsed.usage.prompt_tokens ?? 0,
                   completionTokens: parsed.usage.completion_tokens ?? 0,
+                  cachedTokens: parsed.usage.prompt_tokens_details?.cached_tokens ?? 0,
+                  cacheWriteTokens: parsed.usage.prompt_tokens_details?.cache_write_tokens ?? 0,
                   costUsd: parsed.usage.cost ?? 0
                 }
               }
@@ -228,19 +270,31 @@ export async function* streamChatCompletion(opts: {
   }
 }
 
-export async function summarizeMessages(apiKey: string, model: string, text: string, signal?: AbortSignal): Promise<string> {
+export async function summarizeMessages(
+  apiKey: string,
+  model: string,
+  text: string,
+  signal?: AbortSignal,
+  supportsExplicitCaching?: boolean
+): Promise<string> {
+  const messages: ChatMessage[] = [
+    {
+      role: 'system',
+      content:
+        'Summarize the following conversation history concisely, preserving key decisions, file paths, and open tasks.'
+    },
+    { role: 'user', content: text }
+  ]
+
   let out = ''
   for await (const chunk of streamChatCompletion({
     apiKey,
     model,
-    messages: [
-      {
-        role: 'system',
-        content: 'Summarize the following conversation history concisely, preserving key decisions, file paths, and open tasks.'
-      },
-      { role: 'user', content: text }
-    ],
-    signal
+    messages,
+    signal,
+    supportsExplicitCaching,
+    // The transcript (last message) is unique per call — only cache the static system instruction, never the transcript.
+    includeLastMessageCacheBreakpoint: false
   })) {
     if (chunk.type === 'text' && chunk.text) out += chunk.text
     if (chunk.type === 'error') throw new Error(chunk.error)

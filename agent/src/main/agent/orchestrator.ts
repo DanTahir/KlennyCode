@@ -16,6 +16,7 @@ import { getApiKey, loadSettings } from '../settings'
 import { getWorkspace } from '../workspace'
 import { sessionStore } from '../session/store'
 import { streamChatCompletion, fetchModels, type ChatMessage as ORMessage, type ToolCall } from '../openrouter/client'
+import { modelSupportsCaching, computeCacheSavings } from '../openrouter/caching'
 import { getToolDefinitions } from './tools/definitions'
 import {
   readFileTool,
@@ -150,7 +151,13 @@ async function agentLoop(
     return
   }
 
-  const compacted = await maybeCompact({ messages: tab.messages, model: modelInfo, apiKey, signal })
+  const compacted = await maybeCompact({
+    messages: tab.messages,
+    model: modelInfo,
+    apiKey,
+    signal,
+    promptCachingEnabled: settings.promptCachingEnabled
+  })
   if (compacted.compacted) {
     tab.messages = compacted.messages
     tab.compactedThroughMessageId = compacted.summaryMessageId
@@ -175,13 +182,24 @@ async function agentLoop(
   let thinkingBuf = ''
   const toolCallsById = new Map<string, ToolCall>()
 
+  // Skip the "last message" cache breakpoint on the very first request of a
+  // conversation/subagent run, since there's nothing yet to read back from a cache write
+  // and we'd only pay the cache-write premium for no benefit.
+  const includeLastMessageCacheBreakpoint = tab.messages.some((m) => m.id !== assistantId && m.usage)
+  const supportsExplicitCaching =
+    settings.promptCachingEnabled && modelInfo.supportsExplicitCaching && modelSupportsCaching(modelInfo)
+
   for await (const chunk of streamChatCompletion({
     apiKey,
     model: tab.model,
     messages: orMessages,
     tools: getToolDefinitions(tab.mode),
     signal,
-    includeReasoning: modelInfo.supportsReasoning
+    includeReasoning: modelInfo.supportsReasoning,
+    sessionId: tab.id,
+    providerPreference: settings.providerPreference,
+    supportsExplicitCaching,
+    includeLastMessageCacheBreakpoint
   })) {
     if (signal.aborted) break
     if (chunk.type === 'text' && chunk.text) {
@@ -196,14 +214,26 @@ async function agentLoop(
       for (const tc of chunk.toolCalls) toolCallsById.set(tc.id, tc)
     }
     if (chunk.type === 'usage' && chunk.usage) {
+      const { costWithoutCacheUsd, cacheSavingsUsd } = computeCacheSavings(modelInfo, chunk.usage)
       tab.totalCostUsd += chunk.usage.costUsd
+      tab.totalSavingsUsd = (tab.totalSavingsUsd ?? 0) + Math.max(cacheSavingsUsd, 0)
       trackDailySpend(chunk.usage.costUsd)
       assistantMsg.usage = {
         promptTokens: chunk.usage.promptTokens,
         completionTokens: chunk.usage.completionTokens,
-        costUsd: chunk.usage.costUsd
+        cachedTokens: chunk.usage.cachedTokens,
+        cacheWriteTokens: chunk.usage.cacheWriteTokens,
+        costUsd: chunk.usage.costUsd,
+        costWithoutCacheUsd,
+        cacheSavingsUsd
       }
-      emit({ type: 'spend_update', tabId: tab.id, totalCostUsd: tab.totalCostUsd, capUsd: settings.spendingCapUsd })
+      emit({
+        type: 'spend_update',
+        tabId: tab.id,
+        totalCostUsd: tab.totalCostUsd,
+        totalSavingsUsd: tab.totalSavingsUsd,
+        capUsd: settings.spendingCapUsd
+      })
     }
     if (chunk.type === 'error') {
       emit({ type: 'error', tabId: tab.id, message: chunk.error ?? 'Unknown error' })
@@ -454,7 +484,8 @@ async function runSubagent(
         createdAt: Date.now()
       }
     ],
-    totalCostUsd: 0
+    totalCostUsd: 0,
+    totalSavingsUsd: 0
   }
 
   const events: AgentStreamEvent[] = []

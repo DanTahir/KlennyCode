@@ -13,6 +13,7 @@ const DEFAULTS: AppSettings = {
   spendingCapUsd: null,
   spendingCapPeriod: 'session',
   autoMemoryEnabled: true,
+  promptCachingEnabled: true,
   lastWorkspace: null
 }
 

@@ -23,7 +23,7 @@ export class SessionStore {
     await mkdir(sessionsDir(), { recursive: true })
     try {
       const raw = await readFile(sessionFile(workspace), 'utf8')
-      this.tabs = JSON.parse(raw) as TabSession[]
+      this.tabs = (JSON.parse(raw) as TabSession[]).map((t) => ({ totalSavingsUsd: 0, ...t }))
     } catch {
       this.tabs = [this.createEmptyTab()]
     }
@@ -41,7 +41,8 @@ export class SessionStore {
       createdAt: now,
       updatedAt: now,
       messages: [],
-      totalCostUsd: 0
+      totalCostUsd: 0,
+      totalSavingsUsd: 0
     }
   }
 

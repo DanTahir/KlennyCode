@@ -11,6 +11,12 @@ export interface ModelInfo {
   contextLength: number
   promptPrice: number // USD per token
   completionPrice: number // USD per token
+  /** USD per token to read a cached prompt token; null = provider/model doesn't support caching */
+  cacheReadPrice: number | null
+  /** USD per token to write a new cache entry; null = no explicit write pricing (implicit-only or free writes) */
+  cacheWritePrice: number | null
+  /** true for model families (Anthropic, Qwen, Alibaba-hosted DeepSeek v3.2) that require us to inject cache_control markers ourselves */
+  supportsExplicitCaching: boolean
   supportsTools: boolean
   supportsReasoning: boolean
   supportsVision: boolean
@@ -53,9 +59,26 @@ export interface ChatMessage {
   blocks: ContentBlock[]
   createdAt: number
   /** OpenRouter usage for this specific assistant turn, if applicable */
-  usage?: { promptTokens: number; completionTokens: number; costUsd: number }
+  usage?: UsageInfo
   /** marks a synthetic message inserted by context-compaction */
   isCompactionSummary?: boolean
+}
+
+// ---------- Usage / cost accounting ----------
+
+export interface UsageInfo {
+  promptTokens: number
+  completionTokens: number
+  /** tokens read from a prompt cache (usage.prompt_tokens_details.cached_tokens) */
+  cachedTokens: number
+  /** tokens written to a prompt cache (usage.prompt_tokens_details.cache_write_tokens) */
+  cacheWriteTokens: number
+  /** actual amount charged, already net of any cache discount */
+  costUsd: number
+  /** what this turn would have cost with no caching at all, for savings display */
+  costWithoutCacheUsd: number
+  /** costWithoutCacheUsd - costUsd; can be negative on a pure cache-write turn */
+  cacheSavingsUsd: number
 }
 
 // ---------- Tools ----------
@@ -184,11 +207,20 @@ export interface TabSession {
   updatedAt: number
   messages: ChatMessage[]
   totalCostUsd: number
+  /** cumulative USD saved via prompt caching this session (display only, not used for spend caps) */
+  totalSavingsUsd?: number
   /** set while compaction has replaced earlier history */
   compactedThroughMessageId?: string
 }
 
 // ---------- Settings ----------
+
+export interface ProviderPreference {
+  /** restrict routing to only these provider slugs (still allows fallback among them, keeps sticky routing) */
+  only?: string[]
+  /** explicit provider try-order (disables OpenRouter's sticky routing / load balancing — use sparingly) */
+  order?: string[]
+}
 
 export interface AppSettings {
   hasApiKey: boolean
@@ -199,6 +231,10 @@ export interface AppSettings {
   spendingCapUsd: number | null
   spendingCapPeriod: 'session' | 'daily'
   autoMemoryEnabled: boolean
+  /** global kill switch for OpenRouter prompt caching (session_id + cache_control injection) */
+  promptCachingEnabled: boolean
+  /** optional advanced provider pinning, e.g. to force a single BYOK provider */
+  providerPreference?: ProviderPreference
   lastWorkspace?: string | null
 }
 
@@ -211,7 +247,7 @@ export type AgentStreamEvent =
   | { type: 'tool_call_result'; tabId: string; messageId: string; toolCallId: string; result: ToolResultPayload; status: ToolCallBlock['status'] }
   | { type: 'user_message'; tabId: string; message: ChatMessage }
   | { type: 'message_start'; tabId: string; message: ChatMessage }
-  | { type: 'message_end'; tabId: string; messageId: string; usage?: ChatMessage['usage'] }
+  | { type: 'message_end'; tabId: string; messageId: string; usage?: UsageInfo }
   | { type: 'turn_end'; tabId: string }
   | { type: 'error'; tabId: string; message: string }
   | { type: 'pending_action'; tabId: string; action: PendingAction }
@@ -220,7 +256,7 @@ export type AgentStreamEvent =
   | { type: 'pending_question_resolved'; tabId: string; questionId: string }
   | { type: 'subagent_update'; tabId: string; run: SubagentRun }
   | { type: 'compaction'; tabId: string; summaryMessageId: string }
-  | { type: 'spend_update'; tabId: string; totalCostUsd: number; capUsd: number | null }
+  | { type: 'spend_update'; tabId: string; totalCostUsd: number; totalSavingsUsd: number; capUsd: number | null }
   | { type: 'spend_blocked'; tabId: string }
 
 export const CURATED_MODEL_IDS = [

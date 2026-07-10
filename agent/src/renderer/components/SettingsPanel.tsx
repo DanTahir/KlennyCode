@@ -5,10 +5,19 @@ export function SettingsPanel() {
   const { settings, models, setSettings, setModels } = useAppStore()
   const [apiKey, setApiKey] = useState('')
   const [search, setSearch] = useState('')
+  const [providerOnly, setProviderOnly] = useState('')
+  const [providerOrder, setProviderOrder] = useState('')
+  const [showAdvancedProvider, setShowAdvancedProvider] = useState(false)
 
   useEffect(() => {
     void window.klenny.listModels(true).then(setModels)
   }, [])
+
+  useEffect(() => {
+    if (!settings?.providerPreference) return
+    setProviderOnly((settings.providerPreference.only ?? []).join(', '))
+    setProviderOrder((settings.providerPreference.order ?? []).join(', '))
+  }, [settings?.providerPreference])
 
   if (!settings) return null
   const filtered = models.filter((m) => m.name.toLowerCase().includes(search.toLowerCase()) || m.id.includes(search))
@@ -16,6 +25,20 @@ export function SettingsPanel() {
   const patch = async (p: Partial<typeof settings>) => {
     const next = await window.klenny.setSettings(p)
     setSettings(next)
+  }
+
+  const parseCsv = (s: string): string[] | undefined => {
+    const parts = s
+      .split(',')
+      .map((p) => p.trim())
+      .filter(Boolean)
+    return parts.length ? parts : undefined
+  }
+
+  const applyProviderPreference = async () => {
+    const only = parseCsv(providerOnly)
+    const order = parseCsv(providerOrder)
+    await patch({ providerPreference: only || order ? { only, order } : undefined })
   }
 
   return (
@@ -55,15 +78,71 @@ export function SettingsPanel() {
         <label className="block text-sm">Main model</label>
         <select className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded" value={settings.mainModel} onChange={(e) => void patch({ mainModel: e.target.value })}>
           {filtered.map((m) => (
-            <option key={m.id} value={m.id}>{m.pinned ? '★ ' : ''}{m.name}</option>
+            <option key={m.id} value={m.id}>
+              {m.pinned ? '★ ' : ''}
+              {m.cacheReadPrice != null ? '⚡ ' : ''}
+              {m.name}
+            </option>
           ))}
         </select>
         <label className="block text-sm">Subagent model</label>
         <select className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded" value={settings.subagentModel} onChange={(e) => void patch({ subagentModel: e.target.value })}>
           {filtered.map((m) => (
-            <option key={m.id} value={m.id}>{m.name}</option>
+            <option key={m.id} value={m.id}>
+              {m.cacheReadPrice != null ? '⚡ ' : ''}
+              {m.name}
+            </option>
           ))}
         </select>
+        <p className="text-xs text-klenny-muted">⚡ marks models that support OpenRouter prompt caching.</p>
+      </section>
+
+      <section className="mb-6 space-y-2">
+        <h3 className="font-medium">Prompt caching</h3>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.promptCachingEnabled}
+            onChange={(e) => void patch({ promptCachingEnabled: e.target.checked })}
+          />
+          Cache repeated context to cut costs
+        </label>
+        <p className="text-xs text-klenny-muted">
+          Automatically caches repeated context (system prompt, tool definitions, conversation history) on models
+          that support it (Anthropic, OpenAI, Gemini, DeepSeek, and more) to cut costs. Has no effect on models
+          without caching support.
+        </p>
+        <button
+          className="text-xs text-klenny-accent underline"
+          onClick={() => setShowAdvancedProvider((v) => !v)}
+        >
+          {showAdvancedProvider ? 'Hide' : 'Show'} advanced: provider preference
+        </button>
+        {showAdvancedProvider && (
+          <div className="space-y-2 border border-klenny-border rounded p-3">
+            <p className="text-xs text-klenny-muted">
+              Optional. Force requests to specific OpenRouter providers (comma-separated slugs, e.g. "anthropic").
+              "Only" still allows fallback and keeps cache-warm sticky routing; "Order" disables OpenRouter's
+              sticky routing / load balancing, so prefer "Only" unless you need strict ordering.
+            </p>
+            <label className="block text-sm">Only allow providers</label>
+            <input
+              className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+              placeholder="e.g. anthropic"
+              value={providerOnly}
+              onChange={(e) => setProviderOnly(e.target.value)}
+              onBlur={() => void applyProviderPreference()}
+            />
+            <label className="block text-sm">Explicit provider order (advanced)</label>
+            <input
+              className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+              placeholder="e.g. anthropic, google-vertex"
+              value={providerOrder}
+              onChange={(e) => setProviderOrder(e.target.value)}
+              onBlur={() => void applyProviderPreference()}
+            />
+          </div>
+        )}
       </section>
 
       <section className="mb-6 space-y-2">

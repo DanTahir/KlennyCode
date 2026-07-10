@@ -56,6 +56,9 @@ export function ChatPane() {
         <ModeToggle tabId={tab.id} mode={tab.mode} model={tab.model} />
         <div className="text-xs text-klenny-muted">
           ${tab.totalCostUsd.toFixed(4)} this chat
+          {(tab.totalSavingsUsd ?? 0) > 0 && (
+            <span className="text-green-400"> (saved ${(tab.totalSavingsUsd ?? 0).toFixed(4)} via caching)</span>
+          )}
         </div>
       </div>
 

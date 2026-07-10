@@ -189,7 +189,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       case 'spend_update': {
         const tabs = state.tabs.map((t) =>
-          t.id === e.tabId ? { ...t, totalCostUsd: e.totalCostUsd } : t
+          t.id === e.tabId ? { ...t, totalCostUsd: e.totalCostUsd, totalSavingsUsd: e.totalSavingsUsd } : t
         )
         set({ tabs })
         break
