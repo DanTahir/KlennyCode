@@ -7,6 +7,7 @@ import { getRgPath } from '../../ripgrep'
 import { buildEditNotFoundHelp, countOccurrences, resolveEditMatch } from './edit-match'
 import { detectEol, fromLf, toLf } from './eol'
 import { assertInWorkspace, getWorkspace } from '../../workspace'
+import { buildShellInvocation, resolveShell } from '../../shells'
 
 // `content` in this cache is always normalized to LF, regardless of the file's on-disk
 // EOL style or the machine's `core.autocrlf` setting — see ./eol.ts. This keeps matching,
@@ -212,7 +213,8 @@ export async function runCommandTool(
     cwd?: string
     timeout_ms?: number
   },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  shellId?: string | null
 ): Promise<ToolResultPayload> {
   const ws = getWorkspace()
   if (!ws) return { ok: false, summary: 'No workspace', error: 'no_workspace' }
@@ -229,10 +231,10 @@ export async function runCommandTool(
   const cwd = args.cwd ? resolveWorkspacePath(args.cwd) : ws
   if (!assertInWorkspace(cwd)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   const timeout = args.timeout_ms ?? 30_000
-  const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh'
-  const shellArgs = process.platform === 'win32' ? ['/d', '/s', '/c', args.command] : ['-c', args.command]
+  const shell = resolveShell(shellId)
+  const { cmd, args: shellArgs } = buildShellInvocation(shell, args.command)
 
-  const result = await runProcess(shell, shellArgs, cwd, timeout, true, signal)
+  const result = await runProcess(cmd, shellArgs, cwd, timeout, true, signal)
   if (result.timedOut) {
     if (result.pid) {
       backgroundProcs.set(String(result.pid), { pid: result.pid, command: args.command })

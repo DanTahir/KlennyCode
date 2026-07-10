@@ -236,6 +236,23 @@ export interface AppSettings {
   /** optional advanced provider pinning, e.g. to force a single BYOK provider */
   providerPreference?: ProviderPreference
   lastWorkspace?: string | null
+  /** id of the shell used for run_command (e.g. 'cmd', 'powershell', 'git-bash', 'bash', 'zsh'); null = auto-pick OS default */
+  shellId?: string | null
+}
+
+// ---------- Shells ----------
+
+export type ShellKind = 'cmd' | 'powershell' | 'posix' | 'wsl'
+
+export interface ShellInfo {
+  /** stable identifier stored in settings, e.g. 'cmd', 'powershell', 'pwsh', 'git-bash', 'wsl', 'bash', 'zsh', 'fish', 'sh' */
+  id: string
+  /** human-readable label for the settings UI */
+  name: string
+  /** absolute path to the shell executable on this machine */
+  path: string
+  /** determines how the command string is passed to this shell (flags, invocation style) */
+  kind: ShellKind
 }
 
 // ---------- Streaming events (main -> renderer) ----------

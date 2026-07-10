@@ -15,6 +15,7 @@ import type {
 } from '@shared/types'
 import { getApiKey, loadSettings } from '../settings'
 import { getWorkspace } from '../workspace'
+import { resolveShell } from '../shells'
 import { sessionStore } from '../session/store'
 import { streamChatCompletion, fetchModels, type ChatMessage as ORMessage, type ToolCall } from '../openrouter/client'
 import { modelSupportsCaching, computeCacheSavings } from '../openrouter/caching'
@@ -172,7 +173,7 @@ async function agentLoop(
     if (compacted.summaryMessageId) emit({ type: 'compaction', tabId: tab.id, summaryMessageId: compacted.summaryMessageId })
   }
 
-  const systemPrompt = await buildSystemPrompt(tab.mode)
+  const systemPrompt = await buildSystemPrompt(tab.mode, settings.shellId)
   const orMessages = toORMessages(tab.messages, systemPrompt)
 
   const assistantId = nanoid()
@@ -295,7 +296,7 @@ async function agentLoop(
   const effectiveApprovalMode = subagentCtx ? 'auto' : settings.approvalMode
   const results = await Promise.all(
     toolCalls.map((tc) =>
-      executeTool(tc, tab, apiKey, subagentModel, effectiveApprovalMode, emit, signal, depth, subagentCtx)
+      executeTool(tc, tab, apiKey, subagentModel, effectiveApprovalMode, emit, signal, depth, subagentCtx, settings.shellId)
     )
   )
 
@@ -350,7 +351,8 @@ async function executeTool(
   emit: Emit,
   signal: AbortSignal,
   depth: number,
-  subagentCtx?: SubagentContext
+  subagentCtx?: SubagentContext,
+  shellId?: string | null
 ): Promise<{ payload: ToolResultPayload; status: ToolCallBlock['status'] }> {
   let args: Record<string, unknown> = {}
   try {
@@ -410,7 +412,7 @@ async function executeTool(
   }
 
   try {
-    const payload = await dispatchTool(name, args, tab, apiKey, subagentModel, emit, signal, depth)
+    const payload = await dispatchTool(name, args, tab, apiKey, subagentModel, emit, signal, depth, shellId)
     return { payload, status: payload.ok ? 'success' : 'error' }
   } catch (e) {
     return {
@@ -428,7 +430,8 @@ async function dispatchTool(
   subagentModel: string,
   emit: Emit,
   signal: AbortSignal,
-  depth: number
+  depth: number,
+  shellId?: string | null
 ): Promise<ToolResultPayload> {
   switch (name) {
     case 'read_file':
@@ -446,7 +449,7 @@ async function dispatchTool(
     case 'glob':
       return globTool(args as { pattern: string; cwd?: string })
     case 'run_command':
-      return runCommandTool(args as { command: string; cwd?: string; timeout_ms?: number }, signal)
+      return runCommandTool(args as { command: string; cwd?: string; timeout_ms?: number }, signal, shellId)
     case 'web_search':
       return webSearchTool(args as { query: string })
     case 'fetch_url':
@@ -556,7 +559,7 @@ async function runSubagent(
   }
 }
 
-async function buildSystemPrompt(mode: 'agent' | 'plan'): Promise<string> {
+async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string | null): Promise<string> {
   const ws = getWorkspace()
   const [projMem, globalMem, autoMem, skills, subagents] = await Promise.all([
     loadProjectMemory(),
@@ -566,9 +569,12 @@ async function buildSystemPrompt(mode: 'agent' | 'plan'): Promise<string> {
     listSubagentTypes()
   ])
 
+  const shell = resolveShell(shellId)
+
   const parts = [
     mode === 'plan' ? PLAN_MODE_PROMPT : AGENT_MODE_PROMPT,
     ws ? `Workspace: ${ws}` : 'No workspace open.',
+    `run_command executes via ${shell.name} — write commands using that shell's syntax (quoting, path separators, env vars, chaining operators).`,
     projMem && `Project memory:\n${projMem}`,
     globalMem && `Global memory:\n${globalMem}`,
     autoMem && `Auto-memory index:\n${autoMem}`,

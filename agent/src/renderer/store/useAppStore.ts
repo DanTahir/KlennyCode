@@ -8,6 +8,7 @@ import type {
   PendingAction,
   PendingQuestion,
   PlanArtifact,
+  ShellInfo,
   SkillSummary,
   SubagentRun,
   TabSession,
@@ -18,6 +19,7 @@ interface AppState {
   settings: AppSettings | null
   workspace: string | null
   models: ModelInfo[]
+  shells: ShellInfo[]
   tabs: TabSession[]
   activeTabId: string | null
   pendingActions: PendingAction[]
@@ -31,6 +33,7 @@ interface AppState {
   setSettings: (s: AppSettings) => void
   setWorkspace: (w: string | null) => void
   setModels: (m: ModelInfo[]) => void
+  setShells: (s: ShellInfo[]) => void
   setTabs: (tabs: TabSession[]) => void
   setActiveTab: (id: string) => void
   upsertTab: (tab: TabSession) => void
@@ -44,6 +47,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   settings: null,
   workspace: null,
   models: [],
+  shells: [],
   tabs: [],
   activeTabId: null,
   pendingActions: [],
@@ -57,6 +61,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSettings: (settings) => set({ settings }),
   setWorkspace: (workspace) => set({ workspace }),
   setModels: (models) => set({ models }),
+  setShells: (shells) => set({ shells }),
   setTabs: (tabs) =>
     set((s) => ({
       tabs,

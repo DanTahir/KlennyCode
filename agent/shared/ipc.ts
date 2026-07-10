@@ -5,6 +5,7 @@ import type {
   ModelInfo,
   PlanArtifact,
   QuestionAnswer,
+  ShellInfo,
   SkillSummary,
   SubagentTypeSummary,
   TabSession
@@ -21,6 +22,7 @@ export const IPC = {
   workspaceGet: 'workspace:get',
 
   modelsList: 'models:list',
+  shellsList: 'shells:list',
 
   tabsList: 'tabs:list',
   tabCreate: 'tabs:create',
@@ -69,6 +71,7 @@ export interface KlennyApi {
   getWorkspace: () => Promise<string | null>
 
   listModels: (forceRefresh?: boolean) => Promise<ModelInfo[]>
+  listShells: () => Promise<ShellInfo[]>
 
   listTabs: () => Promise<TabSession[]>
   createTab: () => Promise<TabSession>

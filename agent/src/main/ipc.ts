@@ -14,6 +14,7 @@ import { listSubagentTypes, writeSubagentType } from './agent/subagents/manager'
 import { listPlans, readPlan } from './agent/plan/manager'
 import { readMemoryFile, writeMemoryFile } from './agent/memory/manager'
 import { getApiKey } from './settings'
+import { detectShells } from './shells'
 
 export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.settingsGet, async () => loadSettings())
@@ -42,6 +43,7 @@ export function registerIpcHandlers(): void {
     if (!key) return []
     return fetchModels(key, force)
   })
+  ipcMain.handle(IPC.shellsList, async () => detectShells())
 
   ipcMain.handle(IPC.tabsList, async () => {
     const tabs = sessionStore.getTabs()

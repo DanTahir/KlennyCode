@@ -13,6 +13,7 @@ const api: KlennyApi = {
   getWorkspace: () => ipcRenderer.invoke(IPC.workspaceGet),
 
   listModels: (force) => ipcRenderer.invoke(IPC.modelsList, force),
+  listShells: () => ipcRenderer.invoke(IPC.shellsList),
 
   listTabs: () => ipcRenderer.invoke(IPC.tabsList),
   createTab: () => ipcRenderer.invoke(IPC.tabCreate),

@@ -14,7 +14,8 @@ const DEFAULTS: AppSettings = {
   spendingCapPeriod: 'session',
   autoMemoryEnabled: true,
   promptCachingEnabled: true,
-  lastWorkspace: null
+  lastWorkspace: null,
+  shellId: null
 }
 
 function settingsPath(): string {

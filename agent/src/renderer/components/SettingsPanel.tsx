@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 
 export function SettingsPanel() {
-  const { settings, models, setSettings, setModels } = useAppStore()
+  const { settings, models, shells, setSettings, setModels, setShells } = useAppStore()
   const [apiKey, setApiKey] = useState('')
   const [search, setSearch] = useState('')
   const [providerOnly, setProviderOnly] = useState('')
@@ -11,6 +11,7 @@ export function SettingsPanel() {
 
   useEffect(() => {
     void window.klenny.listModels(true).then(setModels)
+    void window.klenny.listShells().then(setShells)
   }, [])
 
   useEffect(() => {
@@ -143,6 +144,26 @@ export function SettingsPanel() {
             />
           </div>
         )}
+      </section>
+
+      <section className="mb-6 space-y-2">
+        <h3 className="font-medium">Shell</h3>
+        <select
+          className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
+          value={settings.shellId ?? ''}
+          onChange={(e) => void patch({ shellId: e.target.value || null })}
+        >
+          <option value="">Auto (system default)</option>
+          {shells.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.name}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-klenny-muted">
+          Shell used to run commands (build, test, git, etc.). Detected from your system — pick Git Bash, PowerShell,
+          WSL, or another installed shell.
+        </p>
       </section>
 
       <section className="mb-6 space-y-2">
