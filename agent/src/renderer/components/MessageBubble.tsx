@@ -4,9 +4,19 @@ import type { ChatMessage, ToolCallBlock } from '@shared/types'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallCard } from './ToolCallCard'
 import { DiffViewer } from './DiffViewer'
+import klennyGif from '../assets/klenny.gif'
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user'
+  const isEmptyAssistant = !isUser && message.blocks.length === 0
+
+  if (isEmptyAssistant) {
+    return (
+      <div className="flex justify-start">
+        <img src={klennyGif} alt="Klenny is working…" className="h-12 w-12 rounded-md object-cover" />
+      </div>
+    )
+  }
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
