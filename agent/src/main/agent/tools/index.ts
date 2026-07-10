@@ -4,6 +4,7 @@ import { spawn } from 'node:child_process'
 import fg from 'fast-glob'
 import type { ToolName, ToolResultPayload } from '@shared/types'
 import { getRgPath } from '../../ripgrep'
+import { buildEditNotFoundHelp, countOccurrences, resolveEditMatch } from './edit-match'
 import { assertInWorkspace, getWorkspace } from '../../workspace'
 
 const fileReadCache = new Map<string, { mtimeMs: number; content: string }>()
@@ -64,11 +65,21 @@ export async function editFileTool(args: {
       ok: false,
       summary: 'File changed on disk since last read',
       error: 'stale',
-      data: { path: args.path }
+      data: { path: args.path, hint: 'Call read_file again, then retry edit_file with the exact text shown.' }
     }
   }
-  const count = content.split(args.old_string).length - 1
-  if (count === 0) return { ok: false, summary: 'old_string not found', error: 'not_found' }
+
+  const match = resolveEditMatch(content, args.old_string, args.new_string)
+  if (!match) {
+    return {
+      ok: false,
+      summary: 'old_string not found',
+      error: 'not_found',
+      data: { path: args.path, ...buildEditNotFoundHelp(content, args.old_string) }
+    }
+  }
+
+  const count = countOccurrences(content, match.oldString)
   if (!args.replace_all && count > 1) {
     return {
       ok: false,
@@ -78,8 +89,8 @@ export async function editFileTool(args: {
     }
   }
   const next = args.replace_all
-    ? content.replaceAll(args.old_string, args.new_string)
-    : content.replace(args.old_string, args.new_string)
+    ? content.replaceAll(match.oldString, match.newString)
+    : content.replace(match.oldString, match.newString)
   await writeFile(abs, next, 'utf8')
   const st2 = await stat(abs)
   fileReadCache.set(abs, { mtimeMs: st2.mtimeMs, content: next })

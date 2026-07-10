@@ -6,6 +6,7 @@ function formatToolError(block: ToolCallBlock): string {
   if (!data) return block.result?.error ?? ''
   const parts: string[] = []
   if (typeof data.hint === 'string') parts.push(data.hint)
+  if (typeof data.nearbyContent === 'string' && data.nearbyContent.trim()) parts.push(data.nearbyContent.trim())
   if (typeof data.stderr === 'string' && data.stderr.trim()) parts.push(data.stderr.trim())
   if (typeof data.stdout === 'string' && data.stdout.trim()) parts.push(data.stdout.trim())
   return parts.join('\n\n') || (block.result?.error ?? '')
@@ -25,7 +26,7 @@ export function ToolCallCard({ block }: { block: ToolCallBlock }) {
           {block.result && (
             <>
               <pre className="whitespace-pre-wrap text-klenny-muted">{block.result.summary}</pre>
-              {block.status === 'error' && block.result.data && (
+              {block.status === 'error' && block.result && (
                 <pre className="whitespace-pre-wrap text-red-400/90 text-[11px]">
                   {formatToolError(block)}
                 </pre>

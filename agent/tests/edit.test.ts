@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { mkdir, writeFile, readFile, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { resolveEditMatch } from '../src/main/agent/tools/edit-match'
 
 // Inline edit logic test (mirrors edit_file uniqueness check)
 function applyEdit(
@@ -31,6 +32,27 @@ describe('edit_file semantics', () => {
 
   test('rejects missing string', () => {
     expect(applyEdit('hello', 'xyz', 'bar')).toBe('not_found')
+  })
+
+  test('matches em dash when old_string uses hyphen', () => {
+    const file = '"description": "Klenny — a desktop coding agent"'
+    const old = '"description": "Klenny - a desktop coding agent"'
+    const match = resolveEditMatch(file, old, '"description": "Klenny Code — a desktop coding agent"')
+    expect(match?.oldString).toBe(file)
+  })
+
+  test('strips read_file line-number prefixes from old_string', () => {
+    const file = '  "name": "klenny",'
+    const old = '2|  "name": "klenny",'
+    const match = resolveEditMatch(file, old, '  "name": "klennycode",')
+    expect(match?.oldString).toBe(file)
+  })
+
+  test('unescapes literal \\n sequences in old_string', () => {
+    const file = 'line one\nline two'
+    const old = 'line one\\nline two'
+    const match = resolveEditMatch(file, old, 'line one\nline three')
+    expect(match?.oldString).toBe(file)
   })
 })
 

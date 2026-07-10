@@ -7,7 +7,7 @@ export function getToolDefinitions(mode: 'agent' | 'plan'): ToolDef[] {
       type: 'function',
       function: {
         name: 'read_file',
-        description: 'Read a file with optional offset/limit for large files.',
+        description: 'Read a file with optional offset/limit. Line numbers (1|) are display-only — never include them in edit_file old_string.',
         parameters: {
           type: 'object',
           properties: {
@@ -36,7 +36,7 @@ export function getToolDefinitions(mode: 'agent' | 'plan'): ToolDef[] {
       function: {
         name: 'edit_file',
         description:
-          'Edit a file by replacing old_string with new_string. Read the file first. Use replace_all when renaming or changing every occurrence.',
+          'Edit a file by replacing old_string with new_string. You must read_file first and copy the exact text for old_string (no line-number prefixes). Use replace_all when renaming or changing every occurrence.',
         parameters: {
           type: 'object',
           properties: {
