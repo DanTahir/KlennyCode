@@ -5,7 +5,7 @@ import { useAppStore } from '../store/useAppStore'
 import { PlanViewer } from './PlanViewer'
 
 export function PlansPanel() {
-  const { plans, setPlans, activeTabId, setTabs } = useAppStore()
+  const { plans, setPlans, activeTabId, setTabs, setPanel } = useAppStore()
 
   useEffect(() => {
     void window.klenny.listPlans().then(setPlans)
@@ -23,6 +23,11 @@ export function PlansPanel() {
             if (!activeTabId) return
             await window.klenny.setTabMode(activeTabId, 'agent')
             setTabs(await window.klenny.listTabs())
+            setPanel('chat')
+            await window.klenny.sendMessage({
+              tabId: activeTabId,
+              text: `The following plan has been approved. Implement it now.\n\n# ${p.title}\n\n${p.markdown}`
+            })
           }}
         />
       ))}
