@@ -105,6 +105,25 @@ export async function writeMemoryFile(scope: 'project' | 'global', content: stri
   await writeFile(join(ws, 'KLENNY.md'), content, 'utf8')
 }
 
+/**
+ * Read a single auto-memory topic note by name (as listed in the "Auto-memory index"
+ * shown in the system prompt, e.g. `[Shell selection feature](Shell selection feature.md)`).
+ * These notes live under `.klenny/memory/` (project) or `~/.klenny/memory/` (global) —
+ * NOT in the workspace tree — so they are not reachable via read_file.
+ */
+export async function readMemoryTopic(scope: 'project' | 'global', topic: string): Promise<string> {
+  const dir =
+    scope === 'global'
+      ? join(GLOBAL_DIR, 'memory')
+      : (() => {
+          const ws = getWorkspace()
+          if (!ws) throw new Error('No workspace open')
+          return join(ws, '.klenny', 'memory')
+        })()
+  const safeTopic = topic.replace(/\.md$/i, '')
+  return readFile(join(dir, `${safeTopic}.md`), 'utf8')
+}
+
 export async function listMemoryTopics(scope: 'project' | 'global'): Promise<string[]> {
   const dir =
     scope === 'global'

@@ -363,6 +363,7 @@ export const READ_ONLY_TOOLS: ToolName[] = [
   'fetch_url',
   'list_skills',
   'read_skill',
+  'read_memory',
   'ask_question'
 ]
 

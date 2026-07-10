@@ -31,6 +31,7 @@ Read-only tools only. Klenny Code will ask clarifying questions, research your c
 | `ask_question` | Ask you structured multiple-choice questions |
 | `task` | Spawn an isolated subagent |
 | `read_skill` | Load a Cursor-style skill |
+| `read_memory` | Load the full content of an auto-memory topic note |
 | `write_memory` | Persist notes for future sessions |
 
 ## Approval workflow

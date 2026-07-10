@@ -17,6 +17,11 @@ describe('tool definitions', () => {
     expect(tools).toContain('run_command')
   })
 
+  test('read_memory is available (read-only) in both plan and agent mode', () => {
+    expect(getToolDefinitions('plan').map((t) => t.function.name)).toContain('read_memory')
+    expect(getToolDefinitions('agent').map((t) => t.function.name)).toContain('read_memory')
+  })
+
   test('restrictTo narrows the tool set for restricted subagents', () => {
     const tools = getToolDefinitions('agent', ['read_file', 'grep', 'glob']).map((t) => t.function.name)
     expect(tools).toContain('read_file')

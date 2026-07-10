@@ -31,7 +31,7 @@ import {
   webSearchTool,
   fetchUrlTool
 } from './tools/index'
-import { loadProjectMemory, loadGlobalMemory, loadAutoMemoryIndex, writeMemory } from './memory/manager'
+import { loadProjectMemory, loadGlobalMemory, loadAutoMemoryIndex, writeMemory, readMemoryTopic } from './memory/manager'
 import { listSkills, readSkill, skillsCatalogPrompt } from './skills/manager'
 import { listSubagentTypes, getSubagentType, subagentsCatalog } from './subagents/manager'
 import { savePlan, AGENT_MODE_PROMPT, PLAN_MODE_PROMPT } from './plan/manager'
@@ -460,6 +460,18 @@ async function dispatchTool(
     }
     case 'read_skill':
       return { ok: true, summary: 'Skill loaded', data: { content: await readSkill(String(args.path)) } }
+    case 'read_memory': {
+      try {
+        const content = await readMemoryTopic(args.scope as 'project' | 'global', String(args.topic))
+        return { ok: true, summary: `Read memory topic "${String(args.topic)}"`, data: { content } }
+      } catch (e) {
+        return {
+          ok: false,
+          summary: `Memory topic "${String(args.topic)}" not found`,
+          error: e instanceof Error ? e.message : String(e)
+        }
+      }
+    }
     case 'write_memory':
       await writeMemory(args.scope as 'project' | 'global', String(args.topic), String(args.content))
       return { ok: true, summary: 'Memory saved' }

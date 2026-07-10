@@ -95,6 +95,7 @@ export type ToolName =
   | 'fetch_url'
   | 'list_skills'
   | 'read_skill'
+  | 'read_memory'
   | 'write_memory'
   | 'task'
   | 'ask_question'

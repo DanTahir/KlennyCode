@@ -157,6 +157,22 @@ export function getToolDefinitions(mode: 'agent' | 'plan', restrictTo?: ToolName
     {
       type: 'function',
       function: {
+        name: 'read_memory',
+        description:
+          'Read the full content of one auto-memory topic note by its exact title, as shown in the Auto-memory index in the system prompt (e.g. "Shell selection feature"). Do NOT use read_file for this — memory notes live outside the workspace tree, not in the project filesystem.',
+        parameters: {
+          type: 'object',
+          properties: {
+            scope: { type: 'string', enum: ['project', 'global'] },
+            topic: { type: 'string' }
+          },
+          required: ['scope', 'topic']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'write_memory',
         description: 'Persist a memory note (topic + content).',
         parameters: {
@@ -245,6 +261,7 @@ export function getToolDefinitions(mode: 'agent' | 'plan', restrictTo?: ToolName
     'fetch_url',
     'list_skills',
     'read_skill',
+    'read_memory',
     'ask_question',
     'task',
     'save_plan'
@@ -262,6 +279,7 @@ export function getToolDefinitions(mode: 'agent' | 'plan', restrictTo?: ToolName
     'fetch_url',
     'list_skills',
     'read_skill',
+    'read_memory',
     'write_memory',
     'task',
     'ask_question'
