@@ -5,6 +5,7 @@ import { useWorkspaceActions } from '../hooks/useWorkspaceActions'
 const items = [
   { id: 'chat', label: 'Chat' },
   { id: 'plans', label: 'Plans' },
+  { id: 'history', label: 'History' },
   { id: 'skills', label: 'Skills' },
   { id: 'memory', label: 'Memory' },
   { id: 'settings', label: 'Settings' },

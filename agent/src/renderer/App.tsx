@@ -10,6 +10,7 @@ import { HelpPanel } from './components/HelpPanel'
 import { SkillsPanel } from './components/SkillsPanel'
 import { MemoryPanel } from './components/MemoryPanel'
 import { PlansPanel } from './components/PlansPanel'
+import { HistoryPanel } from './components/HistoryPanel'
 import { SubagentPanel } from './components/SubagentPanel'
 
 export default function App() {
@@ -149,6 +150,7 @@ export default function App() {
         {panel === 'skills' && <SkillsPanel />}
         {panel === 'memory' && <MemoryPanel />}
         {panel === 'plans' && <PlansPanel />}
+        {panel === 'history' && <HistoryPanel />}
       </div>
     </div>
   )

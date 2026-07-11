@@ -2,6 +2,7 @@ import type {
   AgentMode,
   ApprovalDecision,
   AppSettings,
+  ArchivedTabSession,
   ModelInfo,
   PlanArtifact,
   QuestionAnswer,
@@ -29,6 +30,10 @@ export const IPC = {
   tabClose: 'tabs:close',
   tabSetMode: 'tabs:setMode',
   tabSetModel: 'tabs:setModel',
+
+  historyList: 'history:list',
+  historyReopen: 'history:reopen',
+  historyDelete: 'history:delete',
 
   sendMessage: 'chat:sendMessage',
   stopGeneration: 'chat:stop',
@@ -78,6 +83,10 @@ export interface KlennyApi {
   closeTab: (tabId: string) => Promise<TabSession[]>
   setTabMode: (tabId: string, mode: AgentMode) => Promise<void>
   setTabModel: (tabId: string, model: string) => Promise<void>
+
+  listHistory: () => Promise<ArchivedTabSession[]>
+  reopenHistory: (tabId: string) => Promise<TabSession | null>
+  deleteHistory: (tabId: string) => Promise<ArchivedTabSession[]>
 
   sendMessage: (payload: SendMessagePayload) => Promise<void>
   stopGeneration: (tabId: string) => Promise<void>

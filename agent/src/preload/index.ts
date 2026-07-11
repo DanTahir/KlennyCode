@@ -21,6 +21,10 @@ const api: KlennyApi = {
   setTabMode: (tabId, mode) => ipcRenderer.invoke(IPC.tabSetMode, tabId, mode),
   setTabModel: (tabId, model) => ipcRenderer.invoke(IPC.tabSetModel, tabId, model),
 
+  listHistory: () => ipcRenderer.invoke(IPC.historyList),
+  reopenHistory: (tabId) => ipcRenderer.invoke(IPC.historyReopen, tabId),
+  deleteHistory: (tabId) => ipcRenderer.invoke(IPC.historyDelete, tabId),
+
   sendMessage: (payload) => ipcRenderer.invoke(IPC.sendMessage, payload),
   stopGeneration: (tabId) => ipcRenderer.invoke(IPC.stopGeneration, tabId),
 

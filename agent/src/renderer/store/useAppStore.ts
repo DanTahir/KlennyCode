@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   AgentStreamEvent,
   AppSettings,
+  ArchivedTabSession,
   ChatMessage,
   ContentBlock,
   ModelInfo,
@@ -26,8 +27,9 @@ interface AppState {
   pendingQuestions: PendingQuestion[]
   subagentRuns: SubagentRun[]
   plans: PlanArtifact[]
+  history: ArchivedTabSession[]
   skills: SkillSummary[]
-  panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans'
+  panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history'
   streamingTabIds: Set<string>
   tabErrors: Record<string, string>
   setSettings: (s: AppSettings) => void
@@ -41,6 +43,7 @@ interface AppState {
   setPanel: (p: AppState['panel']) => void
   setSkills: (s: SkillSummary[]) => void
   setPlans: (p: PlanArtifact[]) => void
+  setHistory: (h: ArchivedTabSession[]) => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -54,6 +57,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingQuestions: [],
   subagentRuns: [],
   plans: [],
+  history: [],
   skills: [],
   panel: 'chat',
   streamingTabIds: new Set(),
@@ -75,6 +79,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPanel: (panel) => set({ panel }),
   setSkills: (skills) => set({ skills }),
   setPlans: (plans) => set({ plans }),
+  setHistory: (history) => set({ history }),
   applyStreamEvent: (e) => {
     const state = get()
     switch (e.type) {

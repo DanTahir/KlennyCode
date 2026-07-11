@@ -214,6 +214,11 @@ export interface TabSession {
   compactedThroughMessageId?: string
 }
 
+/** A tab that was closed and archived for later browsing/reopening in the History panel. */
+export interface ArchivedTabSession extends TabSession {
+  closedAt: number
+}
+
 // ---------- Settings ----------
 
 export interface ProviderPreference {

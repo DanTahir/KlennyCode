@@ -67,6 +67,10 @@ export function registerIpcHandlers(): void {
     }
   })
 
+  ipcMain.handle(IPC.historyList, async () => sessionStore.getHistory())
+  ipcMain.handle(IPC.historyReopen, async (_e, tabId: string) => sessionStore.reopenHistoryEntry(tabId))
+  ipcMain.handle(IPC.historyDelete, async (_e, tabId: string) => sessionStore.deleteHistoryEntry(tabId))
+
   ipcMain.handle(IPC.sendMessage, async (_e, payload) => {
     void runUserTurn(payload.tabId, payload.text, payload.images)
   })
