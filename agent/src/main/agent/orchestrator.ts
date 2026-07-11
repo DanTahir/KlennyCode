@@ -37,6 +37,7 @@ import { listSubagentTypes, getSubagentType, subagentsCatalog } from './subagent
 import { savePlan, AGENT_MODE_PROMPT, PLAN_MODE_PROMPT } from './plan/manager'
 import { approvalManager } from './approval/manager'
 import { maybeCompact } from './compaction/compactor'
+import { makeDiff } from './tools/diff'
 
 type Emit = (event: AgentStreamEvent) => void
 
@@ -682,7 +683,7 @@ async function previewMutatingTool(
   }
   const path = String(args.path ?? '')
   if (name === 'write_file') {
-    return { title: `Write ${path}`, extra: { filePath: path, diff: makeSimpleDiff('', String(args.content), path) } }
+    return { title: `Write ${path}`, extra: { filePath: path, diff: makeDiff('', String(args.content), path) } }
   }
   if (name === 'edit_file') {
     try {
@@ -691,16 +692,12 @@ async function previewMutatingTool(
       const oldStr = String(args.old_string)
       const newStr = String(args.new_string)
       const updated = content.replace(oldStr, newStr)
-      return { title: `Edit ${path}`, extra: { filePath: path, diff: makeSimpleDiff(content, updated, path) } }
+      return { title: `Edit ${path}`, extra: { filePath: path, diff: makeDiff(content, updated, path) } }
     } catch {
       return { title: `Edit ${path}`, extra: { filePath: path } }
     }
   }
   return { title: `Delete ${path}`, extra: { filePath: path } }
-}
-
-function makeSimpleDiff(oldText: string, newText: string, path: string): string {
-  return `--- a/${path}\n+++ b/${path}\n-${oldText}\n+${newText}`
 }
 
 function checkSpendCap(tab: TabSession, cap: number | null, period: 'session' | 'daily'): void {
