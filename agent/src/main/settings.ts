@@ -16,8 +16,7 @@ const DEFAULTS: AppSettings = {
   autoMemoryEnabled: true,
   promptCachingEnabled: true,
   lastWorkspace: null,
-  shellId: null,
-  collapseSupersededResultsEnabled: true
+  shellId: null
 }
 
 function settingsPath(): string {

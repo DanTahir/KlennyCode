@@ -4,12 +4,8 @@ import type { ChatMessage as ORMessage } from '../openrouter/client'
 /**
  * Projects `tab.messages` (the persisted, UI-facing history) into the wire format sent to
  * OpenRouter. Kept dependency-free (no Electron imports) so it's directly unit-testable.
- *
- * When `collapseSupersededResultsEnabled` is true and a tool_call block has a
- * `supersededSummary` set (see collapsing.ts), that short stub is sent instead of the full
- * result — the original `result` field is never read or altered here, only referenced.
  */
-export function toORMessages(messages: ChatMessage[], systemPrompt: string, collapseSupersededResultsEnabled: boolean): ORMessage[] {
+export function toORMessages(messages: ChatMessage[], systemPrompt: string): ORMessage[] {
   const out: ORMessage[] = [{ role: 'system', content: systemPrompt }]
   const sentToolResults = new Set<string>()
   for (const m of messages) {
@@ -52,11 +48,10 @@ export function toORMessages(messages: ChatMessage[], systemPrompt: string, coll
       const tc = m.blocks.find((b) => b.type === 'tool_call') as ToolCallBlock | undefined
       if (tc?.result && !sentToolResults.has(tc.id)) {
         sentToolResults.add(tc.id)
-        const useStub = collapseSupersededResultsEnabled && tc.supersededSummary
         out.push({
           role: 'tool',
           tool_call_id: tc.id,
-          content: useStub ? tc.supersededSummary! : compactToolResult(tc.result)
+          content: compactToolResult(tc.result)
         })
       }
     }

@@ -38,7 +38,6 @@ import { savePlan, AGENT_MODE_PROMPT, PLAN_MODE_PROMPT } from './plan/manager'
 import { approvalManager } from './approval/manager'
 import { maybeCompact } from './compaction/compactor'
 import { makeDiff } from './tools/diff'
-import { findNewlySupersededBlocks } from './collapsing'
 import { resolveReasoningEffort } from './reasoning'
 import { toORMessages } from './messages'
 
@@ -180,7 +179,7 @@ async function agentLoop(
   }
 
   const systemPrompt = await buildSystemPrompt(tab.mode, settings.shellId)
-  const orMessages = toORMessages(tab.messages, systemPrompt, settings.collapseSupersededResultsEnabled)
+  const orMessages = toORMessages(tab.messages, systemPrompt)
 
   // Computed from tab.messages before the new (empty) assistant message is pushed below, so
   // the heuristic only ever looks at genuinely prior turns.
@@ -352,28 +351,6 @@ async function agentLoop(
         result: result.payload,
         status: result.status
       })
-    }
-  }
-
-  // Detect any older tool results that this turn's tool calls have made stale (same file
-  // path / grep query / URL read or modified again) and annotate them with a short stub —
-  // never touching the original `result` — so subsequent turns send less to the model.
-  // Each tool call has two block copies in tab.messages (one on the assistant message with
-  // the real args, one on the paired tool-role message used for the OpenRouter request) —
-  // both need the annotation: the assistant copy is what the UI/badge reads, the tool-role
-  // copy is what toORMessages reads when building the model-facing request.
-  if (settings.collapseSupersededResultsEnabled) {
-    const superseded = findNewlySupersededBlocks(tab.messages)
-    for (const { toolCallId, stub } of superseded) {
-      for (const msg of tab.messages) {
-        const blk = msg.blocks.find((b) => b.type === 'tool_call' && (b as ToolCallBlock).id === toolCallId) as
-          | ToolCallBlock
-          | undefined
-        if (blk && !blk.supersededSummary) {
-          blk.supersededSummary = stub
-          emit({ type: 'tool_call_superseded', tabId: tab.id, messageId: msg.id, toolCallId, supersededSummary: stub })
-        }
-      }
     }
   }
 

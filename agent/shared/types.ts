@@ -55,14 +55,6 @@ export interface ToolCallBlock {
   /** populated once the tool finishes */
   status: 'running' | 'success' | 'error' | 'awaiting_approval' | 'rejected'
   result?: ToolResultPayload
-  /**
-   * Set once a later tool call on the same resource (same file path / grep query / URL)
-   * makes this result stale. `result` above is left completely untouched — this is an
-   * additive annotation only. When present (and the collapsing setting is enabled), this
-   * stub is sent to the model instead of the full `result` on every subsequent turn; the
-   * UI still renders the full original `result` and shows a "summarized" badge alongside it.
-   */
-  supersededSummary?: string
 }
 
 export type ContentBlock = TextBlock | ThinkingBlock | ImageBlock | ToolCallBlock
@@ -276,8 +268,6 @@ export interface AppSettings {
   lastWorkspace?: string | null
   /** id of the shell used for run_command (e.g. 'cmd', 'powershell', 'git-bash', 'bash', 'zsh'); null = auto-pick OS default */
   shellId?: string | null
-  /** when a re-read/re-edit of the same file (or repeat search/fetch) makes an older tool result stale, send a short stub instead of the full result on later turns to save tokens. Original result is always kept in history. */
-  collapseSupersededResultsEnabled: boolean
 }
 
 // ---------- Shells ----------
@@ -302,7 +292,6 @@ export type AgentStreamEvent =
   | { type: 'thinking_delta'; tabId: string; messageId: string; delta: string }
   | { type: 'tool_call_start'; tabId: string; messageId: string; block: ToolCallBlock }
   | { type: 'tool_call_result'; tabId: string; messageId: string; toolCallId: string; result: ToolResultPayload; status: ToolCallBlock['status'] }
-  | { type: 'tool_call_superseded'; tabId: string; messageId: string; toolCallId: string; supersededSummary: string }
   | { type: 'user_message'; tabId: string; message: ChatMessage }
   | { type: 'message_start'; tabId: string; message: ChatMessage }
   | { type: 'message_end'; tabId: string; messageId: string; usage?: UsageInfo }

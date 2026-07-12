@@ -150,19 +150,6 @@ export function SettingsPanel() {
           that support it (Anthropic, OpenAI, Gemini, DeepSeek, and more) to cut costs. Has no effect on models
           without caching support.
         </p>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={settings.collapseSupersededResultsEnabled}
-            onChange={(e) => void patch({ collapseSupersededResultsEnabled: e.target.checked })}
-          />
-          Collapse superseded file/search results
-        </label>
-        <p className="text-xs text-klenny-muted">
-          When you re-read or re-edit a file (or repeat a search), older now-stale results are shortened before
-          being sent to the model on later turns, to save tokens. Your chat history always keeps the full original
-          — look for the "summarized" badge on a tool call to see which ones were shortened.
-        </p>
         <button
           className="text-xs text-klenny-accent underline"
           onClick={() => setShowAdvancedProvider((v) => !v)}
