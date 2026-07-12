@@ -27,7 +27,9 @@ export default function App() {
     setActiveTab,
     applyStreamEvent,
     setSkills,
-    setPlans
+    setPlans,
+    setUpdateStatus,
+    setUpdateSupported
   } = useAppStore()
 
   const { openWorkspace } = useWorkspaceActions()
@@ -50,13 +52,14 @@ export default function App() {
       return
     }
     void (async () => {
-      const [s, ws, modelList, tabList, skills, plans] = await Promise.all([
+      const [s, ws, modelList, tabList, skills, plans, updateSupported] = await Promise.all([
         window.klenny.getSettings(),
         window.klenny.getWorkspace(),
         window.klenny.listModels().catch(() => []),
         window.klenny.listTabs(),
         window.klenny.listSkills().catch(() => []),
-        window.klenny.listPlans().catch(() => [])
+        window.klenny.listPlans().catch(() => []),
+        window.klenny.isUpdateSupported().catch(() => false)
       ])
       setSettings(s)
       setWorkspace(ws)
@@ -65,6 +68,7 @@ export default function App() {
       if (tabList[0]) setActiveTab(tabList[0].id)
       setSkills(skills)
       setPlans(plans)
+      setUpdateSupported(updateSupported)
       setReady(true)
 
       if (!ws && !s.hasApiKey) {
@@ -73,7 +77,11 @@ export default function App() {
     })()
 
     const unsub = window.klenny.onStreamEvent((e) => applyStreamEvent(e as never))
-    return unsub
+    const unsubUpdate = window.klenny.onUpdateStatus((e) => setUpdateStatus(e))
+    return () => {
+      unsub()
+      unsubUpdate()
+    }
   }, [])
 
   useEffect(() => {

@@ -9,7 +9,8 @@ import type {
   ShellInfo,
   SkillSummary,
   SubagentTypeSummary,
-  TabSession
+  TabSession,
+  UpdateStatusEvent
 } from './types'
 
 /** Channel names used for ipcRenderer.invoke / ipcMain.handle request-response calls. */
@@ -57,7 +58,9 @@ export const IPC = {
   checkpointRevert: 'checkpoint:revert',
 
   appVersion: 'app:version',
-  checkForUpdates: 'app:checkForUpdates'
+  updateSupported: 'app:updateSupported',
+  checkForUpdates: 'app:checkForUpdates',
+  installUpdate: 'app:installUpdate'
 } as const
 
 export interface SendMessagePayload {
@@ -117,7 +120,10 @@ export interface KlennyApi {
   revertCheckpoint: (checkpointId: string) => Promise<void>
 
   getAppVersion: () => Promise<string>
+  isUpdateSupported: () => Promise<boolean>
   checkForUpdates: () => Promise<void>
+  installUpdate: () => Promise<void>
 
   onStreamEvent: (cb: (event: unknown) => void) => () => void
+  onUpdateStatus: (cb: (event: UpdateStatusEvent) => void) => () => void
 }

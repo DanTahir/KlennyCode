@@ -1,7 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, Menu } from 'electron'
 import { join } from 'node:path'
-import electronUpdater from 'electron-updater'
-const { autoUpdater } = electronUpdater
+import { checkForUpdates, installUpdate, isUpdateSupported } from './updater'
 import { IPC } from '@shared/ipc'
 import { loadSettings, saveSettings, setApiKey, clearApiKey } from './settings'
 import { getWorkspace, pickWorkspace, setWorkspace } from './workspace'
@@ -108,10 +107,9 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.appVersion, async () => app.getVersion())
-  ipcMain.handle(IPC.checkForUpdates, async () => {
-    if (!app.isPackaged) return
-    await autoUpdater.checkForUpdatesAndNotify()
-  })
+  ipcMain.handle(IPC.updateSupported, async () => isUpdateSupported())
+  ipcMain.handle(IPC.checkForUpdates, async () => checkForUpdates())
+  ipcMain.handle(IPC.installUpdate, async () => installUpdate())
 }
 
 export function createMainWindow(): BrowserWindow {
@@ -122,7 +120,7 @@ export function createMainWindow(): BrowserWindow {
     height: 860,
     minWidth: 900,
     minHeight: 600,
-    title: 'Klenny Code',
+    title: `Klenny Code ${app.getVersion()}`,
     show: false,
     autoHideMenuBar: true,
     icon: join(__dirname, '../../build/icons/icon.png'),
@@ -135,6 +133,9 @@ export function createMainWindow(): BrowserWindow {
   })
 
   win.on('ready-to-show', () => win.show())
+
+  // The renderer's <title> would otherwise overwrite our version-suffixed title on load.
+  win.on('page-title-updated', (e) => e.preventDefault())
 
   win.webContents.on('preload-error', (_e, preloadPath, error) => {
     console.error('Preload failed:', preloadPath, error)

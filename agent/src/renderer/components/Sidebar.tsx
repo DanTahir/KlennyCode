@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import klennyImg from '../assets/klenny.jpg'
 import { useAppStore } from '../store/useAppStore'
 import { useWorkspaceActions } from '../hooks/useWorkspaceActions'
@@ -13,8 +14,35 @@ const items = [
 ] as const
 
 export function Sidebar() {
-  const { panel, setPanel, workspace } = useAppStore()
+  const { panel, setPanel, workspace, updateStatus, updateSupported } = useAppStore()
   const { openWorkspace } = useWorkspaceActions()
+  const [justChecked, setJustChecked] = useState<'up-to-date' | 'error' | null>(null)
+
+  useEffect(() => {
+    if (updateStatus?.status === 'not-available') {
+      setJustChecked('up-to-date')
+    } else if (updateStatus?.status === 'error') {
+      setJustChecked('error')
+    } else if (updateStatus?.status === 'checking' || updateStatus?.status === 'downloading') {
+      setJustChecked(null)
+    }
+  }, [updateStatus])
+
+  useEffect(() => {
+    if (!justChecked) return
+    const t = setTimeout(() => setJustChecked(null), 4000)
+    return () => clearTimeout(t)
+  }, [justChecked])
+
+  const checking = updateStatus?.status === 'checking'
+  const downloading = updateStatus?.status === 'downloading'
+  const downloaded = updateStatus?.status === 'downloaded'
+
+  let checkLabel = 'Check for update'
+  if (checking) checkLabel = 'Checking…'
+  else if (downloading) checkLabel = `Downloading… ${Math.round(updateStatus?.percent ?? 0)}%`
+  else if (justChecked === 'up-to-date') checkLabel = "You're up to date"
+  else if (justChecked === 'error') checkLabel = 'Check failed — try again'
 
   return (
     <aside className="w-52 border-r border-klenny-border bg-klenny-panel flex flex-col">
@@ -36,6 +64,24 @@ export function Sidebar() {
         ))}
       </nav>
       <div className="p-3 border-t border-klenny-border space-y-2">
+        {updateSupported &&
+          (downloaded ? (
+            <button
+              className="w-full text-xs px-3 py-2 rounded-md bg-klenny-accent2 text-black font-medium hover:opacity-90"
+              onClick={() => void window.klenny.installUpdate()}
+              title={`Version ${updateStatus?.version} is ready`}
+            >
+              Restart to update{updateStatus?.version ? ` (v${updateStatus.version})` : ''}
+            </button>
+          ) : (
+            <button
+              className="w-full text-xs px-3 py-2 rounded-md border border-klenny-border text-klenny-muted hover:text-klenny-accent hover:border-klenny-accent disabled:opacity-60 disabled:cursor-default"
+              onClick={() => void window.klenny.checkForUpdates()}
+              disabled={checking || downloading}
+            >
+              {checkLabel}
+            </button>
+          ))}
         {workspace && (
           <div className="text-[10px] text-klenny-muted truncate px-1" title={workspace}>
             {workspace.split(/[/\\]/).pop()}

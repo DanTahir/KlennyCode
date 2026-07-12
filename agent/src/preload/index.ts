@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '@shared/ipc'
 import type { KlennyApi } from '@shared/ipc'
-import type { AgentStreamEvent } from '@shared/types'
+import type { AgentStreamEvent, UpdateStatusEvent } from '@shared/types'
 
 const api: KlennyApi = {
   getSettings: () => ipcRenderer.invoke(IPC.settingsGet),
@@ -49,12 +49,19 @@ const api: KlennyApi = {
   revertCheckpoint: (id) => ipcRenderer.invoke(IPC.checkpointRevert, id),
 
   getAppVersion: () => ipcRenderer.invoke(IPC.appVersion),
+  isUpdateSupported: () => ipcRenderer.invoke(IPC.updateSupported),
   checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
+  installUpdate: () => ipcRenderer.invoke(IPC.installUpdate),
 
   onStreamEvent: (cb) => {
     const listener = (_: unknown, event: AgentStreamEvent) => cb(event)
     ipcRenderer.on('agent:stream', listener)
     return () => ipcRenderer.removeListener('agent:stream', listener)
+  },
+  onUpdateStatus: (cb) => {
+    const listener = (_: unknown, event: UpdateStatusEvent) => cb(event)
+    ipcRenderer.on('app:updateStatus', listener)
+    return () => ipcRenderer.removeListener('app:updateStatus', listener)
   }
 }
 

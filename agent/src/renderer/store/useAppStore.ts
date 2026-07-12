@@ -13,7 +13,8 @@ import type {
   SkillSummary,
   SubagentRun,
   TabSession,
-  ToolCallBlock
+  ToolCallBlock,
+  UpdateStatusEvent
 } from '@shared/types'
 
 interface AppState {
@@ -32,6 +33,10 @@ interface AppState {
   panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history'
   streamingTabIds: Set<string>
   tabErrors: Record<string, string>
+  updateStatus: UpdateStatusEvent | null
+  setUpdateStatus: (e: UpdateStatusEvent) => void
+  updateSupported: boolean
+  setUpdateSupported: (v: boolean) => void
   setSettings: (s: AppSettings) => void
   setWorkspace: (w: string | null) => void
   setModels: (m: ModelInfo[]) => void
@@ -62,6 +67,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   panel: 'chat',
   streamingTabIds: new Set(),
   tabErrors: {},
+  updateStatus: null,
+  setUpdateStatus: (updateStatus) => set({ updateStatus }),
+  updateSupported: false,
+  setUpdateSupported: (updateSupported) => set({ updateSupported }),
   setSettings: (settings) => set({ settings }),
   setWorkspace: (workspace) => set({ workspace }),
   setModels: (models) => set({ models }),

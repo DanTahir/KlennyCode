@@ -114,7 +114,10 @@ Every push to `main` that touches `agent/**` triggers GitHub Actions to:
   - Linux: `KlennyCode-<version>.AppImage` or `.deb`
 - [Actions artifacts](https://github.com/DanTahir/KlennyCode/actions) — backup copies on each workflow run
 
-Packaged Klenny Code apps check for updates on startup and download from the latest GitHub Release.
+Packaged Klenny Code apps (installer builds on Windows/macOS/Linux) check for updates on startup and every few
+hours thereafter, download new versions in the background, and prompt to restart once ready. The Windows
+**portable** exe cannot auto-update (electron-builder only supports auto-update for the NSIS installer target on
+Windows) — grab new portable builds manually from Releases.
 
 ## License
 

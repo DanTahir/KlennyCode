@@ -1,8 +1,7 @@
 import { app, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { createMainWindow, registerIpcHandlers } from './ipc'
-import electronUpdater from 'electron-updater'
-const { autoUpdater } = electronUpdater
+import { initAutoUpdater } from './updater'
 import { loadSettings } from './settings'
 import { setWorkspace } from './workspace'
 import { sessionStore } from './session/store'
@@ -23,10 +22,7 @@ app.whenReady().then(async () => {
 
   createMainWindow()
 
-  if (app.isPackaged) {
-    autoUpdater.autoDownload = true
-    autoUpdater.checkForUpdatesAndNotify().catch(() => {})
-  }
+  initAutoUpdater()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow()

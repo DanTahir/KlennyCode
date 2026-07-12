@@ -74,4 +74,11 @@ Set a per-session or daily USD cap in Settings. Klenny Code warns as you approac
 
 ## Updates
 
-Packaged builds check GitHub Releases for updates automatically via `electron-updater`.
+The **Windows installer build** (`Klenny-Code-Setup-*.exe`) checks GitHub Releases for updates automatically on
+launch and every few hours, downloads new versions in the background, and shows a **Restart to update** button in
+the sidebar once ready. The same applies to the macOS and Linux builds.
+
+The **Windows portable build** (`Klenny-Code-*.exe`, no installer) cannot auto-update — this is a limitation of the
+underlying packaging tool, not something Klenny Code can work around. Download the latest portable exe manually
+from [GitHub Releases](https://github.com/DanTahir/KlennyCode/releases/latest) instead, or switch to the installer
+build to get automatic updates.

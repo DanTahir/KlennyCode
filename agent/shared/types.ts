@@ -291,3 +291,14 @@ export const CURATED_MODEL_IDS = [
 
 export const DEFAULT_MAIN_MODEL = 'anthropic/claude-sonnet-5'
 export const DEFAULT_SUBAGENT_MODEL = 'anthropic/claude-sonnet-5'
+
+// ---------- Auto-update ----------
+
+export type UpdateStatus = 'checking' | 'available' | 'not-available' | 'downloading' | 'downloaded' | 'error'
+
+export interface UpdateStatusEvent {
+  status: UpdateStatus
+  version?: string
+  percent?: number
+  message?: string
+}
