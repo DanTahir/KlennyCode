@@ -17,7 +17,7 @@ import { getApiKey, loadSettings } from '../settings'
 import { getWorkspace } from '../workspace'
 import { resolveShell } from '../shells'
 import { sessionStore } from '../session/store'
-import { streamChatCompletion, fetchModels, type ChatMessage as ORMessage, type ToolCall } from '../openrouter/client'
+import { streamChatCompletion, fetchModels, type ToolCall } from '../openrouter/client'
 import { modelSupportsCaching, computeCacheSavings } from '../openrouter/caching'
 import { getToolDefinitions } from './tools/definitions'
 import {
@@ -38,6 +38,9 @@ import { savePlan, AGENT_MODE_PROMPT, PLAN_MODE_PROMPT } from './plan/manager'
 import { approvalManager } from './approval/manager'
 import { maybeCompact } from './compaction/compactor'
 import { makeDiff } from './tools/diff'
+import { findNewlySupersededBlocks } from './collapsing'
+import { resolveReasoningEffort } from './reasoning'
+import { toORMessages } from './messages'
 
 type Emit = (event: AgentStreamEvent) => void
 
@@ -165,7 +168,9 @@ async function agentLoop(
     model: modelInfo,
     apiKey,
     signal,
-    promptCachingEnabled: settings.promptCachingEnabled
+    promptCachingEnabled: settings.promptCachingEnabled,
+    utilityModel: settings.utilityModel,
+    models
   })
   if (compacted.compacted) {
     tab.messages = compacted.messages
@@ -175,14 +180,25 @@ async function agentLoop(
   }
 
   const systemPrompt = await buildSystemPrompt(tab.mode, settings.shellId)
-  const orMessages = toORMessages(tab.messages, systemPrompt)
+  const orMessages = toORMessages(tab.messages, systemPrompt, settings.collapseSupersededResultsEnabled)
+
+  // Computed from tab.messages before the new (empty) assistant message is pushed below, so
+  // the heuristic only ever looks at genuinely prior turns.
+  const reasoningEffort = resolveReasoningEffort(tab, modelInfo)
+  // 3-way branch: models with granular effort control get the picked effort level; models
+  // that support reasoning but not effort levels get `enabled: true` (preserves the previous
+  // "always on when supported" behavior); models without reasoning support get neither.
+  const supportsGranularEffort =
+    reasoningEffort != null && Boolean(modelInfo.supportedReasoningEfforts?.includes(reasoningEffort))
+  const reasoningEnabledOnly = modelInfo.supportsReasoning && !supportsGranularEffort
 
   const assistantId = nanoid()
   const assistantMsg: ChatMessage = {
     id: assistantId,
     role: 'assistant',
     blocks: [],
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    reasoningEffort: supportsGranularEffort ? reasoningEffort : undefined
   }
   tab.messages.push(assistantMsg)
   emit({ type: 'message_start', tabId: tab.id, message: assistantMsg })
@@ -208,7 +224,8 @@ async function agentLoop(
       (t) => !subagentCtx || t.function.name !== 'task'
     ),
     signal,
-    includeReasoning: modelInfo.supportsReasoning,
+    reasoningEffort: supportsGranularEffort ? reasoningEffort : undefined,
+    reasoningEnabledOnly,
     sessionId: tab.id,
     providerPreference: settings.providerPreference,
     supportsExplicitCaching,
@@ -335,6 +352,28 @@ async function agentLoop(
         result: result.payload,
         status: result.status
       })
+    }
+  }
+
+  // Detect any older tool results that this turn's tool calls have made stale (same file
+  // path / grep query / URL read or modified again) and annotate them with a short stub —
+  // never touching the original `result` — so subsequent turns send less to the model.
+  // Each tool call has two block copies in tab.messages (one on the assistant message with
+  // the real args, one on the paired tool-role message used for the OpenRouter request) —
+  // both need the annotation: the assistant copy is what the UI/badge reads, the tool-role
+  // copy is what toORMessages reads when building the model-facing request.
+  if (settings.collapseSupersededResultsEnabled) {
+    const superseded = findNewlySupersededBlocks(tab.messages)
+    for (const { toolCallId, stub } of superseded) {
+      for (const msg of tab.messages) {
+        const blk = msg.blocks.find((b) => b.type === 'tool_call' && (b as ToolCallBlock).id === toolCallId) as
+          | ToolCallBlock
+          | undefined
+        if (blk && !blk.supersededSummary) {
+          blk.supersededSummary = stub
+          emit({ type: 'tool_call_superseded', tabId: tab.id, messageId: msg.id, toolCallId, supersededSummary: stub })
+        }
+      }
     }
   }
 
@@ -596,79 +635,6 @@ async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string | null
   ].filter(Boolean)
 
   return parts.join('\n\n')
-}
-
-function toORMessages(messages: ChatMessage[], systemPrompt: string): ORMessage[] {
-  const out: ORMessage[] = [{ role: 'system', content: systemPrompt }]
-  const sentToolResults = new Set<string>()
-  for (const m of messages) {
-    if (m.role === 'user') {
-      const textParts = m.blocks.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text)
-      const images = m.blocks.filter((b) => b.type === 'image') as Array<{ dataUrl: string }>
-      if (images.length) {
-        out.push({
-          role: 'user',
-          content: [
-            ...textParts.map((t) => ({ type: 'text' as const, text: t })),
-            ...images.map((img) => ({ type: 'image_url' as const, image_url: { url: img.dataUrl } }))
-          ]
-        })
-      } else {
-        out.push({ role: 'user', content: textParts.join('\n') })
-      }
-    } else if (m.role === 'assistant') {
-      const text = m.blocks
-        .filter((b) => b.type === 'text' || b.type === 'thinking')
-        .map((b) => (b as { text: string }).text)
-        .join('')
-      const tcs = [...new Map(
-        (m.blocks.filter((b) => b.type === 'tool_call') as ToolCallBlock[]).map((tc) => [tc.id, tc])
-      ).values()]
-      if (tcs.length) {
-        out.push({
-          role: 'assistant',
-          content: text || '',
-          tool_calls: tcs.map((tc) => ({
-            id: tc.id,
-            type: 'function' as const,
-            function: { name: tc.toolName, arguments: JSON.stringify(tc.args) }
-          }))
-        })
-      } else if (text) {
-        out.push({ role: 'assistant', content: text })
-      }
-    } else if (m.role === 'tool') {
-      const tc = m.blocks.find((b) => b.type === 'tool_call') as ToolCallBlock | undefined
-      if (tc?.result && !sentToolResults.has(tc.id)) {
-        sentToolResults.add(tc.id)
-        out.push({
-          role: 'tool',
-          tool_call_id: tc.id,
-          content: compactToolResult(tc.result)
-        })
-      }
-    }
-  }
-  return out
-}
-
-function compactToolResult(result: ToolResultPayload): string {
-  const compact: ToolResultPayload = { ...result, data: result.data ? { ...(result.data as object) } : undefined }
-  const data = compact.data as Record<string, unknown> | undefined
-  if (data && Array.isArray(data.hits) && data.hits.length > 40) {
-    const total = data.hits.length
-    data.hits = data.hits.slice(0, 40)
-    data.truncated = true
-    data.totalHits = total
-    compact.summary = `${compact.summary} (first 40 of ${total})`
-  }
-  if (data && Array.isArray(data.files) && data.files.length > 100) {
-    data.files = (data.files as string[]).slice(0, 100)
-    data.truncated = true
-  }
-  let json = JSON.stringify(compact)
-  if (json.length > 40_000) json = `${json.slice(0, 40_000)}…[truncated]`
-  return json
 }
 
 async function previewMutatingTool(

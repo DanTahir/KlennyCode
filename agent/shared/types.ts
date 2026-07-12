@@ -5,6 +5,8 @@ export type AgentMode = 'agent' | 'plan'
 
 export type ApprovalMode = 'manual' | 'auto'
 
+export type ReasoningEffort = 'low' | 'medium' | 'high'
+
 export interface ModelInfo {
   id: string
   name: string
@@ -20,6 +22,10 @@ export interface ModelInfo {
   supportsTools: boolean
   supportsReasoning: boolean
   supportsVision: boolean
+  /** effort levels this model actually accepts (from OpenRouter's `reasoning.supported_efforts`); undefined = model doesn't expose granular effort control (route via on/off only) */
+  supportedReasoningEfforts?: string[]
+  /** true if the model requires reasoning to always be on (we never send effort:'none' anyway, so this is informational only) */
+  reasoningMandatory?: boolean
   pinned?: boolean
 }
 
@@ -49,6 +55,14 @@ export interface ToolCallBlock {
   /** populated once the tool finishes */
   status: 'running' | 'success' | 'error' | 'awaiting_approval' | 'rejected'
   result?: ToolResultPayload
+  /**
+   * Set once a later tool call on the same resource (same file path / grep query / URL)
+   * makes this result stale. `result` above is left completely untouched — this is an
+   * additive annotation only. When present (and the collapsing setting is enabled), this
+   * stub is sent to the model instead of the full `result` on every subsequent turn; the
+   * UI still renders the full original `result` and shows a "summarized" badge alongside it.
+   */
+  supersededSummary?: string
 }
 
 export type ContentBlock = TextBlock | ThinkingBlock | ImageBlock | ToolCallBlock
@@ -62,6 +76,8 @@ export interface ChatMessage {
   usage?: UsageInfo
   /** marks a synthetic message inserted by context-compaction */
   isCompactionSummary?: boolean
+  /** reasoning effort level automatically chosen for this assistant turn, if the model supports reasoning */
+  reasoningEffort?: ReasoningEffort
 }
 
 // ---------- Usage / cost accounting ----------
@@ -108,6 +124,20 @@ export interface ToolResultPayload {
   data?: unknown
   error?: string
 }
+
+export const READ_ONLY_TOOLS: ToolName[] = [
+  'read_file',
+  'grep',
+  'glob',
+  'web_search',
+  'fetch_url',
+  'list_skills',
+  'read_skill',
+  'read_memory',
+  'ask_question'
+]
+
+export const MUTATING_TOOLS: ToolName[] = ['write_file', 'edit_file', 'delete_file', 'run_command', 'write_memory', 'task']
 
 // ---------- Approvals ----------
 
@@ -232,6 +262,8 @@ export interface AppSettings {
   hasApiKey: boolean
   mainModel: string
   subagentModel: string
+  /** cheap/fast model used for internal housekeeping calls (e.g. compaction summaries) — quality here doesn't affect main answers */
+  utilityModel: string
   approvalMode: ApprovalMode
   theme: 'dark' | 'light'
   spendingCapUsd: number | null
@@ -244,6 +276,8 @@ export interface AppSettings {
   lastWorkspace?: string | null
   /** id of the shell used for run_command (e.g. 'cmd', 'powershell', 'git-bash', 'bash', 'zsh'); null = auto-pick OS default */
   shellId?: string | null
+  /** when a re-read/re-edit of the same file (or repeat search/fetch) makes an older tool result stale, send a short stub instead of the full result on later turns to save tokens. Original result is always kept in history. */
+  collapseSupersededResultsEnabled: boolean
 }
 
 // ---------- Shells ----------
@@ -268,6 +302,7 @@ export type AgentStreamEvent =
   | { type: 'thinking_delta'; tabId: string; messageId: string; delta: string }
   | { type: 'tool_call_start'; tabId: string; messageId: string; block: ToolCallBlock }
   | { type: 'tool_call_result'; tabId: string; messageId: string; toolCallId: string; result: ToolResultPayload; status: ToolCallBlock['status'] }
+  | { type: 'tool_call_superseded'; tabId: string; messageId: string; toolCallId: string; supersededSummary: string }
   | { type: 'user_message'; tabId: string; message: ChatMessage }
   | { type: 'message_start'; tabId: string; message: ChatMessage }
   | { type: 'message_end'; tabId: string; messageId: string; usage?: UsageInfo }
@@ -291,6 +326,8 @@ export const CURATED_MODEL_IDS = [
 
 export const DEFAULT_MAIN_MODEL = 'anthropic/claude-sonnet-5'
 export const DEFAULT_SUBAGENT_MODEL = 'anthropic/claude-sonnet-5'
+/** Cheap/fast model for internal housekeeping (compaction summaries, etc.) — verified live on OpenRouter at plan time. */
+export const DEFAULT_UTILITY_MODEL = 'anthropic/claude-haiku-4.5'
 
 // ---------- Auto-update ----------
 

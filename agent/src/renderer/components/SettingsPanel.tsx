@@ -119,6 +119,19 @@ export function SettingsPanel() {
             </option>
           ))}
         </select>
+        <label className="block text-sm">Utility model (housekeeping, e.g. summarization)</label>
+        <select className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded" value={settings.utilityModel} onChange={(e) => void patch({ utilityModel: e.target.value })}>
+          {filtered.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.cacheReadPrice != null ? '⚡ ' : ''}
+              {m.name}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-klenny-muted">
+          Used for internal tasks like compacting old conversation history. Pick something fast and cheap — quality
+          here doesn't affect your main answers.
+        </p>
         <p className="text-xs text-klenny-muted">⚡ marks models that support OpenRouter prompt caching.</p>
       </section>
 
@@ -136,6 +149,19 @@ export function SettingsPanel() {
           Automatically caches repeated context (system prompt, tool definitions, conversation history) on models
           that support it (Anthropic, OpenAI, Gemini, DeepSeek, and more) to cut costs. Has no effect on models
           without caching support.
+        </p>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.collapseSupersededResultsEnabled}
+            onChange={(e) => void patch({ collapseSupersededResultsEnabled: e.target.checked })}
+          />
+          Collapse superseded file/search results
+        </label>
+        <p className="text-xs text-klenny-muted">
+          When you re-read or re-edit a file (or repeat a search), older now-stale results are shortened before
+          being sent to the model on later turns, to save tokens. Your chat history always keeps the full original
+          — look for the "summarized" badge on a tool call to see which ones were shortened.
         </p>
         <button
           className="text-xs text-klenny-accent underline"

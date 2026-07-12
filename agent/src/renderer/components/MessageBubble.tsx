@@ -52,18 +52,23 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           }
           return null
         })}
-        {message.usage && (
+        {(message.usage || message.reasoningEffort) && (
           <div className="text-[10px] text-klenny-muted mt-2">
-            {message.usage.completionTokens} completion tokens · ${message.usage.costUsd.toFixed(4)}
-            {message.usage.cachedTokens > 0 && (
-              <span className="text-green-400">
-                {' '}
-                · {message.usage.cachedTokens} cached (saved ${Math.max(message.usage.cacheSavingsUsd, 0).toFixed(4)})
-              </span>
+            {message.usage && (
+              <>
+                {message.usage.completionTokens} completion tokens · ${message.usage.costUsd.toFixed(4)}
+                {message.usage.cachedTokens > 0 && (
+                  <span className="text-green-400">
+                    {' '}
+                    · {message.usage.cachedTokens} cached (saved ${Math.max(message.usage.cacheSavingsUsd, 0).toFixed(4)})
+                  </span>
+                )}
+                {message.usage.cacheWriteTokens > 0 && (
+                  <span className="text-klenny-muted"> · {message.usage.cacheWriteTokens} cache-write</span>
+                )}
+              </>
             )}
-            {message.usage.cacheWriteTokens > 0 && (
-              <span className="text-klenny-muted"> · {message.usage.cacheWriteTokens} cache-write</span>
-            )}
+            {message.reasoningEffort && <span> · reasoning: {message.reasoningEffort}</span>}
           </div>
         )}
       </div>

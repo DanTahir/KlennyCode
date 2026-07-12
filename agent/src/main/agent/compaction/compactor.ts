@@ -8,8 +8,12 @@ export async function maybeCompact(opts: {
   apiKey: string
   signal?: AbortSignal
   promptCachingEnabled?: boolean
+  /** id of the cheap/fast model to use for the summarization call itself (settings.utilityModel) */
+  utilityModel: string
+  /** full fetched model catalog, used to resolve utilityModel's ModelInfo (for its own caching support) */
+  models: ModelInfo[]
 }): Promise<{ messages: ChatMessage[]; compacted: boolean; summaryMessageId?: string }> {
-  const { messages, model, apiKey, signal, promptCachingEnabled } = opts
+  const { messages, model, apiKey, signal, promptCachingEnabled, utilityModel, models } = opts
   const tokenEstimate = estimateTokens(messages)
   const threshold = model.contextLength * 0.75
   if (tokenEstimate < threshold) return { messages, compacted: false }
@@ -29,8 +33,15 @@ export async function maybeCompact(opts: {
     })
     .join('\n')
 
-  const supportsExplicitCaching = Boolean(promptCachingEnabled) && model.supportsExplicitCaching && modelSupportsCaching(model)
-  const summaryText = await summarizeMessages(apiKey, model.id, transcript, signal, supportsExplicitCaching)
+  // Route the summarization call to the cheap utility model rather than the main chat
+  // model — summarizing already-written history is mechanical and doesn't need the main
+  // model's judgment. Fall back to the main model if the configured utility model isn't
+  // in the fetched catalog (deprecated/renamed upstream) so compaction never hard-fails.
+  const utilityModelInfo = models.find((m) => m.id === utilityModel) ?? model
+  const summaryModelId = utilityModelInfo.id
+  const supportsExplicitCaching =
+    Boolean(promptCachingEnabled) && utilityModelInfo.supportsExplicitCaching && modelSupportsCaching(utilityModelInfo)
+  const summaryText = await summarizeMessages(apiKey, summaryModelId, transcript, signal, supportsExplicitCaching)
   const summaryMessage: ChatMessage = {
     id: `compact_${Date.now()}`,
     role: 'system',

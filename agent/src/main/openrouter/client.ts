@@ -68,6 +68,7 @@ export async function fetchModels(apiKey: string, force = false, signal?: AbortS
     const id = String(m.id)
     const pricing = (m.pricing as { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string }) ?? {}
     const supported = (m.supported_parameters as string[]) ?? []
+    const reasoningMeta = m.reasoning as { supported_efforts?: string[]; mandatory?: boolean } | undefined
     return {
       id,
       name: String(m.name ?? id),
@@ -80,6 +81,8 @@ export async function fetchModels(apiKey: string, force = false, signal?: AbortS
       supportsTools: supported.includes('tools'),
       supportsReasoning: supported.includes('reasoning') || supported.includes('include_reasoning'),
       supportsVision: ((m.architecture as { input_modalities?: string[] })?.input_modalities ?? []).includes('image'),
+      supportedReasoningEfforts: reasoningMeta?.supported_efforts,
+      reasoningMandatory: reasoningMeta?.mandatory,
       pinned: CURATED_MODEL_IDS.includes(id)
     } satisfies ModelInfo
   })
@@ -100,7 +103,10 @@ export async function* streamChatCompletion(opts: {
   messages: ChatMessage[]
   tools?: ToolDef[]
   signal?: AbortSignal
-  includeReasoning?: boolean
+  /** granular effort level to request (only sent when the model's supportedReasoningEfforts includes it — see callers) */
+  reasoningEffort?: 'low' | 'medium' | 'high'
+  /** fallback for models that support reasoning but not granular effort control — preserves the old "always on when supported" behavior */
+  reasoningEnabledOnly?: boolean
   /** stable key for OpenRouter provider sticky-routing, keeps prompt caches warm across turns */
   sessionId?: string
   /** advanced: force/restrict specific upstream providers (see @shared/types ProviderPreference) */
@@ -124,7 +130,12 @@ export async function* streamChatCompletion(opts: {
     body.tools = opts.tools
     body.tool_choice = 'auto'
   }
-  if (opts.includeReasoning) body.include_reasoning = true
+  // 3-way: models with granular effort control get `reasoning.effort`; models that support
+  // reasoning but not effort levels (common for Anthropic/Gemini families) get `enabled: true`
+  // to preserve the previous "always on when supported" behavior; models without reasoning
+  // support get nothing at all.
+  if (opts.reasoningEffort) body.reasoning = { effort: opts.reasoningEffort }
+  else if (opts.reasoningEnabledOnly) body.reasoning = { enabled: true }
   if (opts.sessionId) body.session_id = opts.sessionId
   if (opts.providerPreference && (opts.providerPreference.only?.length || opts.providerPreference.order?.length)) {
     const provider: Record<string, unknown> = {}

@@ -2,12 +2,13 @@ import { app, safeStorage } from 'electron'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AppSettings } from '@shared/types'
-import { DEFAULT_MAIN_MODEL, DEFAULT_SUBAGENT_MODEL } from '@shared/types'
+import { DEFAULT_MAIN_MODEL, DEFAULT_SUBAGENT_MODEL, DEFAULT_UTILITY_MODEL } from '@shared/types'
 
 const DEFAULTS: AppSettings = {
   hasApiKey: false,
   mainModel: DEFAULT_MAIN_MODEL,
   subagentModel: DEFAULT_SUBAGENT_MODEL,
+  utilityModel: DEFAULT_UTILITY_MODEL,
   approvalMode: 'manual',
   theme: 'dark',
   spendingCapUsd: null,
@@ -15,7 +16,8 @@ const DEFAULTS: AppSettings = {
   autoMemoryEnabled: true,
   promptCachingEnabled: true,
   lastWorkspace: null,
-  shellId: null
+  shellId: null,
+  collapseSupersededResultsEnabled: true
 }
 
 function settingsPath(): string {

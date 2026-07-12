@@ -159,6 +159,21 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ tabs })
         break
       }
+      case 'tool_call_superseded': {
+        const tabs = state.tabs.map((t) => {
+          if (t.id !== e.tabId) return t
+          const messages = t.messages.map((m) => {
+            if (m.id !== e.messageId) return m
+            const blocks = m.blocks.map((b) =>
+              b.type === 'tool_call' && b.id === e.toolCallId ? { ...b, supersededSummary: e.supersededSummary } : b
+            )
+            return { ...m, blocks }
+          })
+          return { ...t, messages }
+        })
+        set({ tabs })
+        break
+      }
       case 'message_end': {
         const tabs = state.tabs.map((t) => {
           if (t.id !== e.tabId) return t

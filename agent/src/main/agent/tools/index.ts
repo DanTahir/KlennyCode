@@ -341,16 +341,6 @@ function runProcess(
   })
 }
 
-export const READ_ONLY_TOOLS: ToolName[] = [
-  'read_file',
-  'grep',
-  'glob',
-  'web_search',
-  'fetch_url',
-  'list_skills',
-  'read_skill',
-  'read_memory',
-  'ask_question'
-]
-
-export const MUTATING_TOOLS: ToolName[] = ['write_file', 'edit_file', 'delete_file', 'run_command', 'write_memory', 'task']
+// Re-exported for backward compatibility — canonical definitions now live in @shared/types
+// (dependency-free, safe to import from test code without pulling in Electron).
+export { READ_ONLY_TOOLS, MUTATING_TOOLS } from '@shared/types'
