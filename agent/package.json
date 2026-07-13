@@ -8,6 +8,11 @@
   "license": "MIT",
   "private": true,
   "type": "module",
+  "overrides": {
+    "vectra": {
+      "uuid": "11.1.0"
+    }
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
