@@ -124,4 +124,66 @@ describe('fetchModels supportsEmbeddings derivation', () => {
     const models = await fetchModels('key', true)
     expect(models[0].supportsEmbeddings).toBe(false)
   })
+
+  test('merges results from the default listing and the output_modalities=embeddings listing (OpenRouter excludes embedding-only models from the default /models call)', async () => {
+    let capturedUrls: string[] = []
+    globalThis.fetch = (async (url: string) => {
+      capturedUrls.push(String(url))
+      const isEmbeddingsQuery = String(url).includes('output_modalities=embeddings')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: isEmbeddingsQuery
+            ? [
+                {
+                  id: 'qwen/qwen3-embedding-8b',
+                  name: 'Qwen3 Embedding 8B',
+                  pricing: {},
+                  architecture: { output_modalities: ['embeddings'] },
+                  supported_parameters: []
+                }
+              ]
+            : [
+                {
+                  id: 'anthropic/claude-sonnet-5',
+                  name: 'Claude Sonnet 5',
+                  pricing: {},
+                  architecture: { output_modalities: ['text'] },
+                  supported_parameters: []
+                }
+              ]
+        })
+      } as Response
+    }) as typeof fetch
+
+    const models = await fetchModels('key', true)
+
+    expect(capturedUrls.some((u) => u.includes('output_modalities=embeddings'))).toBe(true)
+    expect(models.map((m) => m.id).sort()).toEqual(['anthropic/claude-sonnet-5', 'qwen/qwen3-embedding-8b'])
+    expect(models.find((m) => m.id === 'qwen/qwen3-embedding-8b')?.supportsEmbeddings).toBe(true)
+    expect(models.find((m) => m.id === 'anthropic/claude-sonnet-5')?.supportsEmbeddings).toBe(false)
+  })
+
+  test('deduplicates a model id that appears in both listings, keeping the first occurrence', async () => {
+    globalThis.fetch = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          data: [
+            {
+              id: 'dual/model',
+              name: 'Dual Model',
+              pricing: {},
+              architecture: { output_modalities: ['embeddings'] },
+              supported_parameters: []
+            }
+          ]
+        })
+      }) as Response) as typeof fetch
+
+    const models = await fetchModels('key', true)
+    expect(models.filter((m) => m.id === 'dual/model')).toHaveLength(1)
+  })
 })

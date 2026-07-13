@@ -53,18 +53,42 @@ export interface StreamChunk {
 let modelsCache: ModelInfo[] | null = null
 let modelsCacheAt = 0
 
-export async function fetchModels(apiKey: string, force = false, signal?: AbortSignal): Promise<ModelInfo[]> {
-  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-  if (!force && modelsCache && Date.now() - modelsCacheAt < 5 * 60_000) return modelsCache
-
-  const res = await fetch(`${BASE}/models`, {
+async function fetchModelList(
+  apiKey: string,
+  signal: AbortSignal | undefined,
+  query: string
+): Promise<Array<Record<string, unknown>>> {
+  const res = await fetch(`${BASE}/models${query}`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     signal
   })
   if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`)
   const json = (await res.json()) as { data: Array<Record<string, unknown>> }
+  return json.data
+}
 
-  modelsCache = json.data.map((m) => {
+export async function fetchModels(apiKey: string, force = false, signal?: AbortSignal): Promise<ModelInfo[]> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  if (!force && modelsCache && Date.now() - modelsCacheAt < 5 * 60_000) return modelsCache
+
+  // OpenRouter's default /models listing only includes chat-completion models — embedding-only
+  // models (architecture.output_modalities === ["embeddings"]) are excluded unless explicitly
+  // requested via output_modalities=embeddings. Fetch both and merge (dedup by id) so the
+  // embeddings-model picker actually has options to show.
+  const [chatData, embeddingData] = await Promise.all([
+    fetchModelList(apiKey, signal, ''),
+    fetchModelList(apiKey, signal, '?output_modalities=embeddings')
+  ])
+  const seen = new Set<string>()
+  const combined: Array<Record<string, unknown>> = []
+  for (const m of [...chatData, ...embeddingData]) {
+    const id = String(m.id)
+    if (seen.has(id)) continue
+    seen.add(id)
+    combined.push(m)
+  }
+
+  modelsCache = combined.map((m) => {
     const id = String(m.id)
     const pricing = (m.pricing as { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string }) ?? {}
     const supported = (m.supported_parameters as string[]) ?? []
