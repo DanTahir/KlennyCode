@@ -160,10 +160,12 @@ export default function App() {
                     onOpenSettings={() => useAppStore.getState().setPanel('settings')}
                   />
                 )}
-                <div className={`flex flex-1 min-h-0 ${needsSetup ? 'max-h-[45%] border-t border-klenny-border' : ''}`}>
-                  <ChatPane />
-                  <SubagentPanel />
-                </div>
+                {workspace && (
+                  <div className={`flex flex-1 min-h-0 ${needsSetup ? 'max-h-[45%] border-t border-klenny-border' : ''}`}>
+                    <ChatPane />
+                    <SubagentPanel />
+                  </div>
+                )}
               </div>
             )}
           </>
