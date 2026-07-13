@@ -30,8 +30,11 @@ import {
   globTool,
   runCommandTool,
   webSearchTool,
-  fetchUrlTool
+  fetchUrlTool,
+  resolveWorkspacePath
 } from './tools/index'
+import { readFile } from 'node:fs/promises'
+import { toLf } from './tools/eol'
 import { loadProjectMemory, loadGlobalMemory, loadAutoMemoryIndex, writeMemory, readMemoryTopic } from './memory/manager'
 import { listSkills, readSkill, skillsCatalogPrompt } from './skills/manager'
 import { listSubagentTypes, getSubagentType, subagentsCatalog } from './subagents/manager'
@@ -39,6 +42,7 @@ import { savePlan, AGENT_MODE_PROMPT, PLAN_MODE_PROMPT } from './plan/manager'
 import { approvalManager } from './approval/manager'
 import { maybeCompact } from './compaction/compactor'
 import { makeDiff } from './tools/diff'
+import { resolveEditMatch } from './tools/edit-match'
 import { resolveReasoningEffort } from './reasoning'
 import { toORMessages } from './messages'
 import { trackDailySpend, getDailySpend } from './spend'
@@ -638,21 +642,36 @@ async function previewMutatingTool(
   }
   const path = String(args.path ?? '')
   if (name === 'write_file') {
-    return { title: `Write ${path}`, extra: { filePath: path, diff: makeDiff('', String(args.content), path) } }
+    let oldContent = ''
+    try {
+      const abs = resolveWorkspacePath(path)
+      oldContent = toLf(await readFile(abs, 'utf8'))
+    } catch {
+      // new file — diff against empty content
+    }
+    return { title: `Write ${path}`, extra: { filePath: path, diff: makeDiff(oldContent, String(args.content), path) } }
   }
   if (name === 'edit_file') {
     try {
-      const r = await readFileTool({ path })
-      const content = (r.data as { content?: string })?.content ?? ''
-      const oldStr = String(args.old_string)
-      const newStr = String(args.new_string)
-      const updated = content.replace(oldStr, newStr)
+      const abs = resolveWorkspacePath(path)
+      const content = toLf(await readFile(abs, 'utf8'))
+      const match = resolveEditMatch(content, String(args.old_string), String(args.new_string))
+      if (!match) return { title: `Edit ${path}`, extra: { filePath: path } }
+      const updated = args.replace_all
+        ? content.replaceAll(match.oldString, match.newString)
+        : content.replace(match.oldString, match.newString)
       return { title: `Edit ${path}`, extra: { filePath: path, diff: makeDiff(content, updated, path) } }
     } catch {
       return { title: `Edit ${path}`, extra: { filePath: path } }
     }
   }
-  return { title: `Delete ${path}`, extra: { filePath: path } }
+  try {
+    const abs = resolveWorkspacePath(path)
+    const oldContent = toLf(await readFile(abs, 'utf8'))
+    return { title: `Delete ${path}`, extra: { filePath: path, diff: makeDiff(oldContent, '', path) } }
+  } catch {
+    return { title: `Delete ${path}`, extra: { filePath: path } }
+  }
 }
 
 function checkSpendCap(tab: TabSession, cap: number | null, period: 'session' | 'daily'): void {
