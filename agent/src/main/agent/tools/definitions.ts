@@ -1,7 +1,12 @@
 import type { ToolName } from '@shared/types'
 import type { ToolDef } from '../../openrouter/client'
 
-export function getToolDefinitions(mode: 'agent' | 'plan', restrictTo?: ToolName[] | 'all'): ToolDef[] {
+export function getToolDefinitions(
+  mode: 'agent' | 'plan',
+  restrictTo?: ToolName[] | 'all',
+  /** false (default) hides codebase_search entirely — the model never sees a tool it can't use, avoiding confusing failures when the feature isn't configured. */
+  codebaseSearchAvailable = false
+): ToolDef[] {
   const all: ToolDef[] = [
     {
       type: 'function',
@@ -250,6 +255,22 @@ export function getToolDefinitions(mode: 'agent' | 'plan', restrictTo?: ToolName
           required: ['slug', 'title', 'markdown']
         }
       }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'codebase_search',
+        description:
+          'Semantic search across the codebase — finds relevant code by meaning, not exact text. Use for "where is X handled" / "find code related to Y" style questions; use grep for exact string/symbol matches. Only available when the user has enabled codebase indexing in Settings.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            topK: { type: 'number', description: 'Max results, default 8' }
+          },
+          required: ['query']
+        }
+      }
     }
   ]
 
@@ -264,7 +285,8 @@ export function getToolDefinitions(mode: 'agent' | 'plan', restrictTo?: ToolName
     'read_memory',
     'ask_question',
     'task',
-    'save_plan'
+    'save_plan',
+    'codebase_search'
   ])
 
   const agentAllowed = new Set<ToolName>([
@@ -282,7 +304,8 @@ export function getToolDefinitions(mode: 'agent' | 'plan', restrictTo?: ToolName
     'read_memory',
     'write_memory',
     'task',
-    'ask_question'
+    'ask_question',
+    'codebase_search'
   ])
 
   const allowed = mode === 'plan' ? planAllowed : agentAllowed
@@ -294,6 +317,13 @@ export function getToolDefinitions(mode: 'agent' | 'plan', restrictTo?: ToolName
     // are not supported — and always allow ask_question to be filtered out separately
     // by the caller for headless (subagent) runs.
     defs = defs.filter((t) => restrictSet.has(t.function.name as ToolName))
+  }
+
+  // codebase_search is only ever surfaced when the feature is fully configured (enabled,
+  // embeddings model chosen, OpenRouter key present) — the model should never see a tool
+  // call that's guaranteed to fail because the caller forgot to check availability first.
+  if (!codebaseSearchAvailable) {
+    defs = defs.filter((t) => t.function.name !== 'codebase_search')
   }
 
   return defs

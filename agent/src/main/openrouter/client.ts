@@ -81,6 +81,9 @@ export async function fetchModels(apiKey: string, force = false, signal?: AbortS
       supportsTools: supported.includes('tools'),
       supportsReasoning: supported.includes('reasoning') || supported.includes('include_reasoning'),
       supportsVision: ((m.architecture as { input_modalities?: string[] })?.input_modalities ?? []).includes('image'),
+      supportsEmbeddings: ((m.architecture as { output_modalities?: string[] })?.output_modalities ?? []).includes(
+        'embeddings'
+      ),
       supportedReasoningEfforts: reasoningMeta?.supported_efforts,
       reasoningMandatory: reasoningMeta?.mandatory,
       pinned: CURATED_MODEL_IDS.includes(id)
@@ -311,6 +314,49 @@ export async function summarizeMessages(
     if (chunk.type === 'error') throw new Error(chunk.error)
   }
   return out.trim()
+}
+
+export interface EmbeddingsResult {
+  embeddings: number[][]
+  /** input tokens billed for this request, used to roll embeddings cost into spend tracking */
+  promptTokens: number
+}
+
+/**
+ * Calls OpenRouter's dedicated /embeddings endpoint (separate from /chat/completions —
+ * no streaming, deterministic output, supports batch input). Reuses the same OpenRouter
+ * API key as chat completions; no separate embeddings provider key needed.
+ */
+export async function createEmbeddings(
+  apiKey: string,
+  model: string,
+  input: string[],
+  signal?: AbortSignal
+): Promise<EmbeddingsResult> {
+  const res = await fetch(`${BASE}/embeddings`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://github.com/DanTahir/KlennyCode',
+      'X-Title': 'Klenny Code'
+    },
+    body: JSON.stringify({ model, input }),
+    signal
+  })
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '')
+    throw new Error(`Embeddings request failed: ${res.status}${errText ? ` — ${errText}` : ''}`)
+  }
+  const json = (await res.json()) as {
+    data: Array<{ embedding: number[]; index: number }>
+    usage?: { prompt_tokens?: number; total_tokens?: number }
+  }
+  const sorted = [...json.data].sort((a, b) => a.index - b.index)
+  return {
+    embeddings: sorted.map((d) => d.embedding),
+    promptTokens: json.usage?.prompt_tokens ?? json.usage?.total_tokens ?? 0
+  }
 }
 
 function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {

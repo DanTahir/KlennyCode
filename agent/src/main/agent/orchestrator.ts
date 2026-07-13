@@ -4,6 +4,7 @@ import type {
   AgentStreamEvent,
   ChatMessage,
   ContentBlock,
+  ModelInfo,
   PendingActionKind,
   PendingQuestion,
   QuestionAnswer,
@@ -40,6 +41,8 @@ import { maybeCompact } from './compaction/compactor'
 import { makeDiff } from './tools/diff'
 import { resolveReasoningEffort } from './reasoning'
 import { toORMessages } from './messages'
+import { trackDailySpend, getDailySpend } from './spend'
+import { isIndexActive, searchCode } from './codeindex/manager'
 
 type Emit = (event: AgentStreamEvent) => void
 
@@ -47,9 +50,6 @@ const abortControllers = new Map<string, AbortController>()
 const questionWaiters = new Map<string, (answers: QuestionAnswer[]) => void>()
 const pendingQuestions = new Map<string, PendingQuestion>()
 const endedTurns = new Set<string>()
-
-let dailySpend = 0
-let dailySpendDate = new Date().toDateString()
 
 function endTurn(tabId: string, emit: Emit = emitToAll): void {
   if (endedTurns.has(tabId)) return
@@ -219,7 +219,7 @@ async function agentLoop(
     messages: orMessages,
     // Subagents can't spawn nested subagents — there's no UI to surface a deeper
     // level's approvals/questions, and it would risk runaway recursion.
-    tools: getToolDefinitions(tab.mode, subagentCtx?.allowedTools).filter(
+    tools: getToolDefinitions(tab.mode, subagentCtx?.allowedTools, isIndexActive()).filter(
       (t) => !subagentCtx || t.function.name !== 'task'
     ),
     signal,
@@ -313,7 +313,7 @@ async function agentLoop(
   const effectiveApprovalMode = subagentCtx ? 'auto' : settings.approvalMode
   const results = await Promise.all(
     toolCalls.map((tc) =>
-      executeTool(tc, tab, apiKey, subagentModel, effectiveApprovalMode, emit, signal, depth, subagentCtx, settings.shellId)
+      executeTool(tc, tab, apiKey, subagentModel, effectiveApprovalMode, emit, signal, depth, models, subagentCtx, settings.shellId)
     )
   )
 
@@ -368,6 +368,7 @@ async function executeTool(
   emit: Emit,
   signal: AbortSignal,
   depth: number,
+  models: ModelInfo[],
   subagentCtx?: SubagentContext,
   shellId?: string | null
 ): Promise<{ payload: ToolResultPayload; status: ToolCallBlock['status'] }> {
@@ -429,7 +430,7 @@ async function executeTool(
   }
 
   try {
-    const payload = await dispatchTool(name, args, tab, apiKey, subagentModel, emit, signal, depth, shellId)
+    const payload = await dispatchTool(name, args, tab, apiKey, subagentModel, emit, signal, depth, models, shellId)
     return { payload, status: payload.ok ? 'success' : 'error' }
   } catch (e) {
     return {
@@ -448,6 +449,7 @@ async function dispatchTool(
   emit: Emit,
   signal: AbortSignal,
   depth: number,
+  models: ModelInfo[],
   shellId?: string | null
 ): Promise<ToolResultPayload> {
   switch (name) {
@@ -498,6 +500,16 @@ async function dispatchTool(
     }
     case 'task':
       return runSubagent(tab, apiKey, subagentModel, args, emit, signal, depth)
+    case 'codebase_search': {
+      const query = String(args.query ?? '')
+      const topK = typeof args.topK === 'number' ? args.topK : 8
+      try {
+        const hits = await searchCode(query, topK, models)
+        return { ok: true, summary: `Found ${hits.length} relevant code chunks`, data: { hits } }
+      } catch (e) {
+        return { ok: false, summary: 'codebase_search failed', error: e instanceof Error ? e.message : String(e) }
+      }
+    }
     default:
       return { ok: false, summary: `Unknown tool ${name}`, error: 'unknown' }
   }
@@ -645,20 +657,11 @@ async function previewMutatingTool(
 
 function checkSpendCap(tab: TabSession, cap: number | null, period: 'session' | 'daily'): void {
   if (!cap) return
-  const spend = period === 'daily' ? dailySpend : tab.totalCostUsd
+  const spend = period === 'daily' ? getDailySpend() : tab.totalCostUsd
   if (spend >= cap) {
     emitToAll({ type: 'spend_blocked', tabId: tab.id })
     throw new Error('Spending cap exceeded')
   }
-}
-
-function trackDailySpend(cost: number): void {
-  const today = new Date().toDateString()
-  if (today !== dailySpendDate) {
-    dailySpendDate = today
-    dailySpend = 0
-  }
-  dailySpend += cost
 }
 
 export function getPendingQuestions(): PendingQuestion[] {

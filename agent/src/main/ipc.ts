@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, shell, Menu } from 'electron'
 import { join } from 'node:path'
 import { checkForUpdates, installUpdate, isUpdateSupported } from './updater'
 import { IPC } from '@shared/ipc'
-import { loadSettings, saveSettings, setApiKey, clearApiKey } from './settings'
+import { loadSettings, saveSettings, setApiKey, clearApiKey, setPineconeKey, clearPineconeKey } from './settings'
 import { getWorkspace, pickWorkspace, setWorkspace } from './workspace'
 import { sessionStore } from './session/store'
 import { fetchModels } from './openrouter/client'
@@ -14,12 +14,60 @@ import { listPlans, readPlan } from './agent/plan/manager'
 import { readMemoryFile, writeMemoryFile } from './agent/memory/manager'
 import { getApiKey } from './settings'
 import { detectShells } from './shells'
+import { startIndexing, stopIndexing, getIndexStatus, rebuildIndex, deleteLocalIndex, setOnStatusChange } from './agent/codeindex/manager'
+import type { AgentStreamEvent, IndexStatus } from '@shared/types'
+
+function broadcast(event: AgentStreamEvent): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('agent:stream', event)
+  }
+}
+
+/** Fire-and-forget: resolves the current settings + model catalog and (re)starts the codebase index for `root`, or stops it if the feature isn't fully configured. Never throws into the caller — indexing failures surface via index_progress status, not a rejected promise on workspace open. Exported so main/index.ts can trigger it for the auto-restored last-opened workspace on app launch. */
+export async function refreshIndexingForWorkspace(root: string): Promise<void> {
+  try {
+    const settings = await loadSettings()
+    if (!settings.codebaseIndexEnabled || !settings.embeddingsModel) {
+      await stopIndexing()
+      return
+    }
+    const key = await getApiKey()
+    const models = key ? await fetchModels(key, false) : []
+    await startIndexing(root, settings, models)
+  } catch (e) {
+    console.error('Failed to start codebase index for workspace:', e)
+  }
+}
 
 export function registerIpcHandlers(): void {
+  setOnStatusChange((status: IndexStatus) =>
+    broadcast({
+      type: 'index_progress',
+      phase: status.phase,
+      filesTotal: status.filesTotal,
+      filesDone: status.filesDone,
+      message: status.message
+    })
+  )
+
   ipcMain.handle(IPC.settingsGet, async () => loadSettings())
   ipcMain.handle(IPC.settingsSet, async (_e, patch) => {
     const next = await saveSettings(patch)
     approvalManager.setMode(next.approvalMode)
+    // Only re-evaluate indexing if a codebase-index-relevant field actually changed —
+    // this handler fires on every settings save (theme, spending cap, etc.), and
+    // restarting the watcher/scan on unrelated changes would be wasteful and could
+    // interrupt an in-progress scan for no reason.
+    const relevantKeys: Array<keyof typeof patch> = [
+      'codebaseIndexEnabled',
+      'embeddingsModel',
+      'vectorStoreBackend',
+      'pineconeIndexName'
+    ]
+    if (relevantKeys.some((k) => k in patch)) {
+      const ws = getWorkspace()
+      if (ws) void refreshIndexingForWorkspace(ws)
+    }
     return next
   })
   ipcMain.handle(IPC.setApiKey, async (_e, key: string) => setApiKey(key))
@@ -32,6 +80,7 @@ export function registerIpcHandlers(): void {
       await saveSettings({ lastWorkspace: path })
       await sessionStore.load(path)
       await approvalManager.init(path)
+      void refreshIndexingForWorkspace(path)
     }
     return path
   })
@@ -105,6 +154,23 @@ export function registerIpcHandlers(): void {
     // best-effort placeholder — full shadow revert can be expanded later
     return
   })
+
+  ipcMain.handle(IPC.pineconeSetKey, async (_e, key: string) => setPineconeKey(key))
+  ipcMain.handle(IPC.pineconeClearKey, async () => clearPineconeKey())
+  ipcMain.handle(IPC.indexRebuild, async () => {
+    const ws = getWorkspace()
+    if (!ws) return
+    const settings = await loadSettings()
+    const key = await getApiKey()
+    const models = key ? await fetchModels(key, false) : []
+    await rebuildIndex(ws, settings, models)
+  })
+  ipcMain.handle(IPC.indexDelete, async () => {
+    const ws = getWorkspace()
+    if (!ws) return
+    await deleteLocalIndex(ws)
+  })
+  ipcMain.handle(IPC.indexStatus, async () => getIndexStatus())
 
   ipcMain.handle(IPC.appVersion, async () => app.getVersion())
   ipcMain.handle(IPC.updateSupported, async () => isUpdateSupported())

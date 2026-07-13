@@ -1,17 +1,20 @@
 import { useEffect, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
+import { DEFAULT_EMBEDDINGS_MODEL } from '@shared/types'
 
 export function SettingsPanel() {
-  const { settings, models, shells, setSettings, setModels, setShells } = useAppStore()
+  const { settings, models, shells, indexStatus, setSettings, setModels, setShells, setIndexStatus } = useAppStore()
   const [apiKey, setApiKey] = useState('')
   const [search, setSearch] = useState('')
   const [providerOnly, setProviderOnly] = useState('')
   const [providerOrder, setProviderOrder] = useState('')
   const [showAdvancedProvider, setShowAdvancedProvider] = useState(false)
+  const [pineconeKey, setPineconeKey] = useState('')
 
   useEffect(() => {
     void window.klenny.listModels(true).then(setModels)
     void window.klenny.listShells().then(setShells)
+    void window.klenny.getIndexStatus().then(setIndexStatus)
   }, [])
 
   useEffect(() => {
@@ -20,8 +23,18 @@ export function SettingsPanel() {
     setProviderOrder((settings.providerPreference.order ?? []).join(', '))
   }, [settings?.providerPreference])
 
+  // Pre-fill the recommended embeddings model the first time the feature is enabled and a
+  // model list is available — a convenience default, not a silent fallback if the catalog
+  // ever changes (the picker always shows exactly what's actually selected in settings).
+  useEffect(() => {
+    if (!settings?.codebaseIndexEnabled || settings.embeddingsModel || models.length === 0) return
+    const hasDefault = models.some((m) => m.id === DEFAULT_EMBEDDINGS_MODEL && m.supportsEmbeddings)
+    if (hasDefault) void patch({ embeddingsModel: DEFAULT_EMBEDDINGS_MODEL })
+  }, [settings?.codebaseIndexEnabled, settings?.embeddingsModel, models])
+
   if (!settings) return null
   const filtered = models.filter((m) => m.name.toLowerCase().includes(search.toLowerCase()) || m.id.includes(search))
+  const embeddingModels = models.filter((m) => m.supportsEmbeddings)
 
   const patch = async (p: Partial<typeof settings>) => {
     const next = await window.klenny.setSettings(p)
@@ -201,6 +214,134 @@ export function SettingsPanel() {
           Shell used to run commands (build, test, git, etc.). Detected from your system — pick Git Bash, PowerShell,
           WSL, or another installed shell.
         </p>
+      </section>
+
+      <section className="mb-6 space-y-2">
+        <h3 className="font-medium">Codebase semantic search <span className="text-xs text-klenny-muted">(beta)</span></h3>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.codebaseIndexEnabled}
+            onChange={(e) => void patch({ codebaseIndexEnabled: e.target.checked })}
+          />
+          Enable semantic code search
+        </label>
+        <p className="text-xs text-klenny-muted">
+          Lets the agent find relevant code by meaning, not just exact text — like Cursor's codebase search.
+          Indexes your workspace in the background and stays live-updated while you work. Uses your existing
+          OpenRouter key for embeddings — no extra signup — but does spend a small amount of credits per file
+          indexed and per search.
+        </p>
+        {settings.codebaseIndexEnabled && (
+          <div className="space-y-2 border border-klenny-border rounded p-3">
+            <label className="block text-sm">Embeddings model</label>
+            <select
+              className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
+              value={settings.embeddingsModel ?? ''}
+              onChange={(e) => void patch({ embeddingsModel: e.target.value || null })}
+            >
+              <option value="">Select a model…</option>
+              {embeddingModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id === DEFAULT_EMBEDDINGS_MODEL ? '★ ' : ''}
+                  {m.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-klenny-muted">★ recommended — tuned for text and code retrieval.</p>
+
+            <label className="block text-sm">Vector store</label>
+            <select
+              className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
+              value={settings.vectorStoreBackend}
+              onChange={(e) => void patch({ vectorStoreBackend: e.target.value as 'local' | 'pinecone' })}
+            >
+              <option value="local">Local (default, no signup)</option>
+              <option value="pinecone">Pinecone (cloud)</option>
+            </select>
+
+            {settings.vectorStoreBackend === 'pinecone' && (
+              <div className="space-y-2 border border-klenny-border rounded p-3">
+                <input
+                  type="password"
+                  className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+                  placeholder={settings.hasPineconeKey ? 'Pinecone key saved (enter to replace)' : 'Pinecone API key'}
+                  value={pineconeKey}
+                  onChange={(e) => setPineconeKey(e.target.value)}
+                />
+                <div className="flex gap-2">
+                  <button
+                    className="px-3 py-1 rounded bg-klenny-accent text-black text-sm"
+                    onClick={() =>
+                      pineconeKey &&
+                      void window.klenny
+                        .setPineconeKey(pineconeKey)
+                        .then(() => window.klenny.getSettings())
+                        .then((s) => {
+                          setSettings(s)
+                          setPineconeKey('')
+                        })
+                    }
+                  >
+                    Save key
+                  </button>
+                  <button
+                    className="px-3 py-1 rounded border border-klenny-border text-sm"
+                    onClick={() =>
+                      void window.klenny
+                        .clearPineconeKey()
+                        .then(() => window.klenny.getSettings())
+                        .then((s) => {
+                          setSettings(s)
+                          setPineconeKey('')
+                        })
+                    }
+                  >
+                    Clear
+                  </button>
+                </div>
+                <label className="block text-sm">Pinecone index name</label>
+                <input
+                  className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+                  placeholder="e.g. klenny-code"
+                  value={settings.pineconeIndexName ?? ''}
+                  onChange={(e) => void patch({ pineconeIndexName: e.target.value || null })}
+                />
+                <p className="text-xs text-klenny-muted">
+                  Data stored in Pinecone must be managed in Pinecone's own console — "Delete index" below only
+                  affects the local index, never a connected Pinecone index.
+                </p>
+              </div>
+            )}
+
+            <p className="text-xs text-klenny-muted">
+              Status:{' '}
+              {indexStatus?.phase === 'error'
+                ? `Error — ${indexStatus.message ?? 'unknown error'}`
+                : indexStatus?.phase === 'scanning'
+                  ? indexStatus.message ?? 'Scanning workspace…'
+                  : indexStatus?.phase === 'embedding'
+                    ? `Indexing ${indexStatus.filesDone ?? 0}/${indexStatus.filesTotal ?? 0} files…`
+                    : indexStatus?.lastUpdatedAt
+                      ? `Index ready (${indexStatus.filesTotal ?? 0} files, updated ${new Date(indexStatus.lastUpdatedAt).toLocaleTimeString()})`
+                      : 'Not yet indexed'}
+            </p>
+            <div className="flex gap-2">
+              <button
+                className="px-3 py-1 rounded border border-klenny-border text-sm"
+                onClick={() => void window.klenny.rebuildIndex()}
+              >
+                Rebuild index
+              </button>
+              <button
+                className="px-3 py-1 rounded border border-klenny-border text-sm"
+                onClick={() => void window.klenny.deleteIndex().then(() => window.klenny.getIndexStatus()).then(setIndexStatus)}
+              >
+                Delete index
+              </button>
+            </div>
+          </div>
+        )}
       </section>
 
       <section className="mb-6 space-y-2">

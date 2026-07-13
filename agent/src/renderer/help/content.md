@@ -33,6 +33,7 @@ Read-only tools only. Klenny Code will ask clarifying questions, research your c
 | `read_skill` | Load a Cursor-style skill |
 | `read_memory` | Load the full content of an auto-memory topic note |
 | `write_memory` | Persist notes for future sessions |
+| `codebase_search` | Semantic search across the codebase (only available if enabled in Settings) |
 
 ## Approval workflow
 
@@ -54,6 +55,22 @@ Create skills under `.klenny/skills/<name>/SKILL.md` (project) or `~/.klenny/ski
 ## Subagents
 
 Built-in types: `general-purpose`, `explore`, `plan-checker`. Define custom subagents in `.klenny/agents/*.md`. Pick a separate subagent model in Settings to save cost on exploration tasks.
+
+## Codebase semantic search (beta)
+
+Optional, off by default. When enabled in Settings, Klenny Code builds a local semantic index of your
+workspace — split into chunks, embedded, and stored in a small vector database under `.klenny/index/` — and
+keeps it live-updated as you edit files. This lets the agent find relevant code by *meaning* ("where do we
+handle X") rather than exact keyword matches, complementing `grep`/`glob` rather than replacing them.
+
+- **Embeddings** use your existing OpenRouter key and credits — no separate signup. Pick any embeddings-capable
+  model OpenRouter offers; a code-tuned default is pre-selected for you.
+- **Storage** defaults to a local, file-based index (no cloud account needed). You can switch to Pinecone in
+  Settings if you'd rather store vectors in the cloud — that needs its own Pinecone API key and index name.
+- **Cost**: unlike memory/grep/glob, this spends a small amount of OpenRouter credit per file indexed and per
+  search — rolled into your existing spending cap if you've set one.
+- Switching embeddings models triggers a full rebuild (old vectors aren't compatible with a new model's vector
+  space). "Rebuild index" and "Delete index" are available in Settings if you need to reset things manually.
 
 ## Tabs
 

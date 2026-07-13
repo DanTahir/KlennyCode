@@ -48,6 +48,12 @@ const api: KlennyApi = {
 
   revertCheckpoint: (id) => ipcRenderer.invoke(IPC.checkpointRevert, id),
 
+  setPineconeKey: (key) => ipcRenderer.invoke(IPC.pineconeSetKey, key),
+  clearPineconeKey: () => ipcRenderer.invoke(IPC.pineconeClearKey),
+  rebuildIndex: () => ipcRenderer.invoke(IPC.indexRebuild),
+  deleteIndex: () => ipcRenderer.invoke(IPC.indexDelete),
+  getIndexStatus: () => ipcRenderer.invoke(IPC.indexStatus),
+
   getAppVersion: () => ipcRenderer.invoke(IPC.appVersion),
   isUpdateSupported: () => ipcRenderer.invoke(IPC.updateSupported),
   checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),

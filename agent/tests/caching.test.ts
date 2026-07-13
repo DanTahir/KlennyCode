@@ -32,7 +32,8 @@ describe('modelSupportsCaching', () => {
     supportsExplicitCaching: false,
     supportsTools: true,
     supportsReasoning: false,
-    supportsVision: false
+    supportsVision: false,
+    supportsEmbeddings: false
   }
 
   test('true when cacheReadPrice is set', () => {
@@ -55,7 +56,8 @@ describe('computeCacheSavings', () => {
     supportsExplicitCaching: true,
     supportsTools: true,
     supportsReasoning: false,
-    supportsVision: false
+    supportsVision: false,
+    supportsEmbeddings: false
   }
 
   test('no caching used: savings is zero', () => {

@@ -3,6 +3,7 @@ import type {
   ApprovalDecision,
   AppSettings,
   ArchivedTabSession,
+  IndexStatus,
   ModelInfo,
   PlanArtifact,
   QuestionAnswer,
@@ -56,6 +57,12 @@ export const IPC = {
   memoryWrite: 'memory:write',
 
   checkpointRevert: 'checkpoint:revert',
+
+  pineconeSetKey: 'codeindex:setPineconeKey',
+  pineconeClearKey: 'codeindex:clearPineconeKey',
+  indexRebuild: 'codeindex:rebuild',
+  indexDelete: 'codeindex:delete',
+  indexStatus: 'codeindex:status',
 
   appVersion: 'app:version',
   updateSupported: 'app:updateSupported',
@@ -118,6 +125,12 @@ export interface KlennyApi {
   writeMemory: (scope: 'project' | 'global', content: string) => Promise<void>
 
   revertCheckpoint: (checkpointId: string) => Promise<void>
+
+  setPineconeKey: (key: string) => Promise<void>
+  clearPineconeKey: () => Promise<void>
+  rebuildIndex: () => Promise<void>
+  deleteIndex: () => Promise<void>
+  getIndexStatus: () => Promise<IndexStatus>
 
   getAppVersion: () => Promise<string>
   isUpdateSupported: () => Promise<boolean>

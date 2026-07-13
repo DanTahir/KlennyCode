@@ -22,6 +22,8 @@ export interface ModelInfo {
   supportsTools: boolean
   supportsReasoning: boolean
   supportsVision: boolean
+  /** true if this model's only output modality is embeddings (i.e. it's an embeddings model, not a chat model) */
+  supportsEmbeddings: boolean
   /** effort levels this model actually accepts (from OpenRouter's `reasoning.supported_efforts`); undefined = model doesn't expose granular effort control (route via on/off only) */
   supportedReasoningEfforts?: string[]
   /** true if the model requires reasoning to always be on (we never send effort:'none' anyway, so this is informational only) */
@@ -108,6 +110,7 @@ export type ToolName =
   | 'task'
   | 'ask_question'
   | 'save_plan'
+  | 'codebase_search'
 
 export interface ToolResultPayload {
   ok: boolean
@@ -126,7 +129,8 @@ export const READ_ONLY_TOOLS: ToolName[] = [
   'list_skills',
   'read_skill',
   'read_memory',
-  'ask_question'
+  'ask_question',
+  'codebase_search'
 ]
 
 export const MUTATING_TOOLS: ToolName[] = ['write_file', 'edit_file', 'delete_file', 'run_command', 'write_memory', 'task']
@@ -268,6 +272,16 @@ export interface AppSettings {
   lastWorkspace?: string | null
   /** id of the shell used for run_command (e.g. 'cmd', 'powershell', 'git-bash', 'bash', 'zsh'); null = auto-pick OS default */
   shellId?: string | null
+  /** master on/off switch for the semantic codebase search index — off by default (opt-in, since it spends OpenRouter credits on embeddings and runs a background file watcher) */
+  codebaseIndexEnabled: boolean
+  /** OpenRouter model id used to embed code chunks/queries; null until the user enables the feature and picks one */
+  embeddingsModel: string | null
+  /** where embedded vectors are stored/queried; 'local' needs no signup, 'pinecone' requires a separate Pinecone API key below */
+  vectorStoreBackend: 'local' | 'pinecone'
+  /** required when vectorStoreBackend === 'pinecone' */
+  pineconeIndexName: string | null
+  /** boolean flag only — actual secret is encrypted separately and never round-trips to the renderer, same pattern as hasApiKey */
+  hasPineconeKey: boolean
 }
 
 // ---------- Shells ----------
@@ -305,6 +319,13 @@ export type AgentStreamEvent =
   | { type: 'compaction'; tabId: string; summaryMessageId: string }
   | { type: 'spend_update'; tabId: string; totalCostUsd: number; totalSavingsUsd: number; capUsd: number | null }
   | { type: 'spend_blocked'; tabId: string }
+  | {
+      type: 'index_progress'
+      phase: 'scanning' | 'embedding' | 'idle' | 'error'
+      filesTotal?: number
+      filesDone?: number
+      message?: string
+    }
 
 export const CURATED_MODEL_IDS = [
   'anthropic/claude-sonnet-5',
@@ -317,6 +338,21 @@ export const DEFAULT_MAIN_MODEL = 'anthropic/claude-sonnet-5'
 export const DEFAULT_SUBAGENT_MODEL = 'anthropic/claude-sonnet-5'
 /** Cheap/fast model for internal housekeeping (compaction summaries, etc.) — verified live on OpenRouter at plan time. */
 export const DEFAULT_UTILITY_MODEL = 'anthropic/claude-haiku-4.5'
+/** Best code-retrieval-tuned embedding model actually available on OpenRouter at plan time (Cohere has no embeddings there — checked directly). Cheap ($0.01/M tokens), 32K context. Verify this id still resolves before assuming it's current. */
+export const DEFAULT_EMBEDDINGS_MODEL = 'qwen/qwen3-embedding-8b'
+
+// ---------- Codebase semantic search ----------
+
+export interface IndexStatus {
+  enabled: boolean
+  phase: 'idle' | 'scanning' | 'embedding' | 'error'
+  filesTotal: number
+  filesDone: number
+  lastUpdatedAt: number | null
+  message?: string
+  backend: 'local' | 'pinecone'
+  embeddingsModel: string | null
+}
 
 // ---------- Auto-update ----------
 

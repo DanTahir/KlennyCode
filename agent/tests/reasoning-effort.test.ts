@@ -13,7 +13,8 @@ const baseModel: ModelInfo = {
   supportsExplicitCaching: false,
   supportsTools: true,
   supportsReasoning: true,
-  supportsVision: false
+  supportsVision: false,
+  supportsEmbeddings: false
 }
 
 function makeTab(messages: ChatMessage[], mode: 'agent' | 'plan' = 'agent'): TabSession {

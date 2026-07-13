@@ -16,7 +16,12 @@ const DEFAULTS: AppSettings = {
   autoMemoryEnabled: true,
   promptCachingEnabled: true,
   lastWorkspace: null,
-  shellId: null
+  shellId: null,
+  codebaseIndexEnabled: false,
+  embeddingsModel: null,
+  vectorStoreBackend: 'local',
+  pineconeIndexName: null,
+  hasPineconeKey: false
 }
 
 function settingsPath(): string {
@@ -27,13 +32,17 @@ function apiKeyPath(): string {
   return join(app.getPath('userData'), 'api-key.enc')
 }
 
+function pineconeKeyPath(): string {
+  return join(app.getPath('userData'), 'pinecone-key.enc')
+}
+
 export async function loadSettings(): Promise<AppSettings> {
   try {
     const raw = await readFile(settingsPath(), 'utf8')
     const parsed = JSON.parse(raw) as Partial<AppSettings>
-    return { ...DEFAULTS, ...parsed, hasApiKey: await hasApiKey() }
+    return { ...DEFAULTS, ...parsed, hasApiKey: await hasApiKey(), hasPineconeKey: await hasPineconeKey() }
   } catch {
-    return { ...DEFAULTS, hasApiKey: await hasApiKey() }
+    return { ...DEFAULTS, hasApiKey: await hasApiKey(), hasPineconeKey: await hasPineconeKey() }
   }
 }
 
@@ -41,6 +50,7 @@ export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSett
   const current = await loadSettings()
   const next = { ...current, ...patch }
   delete (next as { hasApiKey?: boolean }).hasApiKey
+  delete (next as { hasPineconeKey?: boolean }).hasPineconeKey
   await mkdir(app.getPath('userData'), { recursive: true })
   await writeFile(settingsPath(), JSON.stringify(next, null, 2), 'utf8')
   return loadSettings()
@@ -77,6 +87,42 @@ export async function setApiKey(key: string): Promise<void> {
 export async function clearApiKey(): Promise<void> {
   try {
     await writeFile(apiKeyPath(), Buffer.alloc(0))
+  } catch {
+    // ignore
+  }
+}
+
+export async function hasPineconeKey(): Promise<boolean> {
+  try {
+    const buf = await readFile(pineconeKeyPath())
+    return safeStorage.isEncryptionAvailable() && buf.length > 0
+  } catch {
+    return false
+  }
+}
+
+export async function getPineconeKey(): Promise<string | null> {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null
+    const buf = await readFile(pineconeKeyPath())
+    return safeStorage.decryptString(buf)
+  } catch {
+    return null
+  }
+}
+
+export async function setPineconeKey(key: string): Promise<void> {
+  if (!safeStorage.isEncryptionAvailable()) {
+    throw new Error('OS secure storage is not available on this system.')
+  }
+  await mkdir(app.getPath('userData'), { recursive: true })
+  const encrypted = safeStorage.encryptString(key.trim())
+  await writeFile(pineconeKeyPath(), encrypted)
+}
+
+export async function clearPineconeKey(): Promise<void> {
+  try {
+    await writeFile(pineconeKeyPath(), Buffer.alloc(0))
   } catch {
     // ignore
   }

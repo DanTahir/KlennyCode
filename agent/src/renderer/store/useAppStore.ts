@@ -5,6 +5,7 @@ import type {
   ArchivedTabSession,
   ChatMessage,
   ContentBlock,
+  IndexStatus,
   ModelInfo,
   PendingAction,
   PendingQuestion,
@@ -37,6 +38,8 @@ interface AppState {
   setUpdateStatus: (e: UpdateStatusEvent) => void
   updateSupported: boolean
   setUpdateSupported: (v: boolean) => void
+  indexStatus: IndexStatus | null
+  setIndexStatus: (s: IndexStatus | null) => void
   setSettings: (s: AppSettings) => void
   setWorkspace: (w: string | null) => void
   setModels: (m: ModelInfo[]) => void
@@ -71,6 +74,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setUpdateStatus: (updateStatus) => set({ updateStatus }),
   updateSupported: false,
   setUpdateSupported: (updateSupported) => set({ updateSupported }),
+  indexStatus: null,
+  setIndexStatus: (indexStatus) => set({ indexStatus }),
   setSettings: (settings) => set({ settings }),
   setWorkspace: (workspace) => set({ workspace }),
   setModels: (models) => set({ models }),
@@ -211,6 +216,24 @@ export const useAppStore = create<AppState>((set, get) => ({
           t.id === e.tabId ? { ...t, totalCostUsd: e.totalCostUsd, totalSavingsUsd: e.totalSavingsUsd } : t
         )
         set({ tabs })
+        break
+      }
+      case 'index_progress': {
+        // Patches the fields this event actually carries; `enabled`/`backend`/`embeddingsModel`/
+        // `lastUpdatedAt` come from the one-shot getIndexStatus() IPC call on Settings mount and
+        // are preserved here rather than clobbered, since this event never includes them.
+        const prev = state.indexStatus
+        const next: IndexStatus = {
+          enabled: prev?.enabled ?? true,
+          phase: e.phase,
+          filesTotal: e.filesTotal ?? prev?.filesTotal ?? 0,
+          filesDone: e.filesDone ?? prev?.filesDone ?? 0,
+          lastUpdatedAt: e.phase === 'idle' ? Date.now() : prev?.lastUpdatedAt ?? null,
+          message: e.message,
+          backend: prev?.backend ?? 'local',
+          embeddingsModel: prev?.embeddingsModel ?? null
+        }
+        set({ indexStatus: next })
         break
       }
       default:
