@@ -18,6 +18,13 @@ import type {
   UpdateStatusEvent
 } from '@shared/types'
 
+/** A plan opened as a tab in the main tab bar (client-side only — plans themselves live on disk). */
+export interface OpenPlanTab {
+  slug: string
+  /** the chat tab that was active when this plan was opened/created; "Approve" returns here */
+  originTabId: string | null
+}
+
 interface AppState {
   settings: AppSettings | null
   workspace: string | null
@@ -29,6 +36,8 @@ interface AppState {
   pendingQuestions: PendingQuestion[]
   subagentRuns: SubagentRun[]
   plans: PlanArtifact[]
+  openPlanTabs: OpenPlanTab[]
+  activePlanSlug: string | null
   history: ArchivedTabSession[]
   skills: SkillSummary[]
   panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history'
@@ -51,6 +60,9 @@ interface AppState {
   setPanel: (p: AppState['panel']) => void
   setSkills: (s: SkillSummary[]) => void
   setPlans: (p: PlanArtifact[]) => void
+  upsertPlan: (p: PlanArtifact) => void
+  openPlanTab: (slug: string, originTabId: string | null) => void
+  closePlanTab: (slug: string) => void
   setHistory: (h: ArchivedTabSession[]) => void
 }
 
@@ -65,6 +77,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingQuestions: [],
   subagentRuns: [],
   plans: [],
+  openPlanTabs: [],
+  activePlanSlug: null,
   history: [],
   skills: [],
   panel: 'chat',
@@ -77,7 +91,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   indexStatus: null,
   setIndexStatus: (indexStatus) => set({ indexStatus }),
   setSettings: (settings) => set({ settings }),
-  setWorkspace: (workspace) => set({ workspace }),
+  setWorkspace: (workspace) => set({ workspace, openPlanTabs: [], activePlanSlug: null }),
   setModels: (models) => set({ models }),
   setShells: (shells) => set({ shells }),
   setTabs: (tabs) =>
@@ -85,7 +99,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       tabs,
       activeTabId: s.activeTabId && tabs.some((t) => t.id === s.activeTabId) ? s.activeTabId : tabs[0]?.id ?? null
     })),
-  setActiveTab: (id) => set({ activeTabId: id }),
+  setActiveTab: (id) => set({ activeTabId: id, activePlanSlug: null }),
   upsertTab: (tab) =>
     set((s) => ({
       tabs: s.tabs.map((t) => (t.id === tab.id ? tab : t))
@@ -93,6 +107,26 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPanel: (panel) => set({ panel }),
   setSkills: (skills) => set({ skills }),
   setPlans: (plans) => set({ plans }),
+  upsertPlan: (plan) =>
+    set((s) => {
+      const idx = s.plans.findIndex((p) => p.slug === plan.slug)
+      const plans = idx >= 0 ? s.plans.map((p, i) => (i === idx ? plan : p)) : [plan, ...s.plans]
+      return { plans }
+    }),
+  openPlanTab: (slug, originTabId) =>
+    set((s) => {
+      const existing = s.openPlanTabs.find((t) => t.slug === slug)
+      const openPlanTabs = existing
+        ? s.openPlanTabs
+        : [...s.openPlanTabs, { slug, originTabId }]
+      return { openPlanTabs, activePlanSlug: slug, panel: 'chat' }
+    }),
+  closePlanTab: (slug) =>
+    set((s) => {
+      const openPlanTabs = s.openPlanTabs.filter((t) => t.slug !== slug)
+      const activePlanSlug = s.activePlanSlug === slug ? null : s.activePlanSlug
+      return { openPlanTabs, activePlanSlug }
+    }),
   setHistory: (history) => set({ history }),
   applyStreamEvent: (e) => {
     const state = get()
@@ -147,6 +181,13 @@ export const useAppStore = create<AppState>((set, get) => ({
         break
       }
       case 'tool_call_result': {
+        // Look up the original block before we overwrite it, so we know which tool this was.
+        const sourceTab = state.tabs.find((t) => t.id === e.tabId)
+        const sourceMessage = sourceTab?.messages.find((m) => m.id === e.messageId)
+        const sourceBlock = sourceMessage?.blocks.find(
+          (b): b is ToolCallBlock => b.type === 'tool_call' && b.id === e.toolCallId
+        )
+
         const tabs = state.tabs.map((t) => {
           if (t.id !== e.tabId) return t
           const messages = t.messages.map((m) => {
@@ -162,6 +203,14 @@ export const useAppStore = create<AppState>((set, get) => ({
           return { ...t, messages }
         })
         set({ tabs })
+
+        if (sourceBlock?.toolName === 'save_plan' && e.status === 'success') {
+          const plan = (e.result?.data as { plan?: PlanArtifact } | undefined)?.plan
+          if (plan) {
+            get().upsertPlan(plan)
+            get().openPlanTab(plan.slug, e.tabId)
+          }
+        }
         break
       }
       case 'message_end': {

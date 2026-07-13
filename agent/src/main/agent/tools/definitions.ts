@@ -244,13 +244,17 @@ export function getToolDefinitions(
       type: 'function',
       function: {
         name: 'save_plan',
-        description: 'Save a plan artifact (plan mode only).',
+        description: 'Save a plan artifact (plan mode only). The plan is shown to the user as its own tab with an Approve button.',
         parameters: {
           type: 'object',
           properties: {
-            slug: { type: 'string' },
-            title: { type: 'string' },
-            markdown: { type: 'string' }
+            slug: { type: 'string', description: 'Short kebab-case identifier, e.g. "add-dark-mode-toggle".' },
+            title: { type: 'string', description: 'Short human-readable plan title, shown in tabs and lists.' },
+            markdown: {
+              type: 'string',
+              description:
+                'Full plan body in Markdown. Must start with a "# Title" heading, use "##" subheadings (e.g. Overview, Approach/Steps, Risks/Open questions), and use numbered/bulleted lists and tables where they aid clarity.'
+            }
           },
           required: ['slug', 'title', 'markdown']
         }

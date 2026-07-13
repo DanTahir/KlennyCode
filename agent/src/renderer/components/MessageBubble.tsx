@@ -31,7 +31,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
         {message.blocks.map((block, i) => {
           if (block.type === 'text') {
             return (
-              <div key={i} className="markdown prose prose-invert max-w-none">
+              <div key={i} className="markdown prose prose-invert prose-sm max-w-none">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.text}</ReactMarkdown>
               </div>
             )

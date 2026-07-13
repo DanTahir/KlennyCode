@@ -26,6 +26,16 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
+.markdown table {
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+.markdown table tr {
+  white-space: normal;
+}
+
 .diff-add {
   background: rgba(34, 197, 94, 0.15);
 }

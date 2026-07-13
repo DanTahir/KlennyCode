@@ -10,6 +10,7 @@ import { HelpPanel } from './components/HelpPanel'
 import { SkillsPanel } from './components/SkillsPanel'
 import { MemoryPanel } from './components/MemoryPanel'
 import { PlansPanel } from './components/PlansPanel'
+import { PlanTabView } from './components/PlanTabView'
 import { HistoryPanel } from './components/HistoryPanel'
 import { SubagentPanel } from './components/SubagentPanel'
 
@@ -20,6 +21,7 @@ export default function App() {
     tabs,
     activeTabId,
     panel,
+    activePlanSlug,
     setSettings,
     setWorkspace,
     setModels,
@@ -88,7 +90,10 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 't') {
         e.preventDefault()
-        void window.klenny.createTab().then(() => window.klenny.listTabs().then(setTabs))
+        void window.klenny.createTab().then(async (tab) => {
+          setTabs(await window.klenny.listTabs())
+          setActiveTab(tab.id)
+        })
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'w' && activeTabId) {
         e.preventDefault()
@@ -139,18 +144,22 @@ export default function App() {
         {panel === 'chat' && (
           <>
             <TabBar />
-            <div className="flex flex-1 flex-col min-h-0">
-              {needsSetup && (
-                <WelcomeScreen
-                  onOpenWorkspace={() => void openWorkspace()}
-                  onOpenSettings={() => useAppStore.getState().setPanel('settings')}
-                />
-              )}
-              <div className={`flex flex-1 min-h-0 ${needsSetup ? 'max-h-[45%] border-t border-klenny-border' : ''}`}>
-                <ChatPane />
-                <SubagentPanel />
+            {activePlanSlug ? (
+              <PlanTabView slug={activePlanSlug} />
+            ) : (
+              <div className="flex flex-1 flex-col min-h-0">
+                {needsSetup && (
+                  <WelcomeScreen
+                    onOpenWorkspace={() => void openWorkspace()}
+                    onOpenSettings={() => useAppStore.getState().setPanel('settings')}
+                  />
+                )}
+                <div className={`flex flex-1 min-h-0 ${needsSetup ? 'max-h-[45%] border-t border-klenny-border' : ''}`}>
+                  <ChatPane />
+                  <SubagentPanel />
+                </div>
               </div>
-            </div>
+            )}
           </>
         )}
         {panel === 'settings' && <SettingsPanel />}
