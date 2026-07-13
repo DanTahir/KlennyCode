@@ -53,7 +53,7 @@ export function ChatPane() {
   }
 
   return (
-    <div className="flex-1 flex flex-col min-w-0">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0">
       <div className="px-4 py-2 border-b border-klenny-border flex items-center justify-between">
         <ModeToggle tabId={tab.id} mode={tab.mode} model={tab.model} />
         <div className="text-xs text-klenny-muted">

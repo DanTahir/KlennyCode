@@ -46,7 +46,7 @@ export function PlanTabView({ slug }: { slug: string }) {
   }
 
   return (
-    <div className="flex-1 flex flex-col min-w-0">
+    <div className="flex-1 flex flex-col min-w-0 min-h-0">
       <div className="px-4 py-2 border-b border-klenny-border flex items-center justify-between bg-klenny-panel">
         <div className="text-sm text-klenny-muted">
           Plan · saved {new Date(plan.createdAt).toLocaleString()}
