@@ -40,7 +40,7 @@ interface AppState {
   activePlanSlug: string | null
   history: ArchivedTabSession[]
   skills: SkillSummary[]
-  panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history'
+  panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history' | 'cost-report'
   terminalOpen: boolean
   terminalHeight: number
   setTerminalOpen: (open: boolean) => void

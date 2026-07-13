@@ -46,6 +46,7 @@ import { resolveEditMatch } from './tools/edit-match'
 import { resolveReasoningEffort } from './reasoning'
 import { toORMessages } from './messages'
 import { trackDailySpend, getDailySpend } from './spend'
+import { recordUsage } from './costReport'
 import { isIndexActive, searchCode } from './codeindex/manager'
 import {
   MAX_SUBAGENT_DEPTH,
@@ -351,6 +352,7 @@ async function agentLoop(
         costWithoutCacheUsd,
         cacheSavingsUsd
       }
+      recordUsage(getWorkspace(), tab.model, assistantMsg.usage)
       emit({
         type: 'spend_update',
         tabId: tab.id,

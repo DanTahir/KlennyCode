@@ -146,6 +146,12 @@ export function SettingsPanel() {
           here doesn't affect your main answers.
         </p>
         <p className="text-xs text-klenny-muted">⚡ marks models that support OpenRouter prompt caching.</p>
+        <button
+          className="px-3 py-1 rounded border border-klenny-border text-sm"
+          onClick={() => useAppStore.getState().setPanel('cost-report')}
+        >
+          Cost Report
+        </button>
       </section>
 
       <section className="mb-6 space-y-2">

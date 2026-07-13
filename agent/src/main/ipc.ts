@@ -16,6 +16,7 @@ import { getApiKey } from './settings'
 import { detectShells } from './shells'
 import { createTerminal, writeTerminal, resizeTerminal, disposeTerminal, setTerminalListeners } from './terminal'
 import { startIndexing, stopIndexing, getIndexStatus, rebuildIndex, deleteLocalIndex, setOnStatusChange } from './agent/codeindex/manager'
+import { getCostReport, resetCostReport } from './agent/costReport'
 import type { AgentStreamEvent, IndexStatus } from '@shared/types'
 
 function broadcast(event: AgentStreamEvent): void {
@@ -203,6 +204,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.updateSupported, async () => isUpdateSupported())
   ipcMain.handle(IPC.checkForUpdates, async () => checkForUpdates())
   ipcMain.handle(IPC.installUpdate, async () => installUpdate())
+
+  ipcMain.handle(IPC.costReportGet, async () => getCostReport(getWorkspace()))
+  ipcMain.handle(IPC.costReportReset, async () => {
+    await resetCostReport()
+    return getCostReport(getWorkspace())
+  })
 }
 
 export function createMainWindow(): BrowserWindow {

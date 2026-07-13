@@ -3,6 +3,7 @@ import type {
   ApprovalDecision,
   AppSettings,
   ArchivedTabSession,
+  CostReport,
   IndexStatus,
   ModelInfo,
   PlanArtifact,
@@ -73,7 +74,10 @@ export const IPC = {
   appVersion: 'app:version',
   updateSupported: 'app:updateSupported',
   checkForUpdates: 'app:checkForUpdates',
-  installUpdate: 'app:installUpdate'
+  installUpdate: 'app:installUpdate',
+
+  costReportGet: 'costReport:get',
+  costReportReset: 'costReport:reset'
 } as const
 
 export interface SendMessagePayload {
@@ -152,6 +156,9 @@ export interface KlennyApi {
   isUpdateSupported: () => Promise<boolean>
   checkForUpdates: () => Promise<void>
   installUpdate: () => Promise<void>
+
+  getCostReport: () => Promise<CostReport>
+  resetCostReport: () => Promise<CostReport>
 
   onStreamEvent: (cb: (event: unknown) => void) => () => void
   onUpdateStatus: (cb: (event: UpdateStatusEvent) => void) => () => void

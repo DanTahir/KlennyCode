@@ -6,6 +6,7 @@ import { TabBar } from './components/TabBar'
 import { ChatPane } from './components/ChatPane'
 import { WelcomeScreen } from './components/WelcomeScreen'
 import { SettingsPanel } from './components/SettingsPanel'
+import { CostReportPanel } from './components/CostReportPanel'
 import { HelpPanel } from './components/HelpPanel'
 import { SkillsPanel } from './components/SkillsPanel'
 import { MemoryPanel } from './components/MemoryPanel'
@@ -168,6 +169,7 @@ export default function App() {
           </>
         )}
         {panel === 'settings' && <SettingsPanel />}
+        {panel === 'cost-report' && <CostReportPanel />}
         {panel === 'help' && <HelpPanel />}
         {panel === 'skills' && <SkillsPanel />}
         {panel === 'memory' && <MemoryPanel />}

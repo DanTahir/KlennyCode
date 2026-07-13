@@ -93,6 +93,26 @@ export interface UsageInfo {
   cacheSavingsUsd: number
 }
 
+export interface CostReportRow {
+  /** model id, or 'all' for the aggregated total row */
+  model: string
+  costUsd: number
+  totalTokens: number
+  inputTokens: number
+  outputTokens: number
+  cachedTokens: number
+  uncachedTokens: number
+}
+
+export interface CostReport {
+  /** current project path, or null if none is open */
+  currentProject: string | null
+  /** per-model rows plus an aggregated 'all' row, scoped to the current project */
+  currentProjectRows: CostReportRow[]
+  /** per-model rows plus an aggregated 'all' row, across every project ever recorded */
+  allProjectsRows: CostReportRow[]
+}
+
 // ---------- Tools ----------
 
 export type ToolName =

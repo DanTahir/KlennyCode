@@ -75,6 +75,9 @@ const api: KlennyApi = {
   checkForUpdates: () => ipcRenderer.invoke(IPC.checkForUpdates),
   installUpdate: () => ipcRenderer.invoke(IPC.installUpdate),
 
+  getCostReport: () => ipcRenderer.invoke(IPC.costReportGet),
+  resetCostReport: () => ipcRenderer.invoke(IPC.costReportReset),
+
   onStreamEvent: (cb) => {
     const listener = (_: unknown, event: AgentStreamEvent) => cb(event)
     ipcRenderer.on('agent:stream', listener)
