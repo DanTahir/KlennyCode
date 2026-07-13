@@ -6,7 +6,7 @@ import { loadSettings, saveSettings, setApiKey, clearApiKey, setPineconeKey, cle
 import { getWorkspace, pickWorkspace, setWorkspace } from './workspace'
 import { sessionStore } from './session/store'
 import { fetchModels } from './openrouter/client'
-import { runUserTurn, stopGeneration, resolveQuestion } from './agent/orchestrator'
+import { runUserTurn, stopGeneration, resolveQuestion, continueTurn } from './agent/orchestrator'
 import { approvalManager } from './agent/approval/manager'
 import { listSkills, readSkill, writeSkill } from './agent/skills/manager'
 import { listSubagentTypes, writeSubagentType } from './agent/subagents/manager'
@@ -123,6 +123,9 @@ export function registerIpcHandlers(): void {
     void runUserTurn(payload.tabId, payload.text, payload.images)
   })
   ipcMain.handle(IPC.stopGeneration, async (_e, tabId: string) => stopGeneration(tabId))
+  ipcMain.handle(IPC.continueTurn, async (_e, tabId: string) => {
+    void continueTurn(tabId)
+  })
 
   ipcMain.handle(IPC.resolveApproval, async (_e, actionId: string, decision) => {
     approvalManager.resolve(actionId, decision)

@@ -21,7 +21,9 @@ const DEFAULTS: AppSettings = {
   embeddingsModel: null,
   vectorStoreBackend: 'local',
   pineconeIndexName: null,
-  hasPineconeKey: false
+  hasPineconeKey: false,
+  continueMode: 'auto',
+  turnCheckpointSteps: 40
 }
 
 function settingsPath(): string {

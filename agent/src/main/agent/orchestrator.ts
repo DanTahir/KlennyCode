@@ -47,8 +47,29 @@ import { resolveReasoningEffort } from './reasoning'
 import { toORMessages } from './messages'
 import { trackDailySpend, getDailySpend } from './spend'
 import { isIndexActive, searchCode } from './codeindex/manager'
+import {
+  MAX_SUBAGENT_DEPTH,
+  MAX_TRUNCATION_RETRIES,
+  DEFAULT_MAX_COMPLETION_TOKENS,
+  checkStepLimit,
+  isSubagentBudgetExceeded,
+  isTruncatedEmpty,
+  isTruncatedToolCallJson
+} from './turnControl'
 
 type Emit = (event: AgentStreamEvent) => void
+
+/** Why a single call to agentLoop stopped recursing. Used by callers (runSubagent, tests) to
+ *  distinguish a genuinely finished task from one that stopped early for some other reason —
+ *  every one of these (besides 'natural') used to be an indistinguishable silent `return`. */
+type LoopStopReason =
+  | 'natural'
+  | 'aborted'
+  | 'checkpoint'
+  | 'hard_limit'
+  | 'subagent_budget'
+  | 'truncation_failed'
+  | 'error'
 
 const abortControllers = new Map<string, AbortController>()
 const questionWaiters = new Map<string, (answers: QuestionAnswer[]) => void>()
@@ -97,6 +118,33 @@ function emitToAll(event: AgentStreamEvent): void {
   }
 }
 
+/** Shared wrapper around agentLoop for both a brand-new user turn and a resumed (post-pause)
+ *  turn — centralizes abort-controller bookkeeping and error/turn_end handling so runUserTurn
+ *  and continueTurn can't drift out of sync with each other. */
+async function startAgentLoop(
+  tab: TabSession,
+  apiKey: string,
+  subagentModel: string,
+  emit: Emit,
+  signal: AbortSignal
+): Promise<void> {
+  try {
+    await agentLoop(tab, apiKey, subagentModel, emit, signal)
+  } catch (e) {
+    if (!signal.aborted) {
+      emit({
+        type: 'error',
+        tabId: tab.id,
+        message: e instanceof Error ? e.message : String(e)
+      })
+    }
+  } finally {
+    endTurn(tab.id, emit)
+    abortControllers.delete(tab.id)
+    endedTurns.delete(tab.id)
+  }
+}
+
 export async function runUserTurn(tabId: string, userText: string, images?: string[]): Promise<void> {
   const tab = sessionStore.getTab(tabId)
   if (!tab) return
@@ -124,21 +172,30 @@ export async function runUserTurn(tabId: string, userText: string, images?: stri
   abortControllers.set(tabId, ac)
   endedTurns.delete(tabId)
 
-  try {
-    await agentLoop(tab, apiKey, settings.subagentModel, emitToAll, ac.signal)
-  } catch (e) {
-    if (!ac.signal.aborted) {
-      emitToAll({
-        type: 'error',
-        tabId,
-        message: e instanceof Error ? e.message : String(e)
-      })
-    }
-  } finally {
-    endTurn(tabId)
-    abortControllers.delete(tabId)
-    endedTurns.delete(tabId)
+  await startAgentLoop(tab, apiKey, settings.subagentModel, emitToAll, ac.signal)
+}
+
+/** Resumes a turn that emitted `turn_paused` (checkpoint step count reached, or the hard safety
+ *  ceiling was hit) — continues agentLoop from the existing message state with a fresh step
+ *  budget. No new user-message bubble is created. */
+export async function continueTurn(tabId: string): Promise<void> {
+  const tab = sessionStore.getTab(tabId)
+  if (!tab) return
+
+  const apiKey = await getApiKey()
+  if (!apiKey) {
+    emitToAll({ type: 'error', tabId, message: 'OpenRouter API key not set.' })
+    return
   }
+
+  const settings = await loadSettings()
+  checkSpendCap(tab, settings.spendingCapUsd, settings.spendingCapPeriod)
+
+  const ac = new AbortController()
+  abortControllers.set(tabId, ac)
+  endedTurns.delete(tabId)
+
+  await startAgentLoop(tab, apiKey, settings.subagentModel, emitToAll, ac.signal)
 }
 
 interface SubagentContext {
@@ -152,18 +209,47 @@ async function agentLoop(
   subagentModel: string,
   emit: Emit,
   signal: AbortSignal,
-  depth = 0,
-  subagentCtx?: SubagentContext
-): Promise<void> {
-  if (depth > 30) return
+  subagentDepth = 0,
+  subagentCtx?: SubagentContext,
+  stepCount = 0,
+  truncationRetries = 0
+): Promise<LoopStopReason> {
+  // Defensive nesting guard only — in practice subagentDepth can only be 0 or 1 since the
+  // `task` tool is filtered out once already inside a subagent context (see the tools filter
+  // below). This exists purely to fail loudly if that invariant is ever broken, not to bound
+  // normal turn length (see stepCount/checkStepLimit for that).
+  if (subagentDepth > MAX_SUBAGENT_DEPTH) {
+    emit({ type: 'error', tabId: tab.id, message: 'Subagent nesting limit exceeded.' })
+    return 'error'
+  }
   throwIfAborted(signal)
 
   const settings = await loadSettings()
+
+  // Bound how long a single turn is allowed to run before pausing/stopping. Subagents have no
+  // UI to click "Continue" from, so they always enforce their own small fixed budget regardless
+  // of the user's continueMode setting; the main loop pauses (checkpoint mode) or keeps going
+  // until a generous hard ceiling (auto mode, the default) — either way, this is now always a
+  // visible event instead of the old silent `return` at a fixed depth of 30.
+  if (subagentCtx) {
+    if (isSubagentBudgetExceeded(stepCount)) return 'subagent_budget'
+  } else {
+    const pauseReason = checkStepLimit({
+      stepCount,
+      continueMode: settings.continueMode,
+      checkpointSteps: settings.turnCheckpointSteps
+    })
+    if (pauseReason) {
+      emit({ type: 'turn_paused', tabId: tab.id, reason: pauseReason, stepsCompleted: stepCount })
+      return pauseReason
+    }
+  }
+
   const models = await fetchModels(apiKey, false, signal)
   const modelInfo = models.find((m) => m.id === tab.model) ?? models[0]
   if (!modelInfo) {
     emit({ type: 'error', tabId: tab.id, message: 'Model not found.' })
-    return
+    return 'error'
   }
 
   const compacted = await maybeCompact({
@@ -208,6 +294,7 @@ async function agentLoop(
 
   let textBuf = ''
   let thinkingBuf = ''
+  let finishReason: string | undefined
   const toolCallsById = new Map<string, ToolCall>()
 
   // Skip the "last message" cache breakpoint on the very first request of a
@@ -232,7 +319,8 @@ async function agentLoop(
     sessionId: tab.id,
     providerPreference: settings.providerPreference,
     supportsExplicitCaching,
-    includeLastMessageCacheBreakpoint
+    includeLastMessageCacheBreakpoint,
+    maxTokens: modelInfo.maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS
   })) {
     if (signal.aborted) break
     if (chunk.type === 'text' && chunk.text) {
@@ -245,6 +333,9 @@ async function agentLoop(
     }
     if (chunk.type === 'tool_calls' && chunk.toolCalls) {
       for (const tc of chunk.toolCalls) toolCallsById.set(tc.id, tc)
+    }
+    if (chunk.type === 'done' && chunk.finishReason) {
+      finishReason = chunk.finishReason
     }
     if (chunk.type === 'usage' && chunk.usage) {
       const { costWithoutCacheUsd, cacheSavingsUsd } = computeCacheSavings(modelInfo, chunk.usage)
@@ -270,31 +361,67 @@ async function agentLoop(
     }
     if (chunk.type === 'error') {
       emit({ type: 'error', tabId: tab.id, message: chunk.error ?? 'Unknown error' })
-      return
+      return 'error'
     }
   }
 
-  if (signal.aborted) return
+  if (signal.aborted) return 'aborted'
 
   const toolCalls = [...toolCallsById.values()]
+
+  // Parse each tool call's arguments once here (reused below when recording the message
+  // block) so we can also detect, upfront, whether any of them look like they were cut off
+  // mid-JSON by the provider's output token limit.
+  const parsedArgsByCallId = new Map<string, Record<string, unknown>>()
+  let anyArgsUnparsable = false
+  for (const tc of toolCalls) {
+    try {
+      parsedArgsByCallId.set(tc.id, JSON.parse(tc.function.arguments || '{}') as Record<string, unknown>)
+    } catch {
+      anyArgsUnparsable = true
+      parsedArgsByCallId.set(tc.id, {})
+    }
+  }
 
   if (thinkingBuf) assistantMsg.blocks.push({ type: 'thinking', text: thinkingBuf })
   if (textBuf) assistantMsg.blocks.push({ type: 'text', text: textBuf })
 
+  // A generation truncated by the provider's output token limit used to look identical to a
+  // normal "model is done" stop (no tool calls, or tool calls with garbage args dispatched
+  // straight through) — silently ending the turn or failing tools with a confusing error.
+  // Detect it and retry instead, up to MAX_TRUNCATION_RETRIES.
+  const truncated =
+    isTruncatedEmpty(finishReason, toolCalls.length > 0, Boolean(textBuf)) ||
+    isTruncatedToolCallJson(finishReason, anyArgsUnparsable)
+  if (truncated) {
+    emit({ type: 'message_end', tabId: tab.id, messageId: assistantId, usage: assistantMsg.usage })
+    await sessionStore.updateTab(tab)
+    if (signal.aborted) return 'aborted'
+
+    if (truncationRetries + 1 > MAX_TRUNCATION_RETRIES) {
+      emit({
+        type: 'error',
+        tabId: tab.id,
+        message:
+          'The model repeatedly cut its response off at the output token limit and retrying did not recover. Try again, or switch to a model with a larger output limit.'
+      })
+      return 'truncation_failed'
+    }
+    // Discard this attempt's (possibly garbage) tool calls entirely rather than dispatching
+    // them, and re-issue the same request. Doesn't count as a new step — it's a retry of the
+    // same one.
+    return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount, truncationRetries + 1)
+  }
+
   if (!toolCalls.length) {
     emit({ type: 'message_end', tabId: tab.id, messageId: assistantId, usage: assistantMsg.usage })
     await sessionStore.updateTab(tab)
-    return
+    return 'natural'
   }
 
   // Record assistant tool calls in message
   for (const tc of toolCalls) {
-    let args: Record<string, unknown> = {}
-    try {
-      args = JSON.parse(tc.function.arguments || '{}') as Record<string, unknown>
-    } catch {
-      args = {}
-    }
+    const args = parsedArgsByCallId.get(tc.id) ?? {}
     const block: ToolCallBlock = {
       type: 'tool_call',
       id: tc.id,
@@ -309,7 +436,7 @@ async function agentLoop(
   emit({ type: 'message_end', tabId: tab.id, messageId: assistantId, usage: assistantMsg.usage })
   await sessionStore.updateTab(tab)
 
-  if (signal.aborted) return
+  if (signal.aborted) return 'aborted'
 
   // Execute tools (parallel where independent).
   // Subagents run headless (no UI to answer approvals/questions), so force
@@ -317,11 +444,23 @@ async function agentLoop(
   const effectiveApprovalMode = subagentCtx ? 'auto' : settings.approvalMode
   const results = await Promise.all(
     toolCalls.map((tc) =>
-      executeTool(tc, tab, apiKey, subagentModel, effectiveApprovalMode, emit, signal, depth, models, subagentCtx, settings.shellId)
+      executeTool(
+        tc,
+        tab,
+        apiKey,
+        subagentModel,
+        effectiveApprovalMode,
+        emit,
+        signal,
+        subagentDepth,
+        models,
+        subagentCtx,
+        settings.shellId
+      )
     )
   )
 
-  if (signal.aborted) return
+  if (signal.aborted) return 'aborted'
 
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i]
@@ -359,8 +498,8 @@ async function agentLoop(
   }
 
   await sessionStore.updateTab(tab)
-  if (signal.aborted) return
-  await agentLoop(tab, apiKey, subagentModel, emit, signal, depth + 1, subagentCtx)
+  if (signal.aborted) return 'aborted'
+  return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount + 1, 0)
 }
 
 async function executeTool(
@@ -371,7 +510,7 @@ async function executeTool(
   approvalMode: 'manual' | 'auto',
   emit: Emit,
   signal: AbortSignal,
-  depth: number,
+  subagentDepth: number,
   models: ModelInfo[],
   subagentCtx?: SubagentContext,
   shellId?: string | null
@@ -434,7 +573,7 @@ async function executeTool(
   }
 
   try {
-    const payload = await dispatchTool(name, args, tab, apiKey, subagentModel, emit, signal, depth, models, shellId)
+    const payload = await dispatchTool(name, args, tab, apiKey, subagentModel, emit, signal, subagentDepth, models, shellId)
     return { payload, status: payload.ok ? 'success' : 'error' }
   } catch (e) {
     return {
@@ -452,7 +591,7 @@ async function dispatchTool(
   subagentModel: string,
   emit: Emit,
   signal: AbortSignal,
-  depth: number,
+  subagentDepth: number,
   models: ModelInfo[],
   shellId?: string | null
 ): Promise<ToolResultPayload> {
@@ -503,7 +642,7 @@ async function dispatchTool(
       return { ok: true, summary: 'Plan saved', data: { plan } }
     }
     case 'task':
-      return runSubagent(tab, apiKey, subagentModel, args, emit, signal, depth)
+      return runSubagent(tab, apiKey, subagentModel, args, emit, signal, subagentDepth)
     case 'codebase_search': {
       const query = String(args.query ?? '')
       const topK = typeof args.topK === 'number' ? args.topK : 8
@@ -526,7 +665,7 @@ async function runSubagent(
   args: Record<string, unknown>,
   emit: Emit,
   signal: AbortSignal,
-  depth: number
+  subagentDepth: number
 ): Promise<ToolResultPayload> {
   const agentType = String(args.agent_type)
   const prompt = String(args.prompt)
@@ -574,8 +713,8 @@ async function runSubagent(
   const subagentCtx: SubagentContext = { allowedTools: typeDef.tools }
 
   try {
-    await agentLoop(subTab, apiKey, defaultSubModel, capture, signal, depth + 1, subagentCtx)
-    const summary =
+    const reason = await agentLoop(subTab, apiKey, defaultSubModel, capture, signal, subagentDepth + 1, subagentCtx)
+    let summary =
       subTab.messages
         .filter((m) => m.role === 'assistant')
         .flatMap((m) => m.blocks)
@@ -583,7 +722,11 @@ async function runSubagent(
         .map((b) => (b as { text: string }).text)
         .join('\n') || 'Subagent completed with no text output.'
 
-    run.status = 'success'
+    if (reason === 'subagent_budget') {
+      summary += '\n\n[Stopped: subagent reached its step budget before finishing — the summary above reflects partial progress only.]'
+    }
+
+    run.status = reason === 'error' || reason === 'truncation_failed' ? 'error' : 'success'
     run.summary = summary.slice(0, 8000)
     run.finishedAt = Date.now()
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
@@ -593,7 +736,7 @@ async function runSubagent(
       new Notification({ title: 'Klenny Code subagent finished', body: `${agentType}: ${desc}` }).show()
     }
 
-    return { ok: true, summary: run.summary, data: { run } }
+    return { ok: run.status === 'success', summary: run.summary, data: { run } }
   } catch (e) {
     run.status = 'error'
     run.summary = e instanceof Error ? e.message : String(e)

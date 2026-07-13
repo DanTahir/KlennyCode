@@ -345,6 +345,36 @@ export function SettingsPanel() {
       </section>
 
       <section className="mb-6 space-y-2">
+        <h3 className="font-medium">Long-running tasks</h3>
+        <select
+          className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
+          value={settings.continueMode}
+          onChange={(e) => void patch({ continueMode: e.target.value as 'auto' | 'checkpoint' })}
+        >
+          <option value="auto">Auto-continue (default) — keep working until the task is done</option>
+          <option value="checkpoint">Checkpoint — pause every N steps for a manual Continue click</option>
+        </select>
+        <p className="text-xs text-klenny-muted">
+          Controls how long the agent is allowed to keep calling tools in a single turn before stopping. "Auto-continue"
+          pushes through long, multi-step tasks on its own up to a generous safety ceiling. "Checkpoint" pauses
+          periodically and shows a Continue button so you stay in control.
+        </p>
+        {settings.continueMode === 'checkpoint' && (
+          <div className="space-y-1">
+            <label className="block text-sm">Steps per checkpoint</label>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
+              value={settings.turnCheckpointSteps}
+              onChange={(e) => void patch({ turnCheckpointSteps: Math.max(1, Number(e.target.value) || 1) })}
+            />
+          </div>
+        )}
+      </section>
+
+      <section className="mb-6 space-y-2">
         <h3 className="font-medium">Approval mode</h3>
         <select className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded" value={settings.approvalMode} onChange={(e) => void patch({ approvalMode: e.target.value as 'manual' | 'auto' })}>
           <option value="manual">Manual review (default)</option>

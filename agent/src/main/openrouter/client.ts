@@ -48,6 +48,11 @@ export interface StreamChunk {
   toolCalls?: ToolCall[]
   usage?: UsageChunk
   error?: string
+  /** upstream `choices[0].finish_reason` — only meaningfully populated on the 'done' chunk.
+   *  'length' means the provider cut the generation off at the output token limit (possibly
+   *  mid tool-call-arguments JSON); orchestrator.ts uses this to detect/recover from truncation
+   *  instead of treating a cut-off response as a normal completed turn. */
+  finishReason?: string
 }
 
 let modelsCache: ModelInfo[] | null = null
@@ -93,6 +98,7 @@ export async function fetchModels(apiKey: string, force = false, signal?: AbortS
     const pricing = (m.pricing as { prompt?: string; completion?: string; input_cache_read?: string; input_cache_write?: string }) ?? {}
     const supported = (m.supported_parameters as string[]) ?? []
     const reasoningMeta = m.reasoning as { supported_efforts?: string[]; mandatory?: boolean } | undefined
+    const topProvider = m.top_provider as { max_completion_tokens?: number } | undefined
     return {
       id,
       name: String(m.name ?? id),
@@ -110,6 +116,8 @@ export async function fetchModels(apiKey: string, force = false, signal?: AbortS
       ),
       supportedReasoningEfforts: reasoningMeta?.supported_efforts,
       reasoningMandatory: reasoningMeta?.mandatory,
+      maxCompletionTokens:
+        typeof topProvider?.max_completion_tokens === 'number' ? topProvider.max_completion_tokens : undefined,
       pinned: CURATED_MODEL_IDS.includes(id)
     } satisfies ModelInfo
   })
@@ -142,6 +150,9 @@ export async function* streamChatCompletion(opts: {
   supportsExplicitCaching?: boolean
   /** skip the "last message" cache breakpoint on the very first request of a conversation (nothing to read back yet) */
   includeLastMessageCacheBreakpoint?: boolean
+  /** explicit output token cap, sized generously off the model's own reported max — reduces how
+   *  often generations get cut off mid-response/mid-tool-call by provider defaults */
+  maxTokens?: number
 }): AsyncGenerator<StreamChunk> {
   const messages = applyCacheControl(
     opts.messages,
@@ -157,6 +168,7 @@ export async function* streamChatCompletion(opts: {
     body.tools = opts.tools
     body.tool_choice = 'auto'
   }
+  if (opts.maxTokens) body.max_tokens = opts.maxTokens
   // 3-way: models with granular effort control get `reasoning.effort`; models that support
   // reasoning but not effort levels (common for Anthropic/Gemini families) get `enabled: true`
   // to preserve the previous "always on when supported" behavior; models without reasoning
@@ -211,6 +223,7 @@ export async function* streamChatCompletion(opts: {
       const decoder = new TextDecoder()
       let buffer = ''
       const toolCalls: Map<number, ToolCall> = new Map()
+      let finishReason: string | undefined
 
       while (true) {
         if (opts.signal?.aborted) {
@@ -229,7 +242,7 @@ export async function* streamChatCompletion(opts: {
           const data = trimmed.slice(5).trim()
           if (data === '[DONE]') {
             if (toolCalls.size) yield { type: 'tool_calls', toolCalls: [...toolCalls.values()] }
-            yield { type: 'done' }
+            yield { type: 'done', finishReason }
             return
           }
           try {
@@ -258,6 +271,7 @@ export async function* streamChatCompletion(opts: {
             }
 
             const delta = parsed.choices?.[0]?.delta
+            if (parsed.choices?.[0]?.finish_reason) finishReason = parsed.choices[0].finish_reason
             if (delta?.reasoning) yield { type: 'reasoning', text: delta.reasoning }
             if (delta?.content) yield { type: 'text', text: delta.content }
 
@@ -294,7 +308,7 @@ export async function* streamChatCompletion(opts: {
       }
 
       if (toolCalls.size) yield { type: 'tool_calls', toolCalls: [...toolCalls.values()] }
-      yield { type: 'done' }
+      yield { type: 'done', finishReason }
       return
     } catch (e) {
       if (opts.signal?.aborted) return

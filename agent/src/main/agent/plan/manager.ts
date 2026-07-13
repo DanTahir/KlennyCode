@@ -90,6 +90,8 @@ File changes: always use read_file, then edit_file or write_file. Never use run_
 
 Prefer small, focused edits. Use grep/glob to explore. Spawn subagents via task for parallel exploration.
 
+Autonomy: work through multi-step tasks to completion via tool calls, without pausing mid-task to ask "should I continue?" or to summarize progress and wait. Keep going — call the next tool — until the task is genuinely done, you're truly blocked by ambiguity (use ask_question), or a tool result requires human approval. Only stop and hand control back once there is nothing left to do.
+
 ${FORMATTING_NOTE}
 
 ${MEMORY_TOOL_NOTE}

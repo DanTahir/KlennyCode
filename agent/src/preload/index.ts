@@ -27,6 +27,7 @@ const api: KlennyApi = {
 
   sendMessage: (payload) => ipcRenderer.invoke(IPC.sendMessage, payload),
   stopGeneration: (tabId) => ipcRenderer.invoke(IPC.stopGeneration, tabId),
+  continueTurn: (tabId) => ipcRenderer.invoke(IPC.continueTurn, tabId),
 
   resolveApproval: (actionId, decision) => ipcRenderer.invoke(IPC.resolveApproval, actionId, decision),
   resolveQuestion: (questionId, answers) => ipcRenderer.invoke(IPC.resolveQuestion, questionId, answers),

@@ -43,6 +43,10 @@ interface AppState {
   panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history'
   streamingTabIds: Set<string>
   tabErrors: Record<string, string>
+  /** Tabs whose turn stopped early (checkpoint step count reached, or the hard safety ceiling
+   *  was hit) and are waiting for the user to click Continue. Cleared as soon as a new
+   *  message_start comes in for that tab (i.e. the turn actually resumed). */
+  pausedTabs: Record<string, { reason: 'checkpoint' | 'hard_limit'; stepsCompleted: number }>
   updateStatus: UpdateStatusEvent | null
   setUpdateStatus: (e: UpdateStatusEvent) => void
   updateSupported: boolean
@@ -84,6 +88,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   panel: 'chat',
   streamingTabIds: new Set(),
   tabErrors: {},
+  pausedTabs: {},
   updateStatus: null,
   setUpdateStatus: (updateStatus) => set({ updateStatus }),
   updateSupported: false,
@@ -135,7 +140,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         const tabs = state.tabs.map((t) =>
           t.id === e.tabId ? { ...t, messages: [...t.messages, e.message] } : t
         )
-        set({ tabs, tabErrors: { ...state.tabErrors, [e.tabId]: '' } })
+        const pausedTabs = { ...state.pausedTabs }
+        delete pausedTabs[e.tabId]
+        set({ tabs, tabErrors: { ...state.tabErrors, [e.tabId]: '' }, pausedTabs })
         break
       }
       case 'message_start': {
@@ -144,7 +151,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         )
         const streaming = new Set(state.streamingTabIds)
         streaming.add(e.tabId)
-        set({ tabs, streamingTabIds: streaming })
+        const pausedTabs = { ...state.pausedTabs }
+        delete pausedTabs[e.tabId]
+        set({ tabs, streamingTabIds: streaming, pausedTabs })
         break
       }
       case 'text_delta':
@@ -231,6 +240,15 @@ export const useAppStore = create<AppState>((set, get) => ({
         const streaming = new Set(state.streamingTabIds)
         streaming.delete(e.tabId)
         set({ streamingTabIds: streaming })
+        break
+      }
+      case 'turn_paused': {
+        set({
+          pausedTabs: {
+            ...state.pausedTabs,
+            [e.tabId]: { reason: e.reason, stepsCompleted: e.stepsCompleted }
+          }
+        })
         break
       }
       case 'pending_action':

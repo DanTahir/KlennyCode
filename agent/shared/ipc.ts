@@ -39,6 +39,7 @@ export const IPC = {
 
   sendMessage: 'chat:sendMessage',
   stopGeneration: 'chat:stop',
+  continueTurn: 'chat:continue',
 
   resolveApproval: 'approval:resolve',
   resolveQuestion: 'question:resolve',
@@ -100,6 +101,9 @@ export interface KlennyApi {
 
   sendMessage: (payload: SendMessagePayload) => Promise<void>
   stopGeneration: (tabId: string) => Promise<void>
+  /** Resumes a turn that emitted `turn_paused` (checkpoint reached or hard limit hit) — continues
+   *  agentLoop from the existing message state, no new user-message bubble. */
+  continueTurn: (tabId: string) => Promise<void>
 
   resolveApproval: (actionId: string, decision: ApprovalDecision) => Promise<void>
   resolveQuestion: (questionId: string, answers: QuestionAnswer[]) => Promise<void>

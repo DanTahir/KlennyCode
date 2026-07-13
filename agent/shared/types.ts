@@ -28,6 +28,8 @@ export interface ModelInfo {
   supportedReasoningEfforts?: string[]
   /** true if the model requires reasoning to always be on (we never send effort:'none' anyway, so this is informational only) */
   reasoningMandatory?: boolean
+  /** provider-reported max output tokens for this model (OpenRouter `top_provider.max_completion_tokens`); undefined if not reported, in which case callers fall back to a conservative default */
+  maxCompletionTokens?: number
   pinned?: boolean
 }
 
@@ -282,6 +284,11 @@ export interface AppSettings {
   pineconeIndexName: string | null
   /** boolean flag only — actual secret is encrypted separately and never round-trips to the renderer, same pattern as hasApiKey */
   hasPineconeKey: boolean
+  /** 'auto' (default): the agent keeps working through long tasks on its own up to a generous hard safety ceiling.
+   *  'checkpoint': the agent pauses every `turnCheckpointSteps` tool-round-trips and waits for the user to click Continue. */
+  continueMode: 'auto' | 'checkpoint'
+  /** only used when continueMode === 'checkpoint' — how many tool-round-trips to run before pausing */
+  turnCheckpointSteps: number
 }
 
 // ---------- Shells ----------
@@ -310,6 +317,11 @@ export type AgentStreamEvent =
   | { type: 'message_start'; tabId: string; message: ChatMessage }
   | { type: 'message_end'; tabId: string; messageId: string; usage?: UsageInfo }
   | { type: 'turn_end'; tabId: string }
+  /** Turn stopped early without finishing the task — either the checkpoint step count was
+   *  reached (continueMode === 'checkpoint') or the hard safety ceiling was hit (always
+   *  enforced). `turn_end` is still emitted separately right after this to clear streaming UI
+   *  state; this event is what drives the "paused, click Continue" banner. */
+  | { type: 'turn_paused'; tabId: string; reason: 'checkpoint' | 'hard_limit'; stepsCompleted: number }
   | { type: 'error'; tabId: string; message: string }
   | { type: 'pending_action'; tabId: string; action: PendingAction }
   | { type: 'pending_action_resolved'; tabId: string; actionId: string }
