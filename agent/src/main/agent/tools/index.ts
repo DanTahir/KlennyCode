@@ -146,6 +146,8 @@ export async function grepTool(
     path?: string
     glob?: string
     case_insensitive?: boolean
+    /** Lines of context to include before/after each match (ripgrep -C), capped at 10. */
+    context?: number
   },
   signal?: AbortSignal
 ): Promise<ToolResultPayload> {
@@ -155,28 +157,38 @@ export async function grepTool(
   if (!assertInWorkspace(searchPath)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
 
   const rgArgs = ['--json', '--max-count', '200', '-e', args.pattern, searchPath]
+  const context = Math.max(0, Math.min(args.context ?? 0, 10))
+  if (context > 0) rgArgs.unshift('-C', String(context))
   if (args.case_insensitive) rgArgs.unshift('-i')
   if (args.glob) rgArgs.unshift('--glob', args.glob)
 
   try {
     const output = await runProcess(getRgPath(), rgArgs, ws, 30_000, false, signal)
-    const hits: Array<{ file: string; line: number; text: string }> = []
+    // With context > 0, ripgrep's --json stream interleaves "match" lines with "context"
+    // lines around them — both carry the same path/line_number/lines shape, so we tag each
+    // with `match` to distinguish the actual hit from its surrounding context.
+    const hits: Array<{ file: string; line: number; text: string; match: boolean }> = []
     for (const line of output.stdout.split('\n')) {
       if (!line.trim()) continue
       try {
-        const j = JSON.parse(line) as { type: string; data?: { path?: { text: string }; line_number?: number; lines?: { text: string } } }
-        if (j.type === 'match' && j.data?.path?.text) {
+        const j = JSON.parse(line) as {
+          type: string
+          data?: { path?: { text: string }; line_number?: number; lines?: { text: string } }
+        }
+        if ((j.type === 'match' || j.type === 'context') && j.data?.path?.text) {
           hits.push({
             file: j.data.path.text.replace(ws + '/', '').replace(ws + '\\', ''),
             line: j.data.line_number ?? 0,
-            text: (j.data.lines?.text ?? '').trimEnd()
+            text: (j.data.lines?.text ?? '').trimEnd(),
+            match: j.type === 'match'
           })
         }
       } catch {
         // ignore
       }
     }
-    return { ok: true, summary: `Found ${hits.length} matches`, data: { hits } }
+    const matchCount = hits.filter((h) => h.match).length
+    return { ok: true, summary: `Found ${matchCount} matches`, data: { hits } }
   } catch (err) {
     return { ok: false, summary: 'grep failed', error: err instanceof Error ? err.message : String(err) }
   }
@@ -191,16 +203,61 @@ export async function globTool(args: { pattern: string; cwd?: string }): Promise
   return { ok: true, summary: `Found ${files.length} files`, data: { files: files.slice(0, 500) } }
 }
 
+/** DuckDuckGo's HTML result links are redirects (`//duckduckgo.com/l/?uddg=<encoded-target>&rut=...`),
+ *  not the real target — unwrap the `uddg` param to get the actual URL the model can fetch. */
+function decodeDdgRedirect(href: string): string | null {
+  try {
+    const normalized = href.replace(/&amp;/g, '&')
+    const withProtocol = normalized.startsWith('//') ? `https:${normalized}` : normalized
+    const parsed = new URL(withProtocol)
+    return parsed.searchParams.get('uddg') || withProtocol
+  } catch {
+    return null
+  }
+}
+
+function decodeHtmlEntities(text: string): string {
+  return text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+}
+
 export async function webSearchTool(args: { query: string }): Promise<ToolResultPayload> {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(args.query)}`
   const res = await fetch(url, { headers: { 'User-Agent': 'KlennyCode/0.1' } })
   const html = await res.text()
-  const snippets = [...html.matchAll(/class="result__a"[^>]*>([^<]+)</g)].slice(0, 8).map((m) => m[1])
-  return { ok: true, summary: `Search: ${args.query}`, data: { query: args.query, snippets } }
+  const results: Array<{ title: string; url: string }> = []
+  // Match the whole <a ... class="result__a" ...>Title</a> tag so href can be pulled out
+  // regardless of attribute order (href appears before class in DuckDuckGo's markup).
+  const anchorRe = /<a[^>]*class="result__a"[^>]*>([\s\S]*?)<\/a>/g
+  let m: RegExpExecArray | null
+  while ((m = anchorRe.exec(html)) && results.length < 8) {
+    const hrefMatch = m[0].match(/href="([^"]*)"/)
+    const targetUrl = hrefMatch && decodeDdgRedirect(hrefMatch[1])
+    if (!targetUrl) continue
+    const title = decodeHtmlEntities(m[1].replace(/<[^>]+>/g, '')).trim()
+    results.push({ title, url: targetUrl })
+  }
+  return { ok: true, summary: `Search: ${args.query}`, data: { query: args.query, results } }
 }
 
 export async function fetchUrlTool(args: { url: string }): Promise<ToolResultPayload> {
   const res = await fetch(args.url, { headers: { 'User-Agent': 'KlennyCode/0.1' } })
+  const contentType = res.headers.get('content-type') ?? ''
+  if (!res.ok) {
+    return {
+      ok: false,
+      summary: `Fetch failed: HTTP ${res.status}`,
+      error: 'http_error',
+      data: { url: args.url, status: res.status }
+    }
+  }
+  if (!/text|html|json|xml/i.test(contentType)) {
+    return {
+      ok: false,
+      summary: `Fetch failed: unsupported content-type "${contentType || 'unknown'}"`,
+      error: 'unsupported_content_type',
+      data: { url: args.url, contentType }
+    }
+  }
   const text = await res.text()
   const stripped = text.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/<style[\s\S]*?<\/style>/gi, '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
   return { ok: true, summary: `Fetched ${args.url}`, data: { url: args.url, content: stripped.slice(0, 12_000) } }

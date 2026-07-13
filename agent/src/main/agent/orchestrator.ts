@@ -607,7 +607,10 @@ async function dispatchTool(
     case 'delete_file':
       return deleteFileTool(args as { path: string })
     case 'grep':
-      return grepTool(args as { pattern: string; path?: string; glob?: string; case_insensitive?: boolean }, signal)
+      return grepTool(
+        args as { pattern: string; path?: string; glob?: string; case_insensitive?: boolean; context?: number },
+        signal
+      )
     case 'glob':
       return globTool(args as { pattern: string; cwd?: string })
     case 'run_command':

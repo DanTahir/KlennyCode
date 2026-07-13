@@ -73,14 +73,16 @@ export function getToolDefinitions(
       type: 'function',
       function: {
         name: 'grep',
-        description: 'Search files with regex using ripgrep.',
+        description:
+          'Search files with regex using ripgrep. Set context to include surrounding lines (like grep -C) — use it instead of a follow-up read_file when the match lines alone are enough to decide what to do or to see what to pass as old_string in edit_file.',
         parameters: {
           type: 'object',
           properties: {
             pattern: { type: 'string' },
             path: { type: 'string' },
             glob: { type: 'string' },
-            case_insensitive: { type: 'boolean' }
+            case_insensitive: { type: 'boolean' },
+            context: { type: 'number', description: 'Lines of context before/after each match, 0-10 (default 0).' }
           },
           required: ['pattern']
         }
@@ -119,7 +121,7 @@ export function getToolDefinitions(
       type: 'function',
       function: {
         name: 'web_search',
-        description: 'Search the web for documentation or errors.',
+        description: 'Search the web for documentation or errors. Returns a list of { title, url } results — pass a result\'s url to fetch_url to read its content.',
         parameters: {
           type: 'object',
           properties: { query: { type: 'string' } },
@@ -131,7 +133,7 @@ export function getToolDefinitions(
       type: 'function',
       function: {
         name: 'fetch_url',
-        description: 'Fetch a URL and return readable text.',
+        description: 'Fetch a URL and return readable text. Fails with ok:false on a non-2xx response or a non-text/HTML content-type (e.g. PDFs, images) — do not retry the same URL after that, try a different source instead.',
         parameters: {
           type: 'object',
           properties: { url: { type: 'string' } },
@@ -195,7 +197,8 @@ export function getToolDefinitions(
       type: 'function',
       function: {
         name: 'task',
-        description: 'Spawn a subagent with isolated context. Returns a summary only.',
+        description:
+          "Delegate a self-contained chunk of work to a subagent that runs in its own isolated context window and reports back only a final summary. Use it proactively, before doing the work yourself, when a step is open-ended or likely to take many tool calls — broad codebase exploration, multi-file research, hunting for where something is handled, verifying a hypothesis across many files — so that exploration noise (file reads, grep hits, dead ends) stays out of your own context instead of bloating it. Also use it to fan out independent, parallelizable lookups by issuing multiple task calls in the same turn (e.g. researching several unrelated libraries at once). Do NOT delegate a single small, well-scoped edit or lookup you could finish yourself in 1-2 tool calls — the round-trip isn't worth it there. Pick agent_type from the Subagents catalog in the system prompt. Write `prompt` as a fully self-contained brief: the subagent sees nothing else from this conversation, so include all relevant context, files, and the exact question or outcome you need back.",
         parameters: {
           type: 'object',
           properties: {
