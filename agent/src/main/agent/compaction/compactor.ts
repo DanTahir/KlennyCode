@@ -2,6 +2,9 @@ import type { ChatMessage, ModelInfo } from '@shared/types'
 import { summarizeMessages } from '../../openrouter/client'
 import { modelSupportsCaching } from '../../openrouter/caching'
 
+/** Hard cap: compact once history hits this many tokens, no matter how large the model's context window is. */
+const MAX_TOKENS_BEFORE_COMPACTION = 200_000
+
 export async function maybeCompact(opts: {
   messages: ChatMessage[]
   model: ModelInfo
@@ -15,7 +18,7 @@ export async function maybeCompact(opts: {
 }): Promise<{ messages: ChatMessage[]; compacted: boolean; summaryMessageId?: string }> {
   const { messages, model, apiKey, signal, promptCachingEnabled, utilityModel, models } = opts
   const tokenEstimate = estimateTokens(messages)
-  const threshold = model.contextLength * 0.75
+  const threshold = Math.min(model.contextLength * 0.75, MAX_TOKENS_BEFORE_COMPACTION)
   if (tokenEstimate < threshold) return { messages, compacted: false }
 
   const keepRecent = 12
