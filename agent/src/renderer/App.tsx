@@ -13,6 +13,7 @@ import { PlansPanel } from './components/PlansPanel'
 import { PlanTabView } from './components/PlanTabView'
 import { HistoryPanel } from './components/HistoryPanel'
 import { SubagentPanel } from './components/SubagentPanel'
+import { TerminalPanel } from './components/TerminalPanel'
 
 export default function App() {
   const {
@@ -99,6 +100,10 @@ export default function App() {
         e.preventDefault()
         void window.klenny.closeTab(activeTabId).then(setTabs)
       }
+      if ((e.ctrlKey || e.metaKey) && e.key === '`') {
+        e.preventDefault()
+        useAppStore.getState().toggleTerminal()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -168,6 +173,7 @@ export default function App() {
         {panel === 'memory' && <MemoryPanel />}
         {panel === 'plans' && <PlansPanel />}
         {panel === 'history' && <HistoryPanel />}
+        <TerminalPanel />
       </div>
     </div>
   )

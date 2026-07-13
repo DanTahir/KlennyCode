@@ -76,6 +76,14 @@ handle X") rather than exact keyword matches, complementing `grep`/`glob` rather
 
 Use **+** or `Ctrl+T` for a new chat tab. `Ctrl+W` closes the active tab. Closing the last tab opens a fresh one.
 
+## Terminal
+
+A collapsible terminal is docked under the chat view — click the "Terminal" bar at the bottom (or press
+`` Ctrl+` ``) to expand it. It runs a real interactive shell session using whichever shell you've selected
+in Settings → Shell (or the OS default if left on Auto), rooted at your open project folder. The session
+stays alive while you collapse/expand the panel, and only restarts if you switch workspaces, click
+"Restart", or close the app.
+
 ## Spending cap
 
 Set a per-session or daily USD cap in Settings. Klenny Code warns as you approach it and blocks further model calls when exceeded.
@@ -86,6 +94,7 @@ Set a per-session or daily USD cap in Settings. Klenny Code warns as you approac
 |----------|--------|
 | `Ctrl+T` | New tab |
 | `Ctrl+W` | Close tab |
+| `` Ctrl+` `` | Toggle terminal |
 | `Enter` | Send message |
 | `Shift+Enter` | New line |
 

@@ -15,6 +15,21 @@ const api: KlennyApi = {
   listModels: (force) => ipcRenderer.invoke(IPC.modelsList, force),
   listShells: () => ipcRenderer.invoke(IPC.shellsList),
 
+  createTerminal: (cols, rows) => ipcRenderer.invoke(IPC.terminalCreate, cols, rows),
+  writeTerminal: (id, data) => ipcRenderer.invoke(IPC.terminalWrite, id, data),
+  resizeTerminal: (id, cols, rows) => ipcRenderer.invoke(IPC.terminalResize, id, cols, rows),
+  disposeTerminal: (id) => ipcRenderer.invoke(IPC.terminalDispose, id),
+  onTerminalData: (cb) => {
+    const listener = (_: unknown, id: string, data: string) => cb(id, data)
+    ipcRenderer.on('terminal:data', listener)
+    return () => ipcRenderer.removeListener('terminal:data', listener)
+  },
+  onTerminalExit: (cb) => {
+    const listener = (_: unknown, id: string, exitCode: number) => cb(id, exitCode)
+    ipcRenderer.on('terminal:exit', listener)
+    return () => ipcRenderer.removeListener('terminal:exit', listener)
+  },
+
   listTabs: () => ipcRenderer.invoke(IPC.tabsList),
   createTab: () => ipcRenderer.invoke(IPC.tabCreate),
   closeTab: (tabId) => ipcRenderer.invoke(IPC.tabClose, tabId),

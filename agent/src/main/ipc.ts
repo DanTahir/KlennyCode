@@ -14,12 +14,25 @@ import { listPlans, readPlan } from './agent/plan/manager'
 import { readMemoryFile, writeMemoryFile } from './agent/memory/manager'
 import { getApiKey } from './settings'
 import { detectShells } from './shells'
+import { createTerminal, writeTerminal, resizeTerminal, disposeTerminal, setTerminalListeners } from './terminal'
 import { startIndexing, stopIndexing, getIndexStatus, rebuildIndex, deleteLocalIndex, setOnStatusChange } from './agent/codeindex/manager'
 import type { AgentStreamEvent, IndexStatus } from '@shared/types'
 
 function broadcast(event: AgentStreamEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('agent:stream', event)
+  }
+}
+
+function broadcastTerminalData(id: string, data: string): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('terminal:data', id, data)
+  }
+}
+
+function broadcastTerminalExit(id: string, exitCode: number): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send('terminal:exit', id, exitCode)
   }
 }
 
@@ -92,6 +105,17 @@ export function registerIpcHandlers(): void {
     return fetchModels(key, force)
   })
   ipcMain.handle(IPC.shellsList, async () => detectShells())
+
+  setTerminalListeners(broadcastTerminalData, broadcastTerminalExit)
+  ipcMain.handle(IPC.terminalCreate, async (_e, cols: number, rows: number) => {
+    const settings = await loadSettings()
+    const cwd = getWorkspace() ?? process.cwd()
+    const session = createTerminal({ shellId: settings.shellId, cwd, cols, rows })
+    return { id: session.id, shellName: session.shell.name }
+  })
+  ipcMain.handle(IPC.terminalWrite, async (_e, id: string, data: string) => writeTerminal(id, data))
+  ipcMain.handle(IPC.terminalResize, async (_e, id: string, cols: number, rows: number) => resizeTerminal(id, cols, rows))
+  ipcMain.handle(IPC.terminalDispose, async (_e, id: string) => disposeTerminal(id))
 
   ipcMain.handle(IPC.tabsList, async () => {
     const tabs = sessionStore.getTabs()

@@ -41,6 +41,11 @@ interface AppState {
   history: ArchivedTabSession[]
   skills: SkillSummary[]
   panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history'
+  terminalOpen: boolean
+  terminalHeight: number
+  setTerminalOpen: (open: boolean) => void
+  toggleTerminal: () => void
+  setTerminalHeight: (h: number) => void
   streamingTabIds: Set<string>
   tabErrors: Record<string, string>
   /** Tabs whose turn stopped early (checkpoint step count reached, or the hard safety ceiling
@@ -86,6 +91,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   history: [],
   skills: [],
   panel: 'chat',
+  terminalOpen: false,
+  terminalHeight: 260,
+  setTerminalOpen: (terminalOpen) => set({ terminalOpen }),
+  toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
+  setTerminalHeight: (terminalHeight) => set({ terminalHeight: Math.max(120, Math.min(720, terminalHeight)) }),
   streamingTabIds: new Set(),
   tabErrors: {},
   pausedTabs: {},

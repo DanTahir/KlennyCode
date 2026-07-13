@@ -7,6 +7,7 @@ import { setWorkspace } from './workspace'
 import { sessionStore } from './session/store'
 import { approvalManager } from './agent/approval/manager'
 import { stopIndexing } from './agent/codeindex/manager'
+import { disposeAllTerminals } from './terminal'
 
 app.whenReady().then(async () => {
   if (process.platform === 'win32') {
@@ -37,4 +38,5 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   void stopIndexing()
+  disposeAllTerminals()
 })

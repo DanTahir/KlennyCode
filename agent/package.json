@@ -18,7 +18,6 @@
     "build": "electron-vite build",
     "build:tsc": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "start": "electron-vite preview",
-    "postinstall": "electron-builder install-app-deps",
     "icons": "npx tsx scripts/generate-icons.ts",
     "test": "npx bun test",
     "dist:win": "npm run build && electron-builder --win",
@@ -34,6 +33,9 @@
     "gray-matter": "^4.0.3",
     "ignore": "^7.0.6",
     "nanoid": "^5.0.9",
+    "node-pty": "^1.1.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.3",
@@ -64,6 +66,7 @@
     "appId": "com.dantahir.klennycode",
     "productName": "Klenny Code",
     "executableName": "KlennyCode",
+    "npmRebuild": false,
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -75,7 +78,8 @@
     ],
     "asarUnpack": [
       "**/node_modules/@vscode/ripgrep/**",
-      "**/node_modules/@vscode/ripgrep-*/**"
+      "**/node_modules/@vscode/ripgrep-*/**",
+      "**/node_modules/node-pty/**"
     ],
     "publish": {
       "provider": "github",

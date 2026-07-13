@@ -27,6 +27,11 @@ export const IPC = {
   modelsList: 'models:list',
   shellsList: 'shells:list',
 
+  terminalCreate: 'terminal:create',
+  terminalWrite: 'terminal:write',
+  terminalResize: 'terminal:resize',
+  terminalDispose: 'terminal:dispose',
+
   tabsList: 'tabs:list',
   tabCreate: 'tabs:create',
   tabClose: 'tabs:close',
@@ -88,6 +93,13 @@ export interface KlennyApi {
 
   listModels: (forceRefresh?: boolean) => Promise<ModelInfo[]>
   listShells: () => Promise<ShellInfo[]>
+
+  createTerminal: (cols: number, rows: number) => Promise<{ id: string; shellName: string }>
+  writeTerminal: (id: string, data: string) => Promise<void>
+  resizeTerminal: (id: string, cols: number, rows: number) => Promise<void>
+  disposeTerminal: (id: string) => Promise<void>
+  onTerminalData: (cb: (id: string, data: string) => void) => () => void
+  onTerminalExit: (cb: (id: string, exitCode: number) => void) => () => void
 
   listTabs: () => Promise<TabSession[]>
   createTab: () => Promise<TabSession>
