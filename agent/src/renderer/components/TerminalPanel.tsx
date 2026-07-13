@@ -172,7 +172,7 @@ export function TerminalPanel() {
 
   return (
     <div
-      className="flex flex-col border-t border-klenny-border bg-klenny-panel shrink-0"
+      className="flex flex-col border-t border-klenny-border bg-klenny-panel shrink-0 overflow-hidden"
       style={{ height: terminalOpen ? terminalHeight : HEADER_HEIGHT }}
     >
       {terminalOpen && (
