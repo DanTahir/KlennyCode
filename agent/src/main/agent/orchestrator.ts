@@ -76,6 +76,12 @@ const abortControllers = new Map<string, AbortController>()
 const questionWaiters = new Map<string, (answers: QuestionAnswer[]) => void>()
 const pendingQuestions = new Map<string, PendingQuestion>()
 const endedTurns = new Set<string>()
+/** Tracks the in-flight startAgentLoop promise per tab so a new turn (runUserTurn/continueTurn)
+ *  can wait for any previous turn on the same tab to fully unwind before touching tab.messages
+ *  or starting its own loop — otherwise two agentLoop invocations for the same tab could run
+ *  concurrently (e.g. user sends a second message before the first turn's abort is even wired
+ *  up), both mutating tab.messages and both calling the model API at the same time. */
+const activeRuns = new Map<string, Promise<void>>()
 
 function endTurn(tabId: string, emit: Emit = emitToAll): void {
   if (endedTurns.has(tabId)) return
@@ -127,8 +133,9 @@ async function startAgentLoop(
   apiKey: string,
   subagentModel: string,
   emit: Emit,
-  signal: AbortSignal
+  ac: AbortController
 ): Promise<void> {
+  const signal = ac.signal
   try {
     await agentLoop(tab, apiKey, subagentModel, emit, signal)
   } catch (e) {
@@ -141,8 +148,54 @@ async function startAgentLoop(
     }
   } finally {
     endTurn(tab.id, emit)
-    abortControllers.delete(tab.id)
-    endedTurns.delete(tab.id)
+    // Only clear the bookkeeping if we're still the "current" controller for this tab — a
+    // newer call may have already preempted us (see launchAgentLoop) and installed its own
+    // controller, in which case clearing here would wrongly wipe its state out from under it.
+    if (abortControllers.get(tab.id) === ac) {
+      abortControllers.delete(tab.id)
+      endedTurns.delete(tab.id)
+    }
+  }
+}
+
+/** Entry point every new/resumed turn on a tab must go through. If a previous turn on this tab
+ *  is still running, aborts it immediately and waits for it to fully unwind (so it stops
+ *  mutating tab.messages / calling the model) before running `beforeStart` (append the new user
+ *  message, etc.) and starting the new loop — this is what prevents two agentLoop invocations for
+ *  the same tab from ever running concurrently, even if the caller fires a new turn before the
+ *  previous one's `message_start` event has round-tripped to the renderer.
+ *
+ *  Because this is re-entrant (a third call can preempt the second while it's still waiting on
+ *  the first), `beforeStart` always runs — every message the user actually sent gets recorded, in
+ *  order — but the loop itself is skipped if a *newer* call has since taken over (no point
+ *  starting a generation immediately superseded by another already-queued message). */
+async function launchAgentLoop(
+  tab: TabSession,
+  apiKey: string,
+  subagentModel: string,
+  emit: Emit,
+  beforeStart?: () => Promise<void> | void
+): Promise<void> {
+  const previousRun = activeRuns.get(tab.id)
+  abortControllers.get(tab.id)?.abort()
+
+  const ac = new AbortController()
+  abortControllers.set(tab.id, ac)
+  endedTurns.delete(tab.id)
+
+  const run = (async () => {
+    if (previousRun) await previousRun.catch(() => undefined)
+    await beforeStart?.()
+    // If another call has since replaced our controller while we were waiting, bail out
+    // without starting a (redundant, immediately-superseded) generation.
+    if (abortControllers.get(tab.id) !== ac) return
+    await startAgentLoop(tab, apiKey, subagentModel, emit, ac)
+  })()
+  activeRuns.set(tab.id, run)
+  try {
+    await run
+  } finally {
+    if (activeRuns.get(tab.id) === run) activeRuns.delete(tab.id)
   }
 }
 
@@ -159,21 +212,17 @@ export async function runUserTurn(tabId: string, userText: string, images?: stri
   const settings = await loadSettings()
   checkSpendCap(tab, settings.spendingCapUsd, settings.spendingCapPeriod)
 
-  const userBlocks: ContentBlock[] = [{ type: 'text', text: userText }]
-  if (images?.length) {
-    for (const img of images) userBlocks.push({ type: 'image', dataUrl: img })
-  }
-  const userMsg: ChatMessage = { id: nanoid(), role: 'user', blocks: userBlocks, createdAt: Date.now() }
-  tab.messages.push(userMsg)
-  if (tab.title === 'New chat') tab.title = userText.slice(0, 40)
-  await sessionStore.updateTab(tab)
-  emitToAll({ type: 'user_message', tabId, message: userMsg })
-
-  const ac = new AbortController()
-  abortControllers.set(tabId, ac)
-  endedTurns.delete(tabId)
-
-  await startAgentLoop(tab, apiKey, settings.subagentModel, emitToAll, ac.signal)
+  await launchAgentLoop(tab, apiKey, settings.subagentModel, emitToAll, async () => {
+    const userBlocks: ContentBlock[] = [{ type: 'text', text: userText }]
+    if (images?.length) {
+      for (const img of images) userBlocks.push({ type: 'image', dataUrl: img })
+    }
+    const userMsg: ChatMessage = { id: nanoid(), role: 'user', blocks: userBlocks, createdAt: Date.now() }
+    tab.messages.push(userMsg)
+    if (tab.title === 'New chat') tab.title = userText.slice(0, 40)
+    await sessionStore.updateTab(tab)
+    emitToAll({ type: 'user_message', tabId, message: userMsg })
+  })
 }
 
 /** Resumes a turn that emitted `turn_paused` (checkpoint step count reached, or the hard safety
@@ -192,11 +241,7 @@ export async function continueTurn(tabId: string): Promise<void> {
   const settings = await loadSettings()
   checkSpendCap(tab, settings.spendingCapUsd, settings.spendingCapPeriod)
 
-  const ac = new AbortController()
-  abortControllers.set(tabId, ac)
-  endedTurns.delete(tabId)
-
-  await startAgentLoop(tab, apiKey, settings.subagentModel, emitToAll, ac.signal)
+  await launchAgentLoop(tab, apiKey, settings.subagentModel, emitToAll)
 }
 
 interface SubagentContext {
