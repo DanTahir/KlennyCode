@@ -1,13 +1,16 @@
-import { readFile, writeFile, mkdir, readdir, stat } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
-import matter from 'gray-matter'
 import { getWorkspace } from '../../workspace'
+import { globalKlennyDir, projectDataDir } from '../../dataDir'
 
-const GLOBAL_DIR = join(homedir(), '.klenny')
+const GLOBAL_DIR = globalKlennyDir()
 
-export function globalKlennyDir(): string {
-  return GLOBAL_DIR
+/**
+ * Auto-memory notes for the current project live under `<userData>/projects/<id>/memory` —
+ * NOT inside the project tree — so users never need to .gitignore anything for them.
+ */
+function projectMemoryDir(ws: string): string {
+  return join(projectDataDir(ws), 'memory')
 }
 
 export async function loadProjectMemory(): Promise<string> {
@@ -35,7 +38,7 @@ export async function loadGlobalMemory(): Promise<string> {
 export async function loadAutoMemoryIndex(): Promise<string> {
   const ws = getWorkspace()
   if (!ws) return ''
-  const memDir = join(ws, '.klenny', 'memory')
+  const memDir = projectMemoryDir(ws)
   try {
     const raw = await readFile(join(memDir, 'MEMORY.md'), 'utf8')
     const lines = raw.split('\n')
@@ -56,7 +59,7 @@ export async function writeMemory(scope: 'project' | 'global', topic: string, co
   }
   const ws = getWorkspace()
   if (!ws) throw new Error('No workspace open')
-  const memDir = join(ws, '.klenny', 'memory')
+  const memDir = projectMemoryDir(ws)
   await mkdir(memDir, { recursive: true })
   const path = join(memDir, `${topic}.md`)
   await writeFile(path, content, 'utf8')
@@ -108,8 +111,8 @@ export async function writeMemoryFile(scope: 'project' | 'global', content: stri
 /**
  * Read a single auto-memory topic note by name (as listed in the "Auto-memory index"
  * shown in the system prompt, e.g. `[Shell selection feature](Shell selection feature.md)`).
- * These notes live under `.klenny/memory/` (project) or `~/.klenny/memory/` (global) —
- * NOT in the workspace tree — so they are not reachable via read_file.
+ * These notes live under `<userData>/projects/<id>/memory/` (project) or `~/.klenny/memory/`
+ * (global) — NOT in the workspace tree — so they are not reachable via read_file.
  */
 export async function readMemoryTopic(scope: 'project' | 'global', topic: string): Promise<string> {
   const dir =
@@ -118,7 +121,7 @@ export async function readMemoryTopic(scope: 'project' | 'global', topic: string
       : (() => {
           const ws = getWorkspace()
           if (!ws) throw new Error('No workspace open')
-          return join(ws, '.klenny', 'memory')
+          return projectMemoryDir(ws)
         })()
   const safeTopic = topic.replace(/\.md$/i, '')
   return readFile(join(dir, `${safeTopic}.md`), 'utf8')
@@ -129,7 +132,7 @@ export async function listMemoryTopics(scope: 'project' | 'global'): Promise<str
     scope === 'global'
       ? join(GLOBAL_DIR, 'memory')
       : getWorkspace()
-        ? join(getWorkspace()!, '.klenny', 'memory')
+        ? projectMemoryDir(getWorkspace()!)
         : null
   if (!dir) return []
   try {

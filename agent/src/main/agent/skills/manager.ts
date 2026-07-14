@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import matter from 'gray-matter'
 import type { SkillSummary } from '@shared/types'
 import { getWorkspace } from '../../workspace'
-import { globalKlennyDir } from '../memory/manager'
+import { globalKlennyDir } from '../../dataDir'
 
 export async function listSkills(): Promise<SkillSummary[]> {
   const out: SkillSummary[] = []

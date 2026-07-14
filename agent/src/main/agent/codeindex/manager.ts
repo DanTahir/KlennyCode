@@ -3,6 +3,7 @@ import { readFile, unlink, rm } from 'node:fs/promises'
 import type { AppSettings, IndexStatus, ModelInfo } from '@shared/types'
 import { createEmbeddings } from '../../openrouter/client'
 import { getApiKey, getPineconeKey } from '../../settings'
+import { projectDataDir } from '../../dataDir'
 import { trackDailySpend } from '../spend'
 import { invalidateGitignoreCache } from './filewalker'
 import { runFullScan, indexSingleFile, removeSingleFile } from './indexer'
@@ -12,6 +13,11 @@ import { CodeIndexWatcher } from './watcher'
 
 const INDEX_DIR_NAME = 'index'
 const MANIFEST_FILE_NAME = 'manifest.json'
+
+/** The codebase semantic-search index lives under `<userData>/projects/<id>/index`, not inside the project tree. */
+function indexDir(root: string): string {
+  return join(projectDataDir(root), INDEX_DIR_NAME)
+}
 
 interface SessionState {
   root: string
@@ -29,11 +35,11 @@ export function setOnStatusChange(cb: (status: IndexStatus) => void): void {
 }
 
 function manifestPath(root: string): string {
-  return join(root, '.klenny', INDEX_DIR_NAME, MANIFEST_FILE_NAME)
+  return join(indexDir(root), MANIFEST_FILE_NAME)
 }
 
 function localIndexDir(root: string): string {
-  return join(root, '.klenny', INDEX_DIR_NAME, 'local')
+  return join(indexDir(root), 'local')
 }
 
 function emitStatus(patch: Partial<IndexStatus>): void {
@@ -205,7 +211,7 @@ async function removeManifestFile(path: string): Promise<void> {
 export async function deleteLocalIndex(root: string): Promise<void> {
   await stopIndexing()
   try {
-    await rm(join(root, '.klenny', INDEX_DIR_NAME), { recursive: true, force: true })
+    await rm(indexDir(root), { recursive: true, force: true })
   } catch {
     // ignore
   }

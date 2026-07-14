@@ -14,7 +14,7 @@ Klenny Code is a desktop coding agent that uses OpenRouter to access frontier mo
 Full tool access: read/write/edit/delete files, grep, glob, run shell commands, web search, subagents, and memory.
 
 ### Plan mode
-Read-only tools only. Klenny Code will ask clarifying questions, research your codebase, and save a plan to `.klenny/plans/`. Review it in the **Plans** panel, then approve to switch back to Agent mode.
+Read-only tools only. Klenny Code will ask clarifying questions, research your codebase, and save a plan artifact (stored outside your project, in Klenny Code's app data directory — nothing to gitignore). Review it in the **Plans** panel, then approve to switch back to Agent mode.
 
 ## Tools
 
@@ -46,7 +46,7 @@ Toggle this in **Settings**.
 
 - **Project**: `KLENNY.md` in your project root (shared via git).
 - **Global**: `~/.klenny/KLENNY.md` (personal, all projects).
-- **Auto-memory**: Klenny Code can write topic files under `.klenny/memory/` and index them in `MEMORY.md`.
+- **Auto-memory**: Klenny Code can write topic files (stored outside your project, in Klenny Code's app data directory) and index them in `MEMORY.md`.
 
 ## Skills
 
@@ -59,8 +59,8 @@ Built-in types: `general-purpose`, `explore`, `plan-checker`. Define custom suba
 ## Codebase semantic search (beta)
 
 Optional, off by default. When enabled in Settings, Klenny Code builds a local semantic index of your
-workspace — split into chunks, embedded, and stored in a small vector database under `.klenny/index/` — and
-keeps it live-updated as you edit files. This lets the agent find relevant code by *meaning* ("where do we
+workspace — split into chunks, embedded, and stored in a small vector database outside your project, in
+Klenny Code's app data directory — and keeps it live-updated as you edit files. This lets the agent find relevant code by *meaning* ("where do we
 handle X") rather than exact keyword matches, complementing `grep`/`glob` rather than replacing them.
 
 - **Embeddings** use your existing OpenRouter key and credits — no separate signup. Pick any embeddings-capable

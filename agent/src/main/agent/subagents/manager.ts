@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import matter from 'gray-matter'
 import type { SubagentTypeSummary, ToolName } from '@shared/types'
 import { getWorkspace } from '../../workspace'
-import { globalKlennyDir } from '../memory/manager'
+import { globalKlennyDir } from '../../dataDir'
 
 const BUILT_IN: SubagentTypeSummary[] = [
   {

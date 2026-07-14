@@ -2,11 +2,13 @@ import { writeFile, readFile, readdir, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { PlanArtifact } from '@shared/types'
 import { getWorkspace } from '../../workspace'
+import { projectDataDir } from '../../dataDir'
 
+/** Plan artifacts live under `<userData>/projects/<id>/plans`, not inside the project tree. */
 function plansDir(): string | null {
   const ws = getWorkspace()
   if (!ws) return null
-  return join(ws, '.klenny', 'plans')
+  return join(projectDataDir(ws), 'plans')
 }
 
 export async function savePlan(slug: string, title: string, markdown: string): Promise<PlanArtifact> {

@@ -16,6 +16,7 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Thinking display** — streams reasoning tokens from supported models live
 - **Diff viewer** — see every code change with accept/reject approval workflow
 - **Memory** — project `KLENNY.md`, global `~/.klenny/KLENNY.md`, and auto-memory notes (Claude Code-style)
+- **No `.gitignore` gymnastics** — plans, auto-memory notes, and the codebase index live in Klenny Code's own app data directory, not in your project
 - **Skills** — Cursor-style `SKILL.md` files, auto-discovered and loaded when relevant
 - **Subagents** — built-in + custom types, parallel execution, separate subagent model setting
 - **Clarifying questions** — structured multiple-choice prompts in every mode (especially Plan mode)
@@ -79,13 +80,19 @@ your-project/
 ├── KLENNY.md              # Project memory (commit to git)
 ├── KLENNY.local.md        # Personal project prefs (gitignored)
 └── .klenny/
-    ├── memory/            # Auto-memory topic files + MEMORY.md index
-    ├── skills/            # Project skills (SKILL.md per skill)
-    ├── agents/            # Custom subagent definitions
-    └── plans/             # Plan mode artifacts (*.plan.md)
+    ├── skills/            # Project skills (SKILL.md per skill) — commit to git
+    └── agents/            # Custom subagent definitions — commit to git
 ```
 
-Global config lives in `~/.klenny/`.
+Everything else Klenny Code generates for a project — auto-memory topic files, plan mode
+artifacts, and the codebase semantic-search index — is **not** written inside your project.
+It's stored under `projects/<id>/` (one subfolder per project, keyed by its path) in Klenny
+Code's own Electron `userData` directory (e.g. `%APPDATA%/Klenny Code/` on Windows,
+`~/Library/Application Support/Klenny Code/` on macOS, `~/.config/Klenny Code/` on Linux), so
+there's nothing to `.gitignore` and no risk of accidentally committing local agent state.
+
+Global config (shared across all projects) lives in `~/.klenny/` — global skills, global
+custom subagents, and global memory (`KLENNY.md` + auto-memory notes).
 
 ## Architecture
 

@@ -45,5 +45,12 @@ Thumbs.db
 # Test / coverage
 coverage/
 
-# Klenny runtime data (per-project agent state, not part of source)
-.klenny/
+# Klenny personal project prefs (not shared via git)
+KLENNY.local.md
+
+# .klenny/ (skills, custom subagents) is intentionally source-controlled. Plans, auto-memory
+# notes, and the codebase search index now live outside the repo, in Klenny Code's application
+# data directory — these entries just guard against stray leftovers from older versions.
+.klenny/memory/
+.klenny/plans/
+.klenny/index/
