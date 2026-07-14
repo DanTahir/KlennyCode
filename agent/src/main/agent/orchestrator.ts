@@ -795,6 +795,13 @@ async function runSubagent(
   // Forward the subagent's events to the UI (so its messages/tool calls are visible,
   // e.g. in a subagent detail view) in addition to tracking them for the summary below.
   const events: AgentStreamEvent[] = []
+  // Once the subagent has done at least one real tool call, stop letting "Thinking..." (from
+  // message_start/thinking_delta, which fire every single step while the model reasons about
+  // what to do next) stomp back over that tool's activity label. Otherwise the panel flickers
+  // to the interesting status for a split second and then reverts to "Thinking..." for the
+  // remainder of that step, which is almost all a user ever sees. Once we've shown real activity,
+  // only a new tool_call_start is allowed to replace it — the label just sticks until then.
+  let sawToolActivity = false
   const capture = (e: AgentStreamEvent) => {
     events.push(e)
     emit(e)
@@ -802,9 +809,12 @@ async function runSubagent(
     // Keep the run's "activity" label current so the Subagents panel shows what the
     // subagent is doing right now instead of a static "running" state.
     let activity: string | undefined
-    if (e.type === 'message_start') activity = 'Thinking...'
-    else if (e.type === 'thinking_delta') activity = 'Thinking...'
-    else if (e.type === 'tool_call_start') activity = describeToolActivity(e.block.toolName, e.block.args)
+    if (e.type === 'tool_call_start') {
+      activity = describeToolActivity(e.block.toolName, e.block.args)
+      sawToolActivity = true
+    } else if (!sawToolActivity && (e.type === 'message_start' || e.type === 'thinking_delta')) {
+      activity = 'Thinking...'
+    }
     if (activity && activity !== run.activity) {
       run.activity = activity
       emit({ type: 'subagent_update', tabId: parentTab.id, run })
