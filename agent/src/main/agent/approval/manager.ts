@@ -9,7 +9,8 @@ import type { ApprovalMode } from '@shared/types'
 export class ApprovalManager {
   private pending = new Map<string, PendingAction>()
   private resolvers = new Map<string, (decision: ApprovalDecision) => void>()
-  private acceptAll = false
+  /** Tabs for which the user has chosen "accept all" — scoped per-tab, not global. */
+  private acceptAllTabs = new Set<string>()
   private checkpointDir: string | null = null
   private git: ReturnType<typeof simpleGit> | null = null
 
@@ -25,7 +26,7 @@ export class ApprovalManager {
   }
 
   setMode(mode: ApprovalMode): void {
-    if (mode === 'manual') this.acceptAll = false
+    if (mode === 'manual') this.acceptAllTabs.clear()
   }
 
   async createCheckpoint(workspace: string): Promise<string> {
@@ -54,14 +55,16 @@ export class ApprovalManager {
   }
 
   waitForDecision(actionId: string): Promise<ApprovalDecision> {
-    if (this.acceptAll) return Promise.resolve('accept')
+    const action = this.pending.get(actionId)
+    if (action && this.acceptAllTabs.has(action.tabId)) return Promise.resolve('accept')
     return new Promise((resolve) => {
       this.resolvers.set(actionId, resolve)
     })
   }
 
   resolve(actionId: string, decision: ApprovalDecision): void {
-    if (decision === 'accept_all') this.acceptAll = true
+    const action = this.pending.get(actionId)
+    if (decision === 'accept_all' && action) this.acceptAllTabs.add(action.tabId)
     const resolver = this.resolvers.get(actionId)
     if (resolver) {
       resolver(decision === 'accept_all' ? 'accept' : decision)
@@ -80,6 +83,11 @@ export class ApprovalManager {
       }
       this.pending.delete(actionId)
     }
+  }
+
+  /** Clears per-tab "accept all" state — call when a tab is closed for good. */
+  clearTab(tabId: string): void {
+    this.acceptAllTabs.delete(tabId)
   }
 
   buildPendingFromTool(

@@ -124,7 +124,10 @@ export function registerIpcHandlers(): void {
     return tabs
   })
   ipcMain.handle(IPC.tabCreate, async () => sessionStore.createTab())
-  ipcMain.handle(IPC.tabClose, async (_e, tabId: string) => sessionStore.closeTab(tabId))
+  ipcMain.handle(IPC.tabClose, async (_e, tabId: string) => {
+    approvalManager.clearTab(tabId)
+    return sessionStore.closeTab(tabId)
+  })
   ipcMain.handle(IPC.tabSetMode, async (_e, tabId: string, mode: 'agent' | 'plan') => {
     const tab = sessionStore.getTab(tabId)
     if (tab) {
