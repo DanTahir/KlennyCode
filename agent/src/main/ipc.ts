@@ -6,7 +6,7 @@ import { loadSettings, saveSettings, setApiKey, clearApiKey, setPineconeKey, cle
 import { getWorkspace, pickWorkspace, setWorkspace } from './workspace'
 import { sessionStore } from './session/store'
 import { fetchModels } from './openrouter/client'
-import { runUserTurn, stopGeneration, resolveQuestion, continueTurn } from './agent/orchestrator'
+import { runUserTurn, stopGeneration, resolveQuestion, continueTurn, clearTabState } from './agent/orchestrator'
 import { approvalManager } from './agent/approval/manager'
 import { listSkills, readSkill, writeSkill } from './agent/skills/manager'
 import { listSubagentTypes, writeSubagentType } from './agent/subagents/manager'
@@ -125,6 +125,10 @@ export function registerIpcHandlers(): void {
   })
   ipcMain.handle(IPC.tabCreate, async () => sessionStore.createTab())
   ipcMain.handle(IPC.tabClose, async (_e, tabId: string) => {
+    // Abort any in-flight turn/questions for this tab and drop its per-tab bookkeeping from
+    // the orchestrator's module-level maps — otherwise it leaks for the lifetime of the app
+    // (see clearTabState doc comment).
+    clearTabState(tabId)
     approvalManager.clearTab(tabId)
     return sessionStore.closeTab(tabId)
   })

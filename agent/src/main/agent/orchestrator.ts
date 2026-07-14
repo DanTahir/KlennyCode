@@ -119,6 +119,27 @@ export function stopGeneration(tabId: string): void {
   endTurn(tabId)
 }
 
+/** Must be called once a tab is permanently gone (closed) so none of the module-level
+ *  per-tab bookkeeping below outlives it. Without this, a tab that's closed while a turn is
+ *  in flight (or while a question is pending) leaves its abort controller / ended-turn /
+ *  active-run entries in these maps forever, since nothing else ever removes them for a tabId
+ *  that no longer exists in the session store — a slow, permanent memory leak in long-running
+ *  sessions with many opened/closed tabs. Safe to call for any tabId, including ones with no
+ *  in-flight activity.
+ *
+ *  stopGeneration() already resolves/removes any pending questions and approvals for this tab
+ *  as part of aborting it, so this only needs to clean up what stopGeneration itself doesn't:
+ *  the abort-controller, ended-turn, and active-run bookkeeping. */
+export function clearTabState(tabId: string): void {
+  // Abort first so any in-flight agentLoop/streaming for this tab stops touching the (now
+  // gone) tab object and its own cleanup in startAgentLoop's finally block gets a chance to run.
+  stopGeneration(tabId)
+
+  abortControllers.delete(tabId)
+  endedTurns.delete(tabId)
+  activeRuns.delete(tabId)
+}
+
 function emitToAll(event: AgentStreamEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('agent:stream', event)
