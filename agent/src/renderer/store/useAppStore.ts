@@ -73,6 +73,8 @@ interface AppState {
   openPlanTab: (slug: string, originTabId: string | null) => void
   closePlanTab: (slug: string) => void
   setHistory: (h: ArchivedTabSession[]) => void
+  hideSubagentRun: (id: string) => void
+  clearFinishedSubagentRuns: (parentTabId: string) => void
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -143,6 +145,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { openPlanTabs, activePlanSlug }
     }),
   setHistory: (history) => set({ history }),
+  hideSubagentRun: (id) =>
+    set((s) => ({
+      subagentRuns: s.subagentRuns.map((r) => (r.id === id ? { ...r, hidden: true } : r))
+    })),
+  clearFinishedSubagentRuns: (parentTabId) =>
+    set((s) => ({
+      subagentRuns: s.subagentRuns.map((r) =>
+        r.parentTabId === parentTabId && r.status !== 'running' ? { ...r, hidden: true } : r
+      )
+    })),
   applyStreamEvent: (e) => {
     const state = get()
     switch (e.type) {
@@ -276,7 +288,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       case 'subagent_update': {
         const existing = state.subagentRuns.findIndex((r) => r.id === e.run.id)
         const runs = [...state.subagentRuns]
-        if (existing >= 0) runs[existing] = e.run
+        // The server never knows about client-side dismissal; preserve it across updates.
+        if (existing >= 0) runs[existing] = { ...e.run, hidden: runs[existing].hidden }
         else runs.push(e.run)
         set({ subagentRuns: runs })
         break

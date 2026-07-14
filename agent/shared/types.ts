@@ -230,9 +230,13 @@ export interface SubagentRun {
   agentType: string
   description: string
   status: 'running' | 'success' | 'error'
+  /** Short human-readable label for what the subagent is doing right now, e.g. "Reading agent/src/foo.ts" or "Thinking...". Only meaningful while status === 'running'. */
+  activity?: string
   summary?: string
   startedAt: number
   finishedAt?: number
+  /** Client-side only: user dismissed this run's card from the Subagents panel after it finished. */
+  hidden?: boolean
 }
 
 // ---------- Plan mode ----------

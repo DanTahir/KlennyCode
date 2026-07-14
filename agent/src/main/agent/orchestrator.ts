@@ -708,6 +708,45 @@ async function dispatchTool(
   }
 }
 
+/** Short, human-readable label for what a subagent tool call is doing, shown live in the Subagents panel while status === 'running'. */
+function describeToolActivity(toolName: string, args: Record<string, unknown>): string {
+  const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
+  switch (toolName) {
+    case 'read_file':
+      return `Reading ${str(args.path) ?? 'file'}`
+    case 'write_file':
+      return `Writing ${str(args.path) ?? 'file'}`
+    case 'edit_file':
+      return `Editing ${str(args.path) ?? 'file'}`
+    case 'delete_file':
+      return `Deleting ${str(args.path) ?? 'file'}`
+    case 'grep':
+      return `Searching for "${str(args.pattern) ?? ''}"`
+    case 'glob':
+      return `Finding files matching "${str(args.pattern) ?? ''}"`
+    case 'run_command':
+      return `Running: ${str(args.command) ?? 'command'}`
+    case 'web_search':
+      return `Searching the web for "${str(args.query) ?? ''}"`
+    case 'fetch_url':
+      return `Fetching ${str(args.url) ?? 'url'}`
+    case 'list_skills':
+      return 'Listing skills'
+    case 'read_skill':
+      return `Reading skill ${str(args.path) ?? ''}`
+    case 'read_memory':
+      return `Reading memory "${str(args.topic) ?? ''}"`
+    case 'write_memory':
+      return `Writing memory "${str(args.topic) ?? ''}"`
+    case 'ask_question':
+      return 'Asking a clarifying question'
+    case 'codebase_search':
+      return `Searching codebase for "${str(args.query) ?? ''}"`
+    default:
+      return `Running ${toolName}`
+  }
+}
+
 async function runSubagent(
   parentTab: TabSession,
   apiKey: string,
@@ -729,6 +768,7 @@ async function runSubagent(
     agentType,
     description: desc,
     status: 'running',
+    activity: 'Thinking...',
     startedAt: Date.now()
   }
   emit({ type: 'subagent_update', tabId: parentTab.id, run })
@@ -758,6 +798,17 @@ async function runSubagent(
   const capture = (e: AgentStreamEvent) => {
     events.push(e)
     emit(e)
+
+    // Keep the run's "activity" label current so the Subagents panel shows what the
+    // subagent is doing right now instead of a static "running" state.
+    let activity: string | undefined
+    if (e.type === 'message_start') activity = 'Thinking...'
+    else if (e.type === 'thinking_delta') activity = 'Thinking...'
+    else if (e.type === 'tool_call_start') activity = describeToolActivity(e.block.toolName, e.block.args)
+    if (activity && activity !== run.activity) {
+      run.activity = activity
+      emit({ type: 'subagent_update', tabId: parentTab.id, run })
+    }
   }
 
   const subagentCtx: SubagentContext = { allowedTools: typeDef.tools }
@@ -778,6 +829,7 @@ async function runSubagent(
 
     run.status = reason === 'error' || reason === 'truncation_failed' ? 'error' : 'success'
     run.summary = summary.slice(0, 8000)
+    run.activity = undefined
     run.finishedAt = Date.now()
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
     emit({ type: 'turn_end', tabId: subTab.id })
@@ -790,6 +842,7 @@ async function runSubagent(
   } catch (e) {
     run.status = 'error'
     run.summary = e instanceof Error ? e.message : String(e)
+    run.activity = undefined
     run.finishedAt = Date.now()
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
     emit({ type: 'turn_end', tabId: subTab.id })
