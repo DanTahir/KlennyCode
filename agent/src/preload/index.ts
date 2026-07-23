@@ -32,9 +32,16 @@ const api: KlennyApi = {
 
   listTabs: () => ipcRenderer.invoke(IPC.tabsList),
   createTab: () => ipcRenderer.invoke(IPC.tabCreate),
+  createAssistantTab: () => ipcRenderer.invoke(IPC.tabCreateAssistant),
   closeTab: (tabId) => ipcRenderer.invoke(IPC.tabClose, tabId),
   setTabMode: (tabId, mode) => ipcRenderer.invoke(IPC.tabSetMode, tabId, mode),
   setTabModel: (tabId, model) => ipcRenderer.invoke(IPC.tabSetModel, tabId, model),
+
+  onSettingsNavigate: (cb) => {
+    const listener = (_: unknown, section: string) => cb(section)
+    ipcRenderer.on(IPC.settingsNavigate, listener)
+    return () => ipcRenderer.removeListener(IPC.settingsNavigate, listener)
+  },
 
   listHistory: () => ipcRenderer.invoke(IPC.historyList),
   reopenHistory: (tabId) => ipcRenderer.invoke(IPC.historyReopen, tabId),
@@ -77,6 +84,23 @@ const api: KlennyApi = {
 
   getCostReport: () => ipcRenderer.invoke(IPC.costReportGet),
   resetCostReport: () => ipcRenderer.invoke(IPC.costReportReset),
+
+  connectGmail: () => ipcRenderer.invoke(IPC.gmailConnect),
+  disconnectGmail: () => ipcRenderer.invoke(IPC.gmailDisconnect),
+
+  connectDiscord: (botToken) => ipcRenderer.invoke(IPC.discordConnect, botToken),
+  disconnectDiscord: () => ipcRenderer.invoke(IPC.discordDisconnect),
+  getDiscordStatus: () => ipcRenderer.invoke(IPC.discordStatusGet),
+  onDiscordStatus: (cb) => {
+    const listener = (_: unknown, status: { connected: boolean; botTag: string | null; lastError: string | null }) => cb(status)
+    ipcRenderer.on(IPC.onDiscordStatus, listener)
+    return () => ipcRenderer.removeListener(IPC.onDiscordStatus, listener)
+  },
+
+  listScheduledTasks: () => ipcRenderer.invoke(IPC.schedulerList),
+  createScheduledTask: (task) => ipcRenderer.invoke(IPC.schedulerCreate, task),
+  updateScheduledTask: (id, patch) => ipcRenderer.invoke(IPC.schedulerUpdate, id, patch),
+  deleteScheduledTask: (id) => ipcRenderer.invoke(IPC.schedulerDelete, id),
 
   onStreamEvent: (cb) => {
     const listener = (_: unknown, event: AgentStreamEvent) => cb(event)

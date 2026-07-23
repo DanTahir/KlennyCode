@@ -4,8 +4,10 @@ import {
   isSubagentBudgetExceeded,
   isTruncatedEmpty,
   isTruncatedToolCallJson,
+  truncateSummary,
   HARD_STEP_LIMIT,
-  SUBAGENT_STEP_BUDGET
+  SUBAGENT_STEP_BUDGET,
+  MAX_SUBAGENT_SUMMARY_CHARS
 } from '../src/main/agent/turnControl'
 
 describe('checkStepLimit', () => {
@@ -58,5 +60,31 @@ describe('truncation detection', () => {
     expect(isTruncatedToolCallJson('length', false)).toBe(false)
     expect(isTruncatedToolCallJson('stop', true)).toBe(false)
     expect(isTruncatedToolCallJson(undefined, true)).toBe(false)
+  })
+})
+
+describe('truncateSummary', () => {
+  test('passes short text through unmodified, with no marker appended', () => {
+    const text = 'a subagent summary well under the limit'
+    expect(truncateSummary(text)).toBe(text)
+  })
+
+  test('passes text exactly at the limit through unmodified', () => {
+    const text = 'x'.repeat(MAX_SUBAGENT_SUMMARY_CHARS)
+    expect(truncateSummary(text)).toBe(text)
+  })
+
+  test('truncates text over the limit and appends a visible marker stating how much was omitted', () => {
+    const text = 'x'.repeat(MAX_SUBAGENT_SUMMARY_CHARS + 500)
+    const result = truncateSummary(text)
+    expect(result.length).toBeGreaterThan(MAX_SUBAGENT_SUMMARY_CHARS)
+    expect(result.startsWith('x'.repeat(MAX_SUBAGENT_SUMMARY_CHARS))).toBe(true)
+    expect(result).toContain('[...500 characters truncated...]')
+  })
+
+  test('respects a custom maxChars override', () => {
+    const text = 'abcdefghij'
+    expect(truncateSummary(text, 5)).toBe('abcde\n\n[...5 characters truncated...]')
+    expect(truncateSummary(text, 100)).toBe(text)
   })
 })

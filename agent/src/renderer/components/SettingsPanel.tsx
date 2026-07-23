@@ -1,9 +1,11 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { DEFAULT_EMBEDDINGS_MODEL } from '@shared/types'
+import type { ScheduledTask } from '@shared/types'
 
 export function SettingsPanel() {
-  const { settings, models, shells, indexStatus, setSettings, setModels, setShells, setIndexStatus } = useAppStore()
+  const { settings, models, shells, indexStatus, setSettings, setModels, setShells, setIndexStatus, settingsFocusSection, setSettingsFocusSection } =
+    useAppStore()
   const [apiKey, setApiKey] = useState('')
   const [search, setSearch] = useState('')
   const [providerOnly, setProviderOnly] = useState('')
@@ -11,11 +13,43 @@ export function SettingsPanel() {
   const [showAdvancedProvider, setShowAdvancedProvider] = useState(false)
   const [pineconeKey, setPineconeKey] = useState('')
 
+  // Gmail / Discord integrations
+  const [gmailClientId, setGmailClientId] = useState('')
+  const [gmailClientSecret, setGmailClientSecret] = useState('')
+  const [gmailConnecting, setGmailConnecting] = useState(false)
+  const [gmailError, setGmailError] = useState<string | null>(null)
+  const [discordToken, setDiscordToken] = useState('')
+  const [discordConnecting, setDiscordConnecting] = useState(false)
+  const [discordError, setDiscordError] = useState<string | null>(null)
+  const [discordStatus, setDiscordStatus] = useState<{ connected: boolean; botTag: string | null; lastError: string | null } | null>(null)
+
+  // Scheduled tasks
+  const [tasks, setTasks] = useState<ScheduledTask[]>([])
+  const [newTaskName, setNewTaskName] = useState('')
+  const [newTaskPrompt, setNewTaskPrompt] = useState('')
+  const [newTaskSchedule, setNewTaskSchedule] = useState('0 8 * * *')
+
+  const integrationsRef = useRef<HTMLDivElement>(null)
+  const automationRef = useRef<HTMLDivElement>(null)
+
   useEffect(() => {
     void window.klenny.listModels(true).then(setModels)
     void window.klenny.listShells().then(setShells)
     void window.klenny.getIndexStatus().then(setIndexStatus)
+    void window.klenny.getDiscordStatus().then(setDiscordStatus)
+    void window.klenny.listScheduledTasks().then(setTasks)
+    const unsub = window.klenny.onDiscordStatus((status) => setDiscordStatus(status))
+    return () => unsub()
   }, [])
+
+  useEffect(() => {
+    if (!settingsFocusSection) return
+    const el = settingsFocusSection === 'integrations' ? integrationsRef.current : settingsFocusSection === 'automation' ? automationRef.current : null
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    setSettingsFocusSection(null)
+  }, [settingsFocusSection])
+
+  const refreshTasks = () => void window.klenny.listScheduledTasks().then(setTasks)
 
   useEffect(() => {
     if (!settings?.providerPreference) return
@@ -405,12 +439,290 @@ export function SettingsPanel() {
         />
       </section>
 
-      <section className="space-y-2">
+      <section className="mb-6 space-y-2">
         <h3 className="font-medium">Theme</h3>
         <select className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded" value={settings.theme} onChange={(e) => void patch({ theme: e.target.value as 'dark' | 'light' })}>
           <option value="dark">Dark</option>
           <option value="light">Light</option>
         </select>
+      </section>
+
+      <section ref={integrationsRef} className="mb-6 space-y-4 border-t border-klenny-border pt-6">
+        <h3 className="font-medium text-lg">Integrations</h3>
+
+        <div className="space-y-2">
+          <h4 className="font-medium text-sm">Gmail</h4>
+          {settings.hasGmailToken ? (
+            <div className="text-sm space-y-1">
+              <p>Connected as {settings.gmailAccountEmail ?? 'unknown'}.</p>
+              <button
+                className="px-3 py-1 rounded border border-klenny-border text-sm"
+                onClick={() =>
+                  void window.klenny
+                    .disconnectGmail()
+                    .then(() => window.klenny.getSettings())
+                    .then(setSettings)
+                }
+              >
+                Disconnect
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-xs text-klenny-muted">
+                Register your own OAuth client in{' '}
+                <a
+                  className="text-klenny-accent underline"
+                  href="https://console.cloud.google.com/apis/credentials"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Google Cloud Console
+                </a>{' '}
+                (APIs &amp; Services → Credentials → OAuth client ID → Desktop app), then paste the Client ID/Secret
+                below. Klenny never sees a shared client — this is entirely your own app registration.
+              </p>
+              <input
+                className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+                placeholder={settings.gmailClientId ? 'Client ID saved (enter to replace)' : 'Google OAuth Client ID'}
+                value={gmailClientId}
+                onChange={(e) => setGmailClientId(e.target.value)}
+                onBlur={() => gmailClientId && void patch({ gmailClientId }).then(() => setGmailClientId(''))}
+              />
+              <input
+                type="password"
+                className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+                placeholder={settings.gmailClientSecret ? 'Client Secret saved (enter to replace)' : 'Google OAuth Client Secret'}
+                value={gmailClientSecret}
+                onChange={(e) => setGmailClientSecret(e.target.value)}
+                onBlur={() => gmailClientSecret && void patch({ gmailClientSecret }).then(() => setGmailClientSecret(''))}
+              />
+              <button
+                className="px-3 py-1 rounded bg-klenny-accent text-black text-sm disabled:opacity-60"
+                disabled={gmailConnecting || (!settings.gmailClientId && !gmailClientId)}
+                onClick={() => {
+                  setGmailConnecting(true)
+                  setGmailError(null)
+                  void window.klenny
+                    .connectGmail()
+                    .then(() => window.klenny.getSettings())
+                    .then(setSettings)
+                    .catch((e) => setGmailError(e instanceof Error ? e.message : String(e)))
+                    .finally(() => setGmailConnecting(false))
+                }}
+              >
+                {gmailConnecting ? 'Opening browser…' : 'Connect Gmail'}
+              </button>
+              {gmailError && <p className="text-xs text-red-400">{gmailError}</p>}
+              {settings.lastGmailRefreshError && (
+                <p className="text-xs text-red-400">Last error: {settings.lastGmailRefreshError}</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-2 border-t border-klenny-border pt-4">
+          <h4 className="font-medium text-sm">Discord</h4>
+          <p className="text-xs text-klenny-muted">
+            Create a bot application in the Discord Developer Portal, invite it to your server(s), then paste its bot
+            token below. Bot-account only — no personal-account automation.
+          </p>
+          {settings.hasDiscordToken ? (
+            <div className="text-sm space-y-1">
+              <p>
+                Connected{discordStatus?.botTag ? ` as ${discordStatus.botTag}` : ''} —{' '}
+                {discordStatus?.connected ? 'online' : 'reconnecting…'}
+              </p>
+              <button
+                className="px-3 py-1 rounded border border-klenny-border text-sm"
+                onClick={() =>
+                  void window.klenny
+                    .disconnectDiscord()
+                    .then(() => window.klenny.getSettings())
+                    .then(setSettings)
+                }
+              >
+                Disconnect
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <input
+                type="password"
+                className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+                placeholder="Discord bot token"
+                value={discordToken}
+                onChange={(e) => setDiscordToken(e.target.value)}
+              />
+              <button
+                className="px-3 py-1 rounded bg-klenny-accent text-black text-sm disabled:opacity-60"
+                disabled={discordConnecting || !discordToken}
+                onClick={() => {
+                  setDiscordConnecting(true)
+                  setDiscordError(null)
+                  void window.klenny
+                    .connectDiscord(discordToken)
+                    .then(() => window.klenny.getSettings())
+                    .then(setSettings)
+                    .then(() => setDiscordToken(''))
+                    .catch((e) => setDiscordError(e instanceof Error ? e.message : String(e)))
+                    .finally(() => setDiscordConnecting(false))
+                }}
+              >
+                {discordConnecting ? 'Connecting…' : 'Connect Discord'}
+              </button>
+              {discordError && <p className="text-xs text-red-400">{discordError}</p>}
+              {settings.lastDiscordConnectionError && (
+                <p className="text-xs text-red-400">Last error: {settings.lastDiscordConnectionError}</p>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section ref={automationRef} className="mb-6 space-y-2 border-t border-klenny-border pt-6">
+        <h3 className="font-medium text-lg">Automation permissions</h3>
+        <p className="text-xs text-klenny-muted">
+          Controls which actions the agent may take automatically — including when running unattended (scheduled
+          tasks, Discord-triggered runs). There is no "ask me" option for these: each is either fully allowed or
+          fully blocked.
+        </p>
+        {(
+          [
+            ['gmail.read', 'Read Gmail messages'],
+            ['gmail.send', 'Send email via Gmail'],
+            ['discord.read', 'Listen to inbound Discord messages/commands'],
+            ['discord.post', 'Post messages to Discord'],
+            ['scheduler.run', 'Allow scheduled background tasks to run at all']
+          ] as const
+        ).map(([key, label]) => (
+          <label key={key} className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={settings.automationPermissions[key] === 'auto'}
+              onChange={(e) =>
+                void patch({
+                  automationPermissions: { ...settings.automationPermissions, [key]: e.target.checked ? 'auto' : 'off' }
+                })
+              }
+            />
+            {label}
+          </label>
+        ))}
+      </section>
+
+      <section className="mb-6 space-y-2 border-t border-klenny-border pt-6">
+        <h3 className="font-medium text-lg">Scheduled tasks</h3>
+        <p className="text-xs text-klenny-muted">
+          Recurring background tasks that run as unattended agents on a cron schedule, even while the app is
+          minimized to the tray. You can also ask the agent in chat to create these for you.
+        </p>
+        <div className="space-y-2 border border-klenny-border rounded p-3">
+          <input
+            className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+            placeholder="Task name (e.g. Morning inbox summary)"
+            value={newTaskName}
+            onChange={(e) => setNewTaskName(e.target.value)}
+          />
+          <textarea
+            className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+            placeholder="Prompt (e.g. Check my unread email and summarize anything important)"
+            rows={2}
+            value={newTaskPrompt}
+            onChange={(e) => setNewTaskPrompt(e.target.value)}
+          />
+          <div className="flex gap-2 items-center">
+            <input
+              className="flex-1 px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm font-mono"
+              placeholder="Cron schedule (e.g. 0 8 * * *)"
+              value={newTaskSchedule}
+              onChange={(e) => setNewTaskSchedule(e.target.value)}
+            />
+            <button
+              className="px-3 py-1 rounded bg-klenny-accent text-black text-sm disabled:opacity-60"
+              disabled={!newTaskName || !newTaskPrompt || !newTaskSchedule}
+              onClick={() =>
+                void window.klenny
+                  .createScheduledTask({
+                    name: newTaskName,
+                    prompt: newTaskPrompt,
+                    schedule: newTaskSchedule,
+                    targetWorkspace: null,
+                    maxCostUsd: null
+                  })
+                  .then(() => {
+                    setNewTaskName('')
+                    setNewTaskPrompt('')
+                    refreshTasks()
+                  })
+              }
+            >
+              Add task
+            </button>
+          </div>
+          <p className="text-xs text-klenny-muted">Standard 5-field cron syntax, evaluated in your local time.</p>
+        </div>
+
+        <div className="space-y-2">
+          {tasks.length === 0 && <p className="text-xs text-klenny-muted">No scheduled tasks yet.</p>}
+          {tasks.map((t) => (
+            <div key={t.id} className="border border-klenny-border rounded p-3 text-sm space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="font-medium">{t.name}</span>
+                <div className="flex items-center gap-2">
+                  <label className="flex items-center gap-1 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={t.enabled}
+                      onChange={(e) =>
+                        void window.klenny.updateScheduledTask(t.id, { enabled: e.target.checked }).then(refreshTasks)
+                      }
+                    />
+                    Enabled
+                  </label>
+                  <button
+                    className="text-xs text-klenny-muted hover:text-red-400"
+                    onClick={() => void window.klenny.deleteScheduledTask(t.id).then(refreshTasks)}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+              <p className="text-klenny-muted text-xs font-mono">{t.schedule}</p>
+              <p className="text-xs">{t.prompt}</p>
+              <p className="text-xs text-klenny-muted">
+                {t.lastRunAt
+                  ? `Last run: ${new Date(t.lastRunAt).toLocaleString()} — ${t.lastExitStatus ?? 'unknown'}`
+                  : 'Never run yet'}
+                {t.nextRunAt && ` · Next run: ${new Date(t.nextRunAt).toLocaleString()}`}
+              </p>
+              {t.lastOutputPreview && <p className="text-xs text-klenny-muted italic">"{t.lastOutputPreview}"</p>}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-2 border-t border-klenny-border pt-6">
+        <h3 className="font-medium text-lg">Background &amp; startup</h3>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.minimizeToTray}
+            onChange={(e) => void patch({ minimizeToTray: e.target.checked })}
+          />
+          Minimize to system tray instead of quitting when the window is closed
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={settings.startOnLogin}
+            onChange={(e) => void patch({ startOnLogin: e.target.checked })}
+          />
+          Start Klenny Code automatically when I log in
+        </label>
+        <p className="text-xs text-klenny-muted">
+          Needed for scheduled tasks and the Discord bot to keep running when you're not actively using the app.
+        </p>
       </section>
     </div>
   )

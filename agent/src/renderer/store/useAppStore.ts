@@ -41,6 +41,11 @@ interface AppState {
   history: ArchivedTabSession[]
   skills: SkillSummary[]
   panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history' | 'cost-report'
+  /** Set by the agent's open_settings_panel tool (via IPC) to scroll/focus a specific Settings
+   *  section once the panel is shown — e.g. 'integrations' when the user asks to connect
+   *  Gmail/Discord. Cleared by SettingsPanel after it scrolls to the section. */
+  settingsFocusSection: string | null
+  setSettingsFocusSection: (section: string | null) => void
   terminalOpen: boolean
   terminalHeight: number
   setTerminalOpen: (open: boolean) => void
@@ -93,6 +98,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   history: [],
   skills: [],
   panel: 'chat',
+  settingsFocusSection: null,
+  setSettingsFocusSection: (settingsFocusSection) => set({ settingsFocusSection }),
   terminalOpen: false,
   terminalHeight: 260,
   setTerminalOpen: (terminalOpen) => set({ terminalOpen }),

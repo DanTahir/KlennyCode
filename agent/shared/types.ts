@@ -138,6 +138,43 @@ export type ToolName =
   | 'grep_other_project'
   | 'glob_other_project'
   | 'read_other_project_memory'
+  | 'open_settings_panel'
+  | 'gmail_list_messages'
+  | 'gmail_get_message'
+  | 'gmail_send_message'
+  | 'discord_post_message'
+  | 'scheduler_create_task'
+  | 'scheduler_list_tasks'
+  | 'scheduler_update_task'
+  | 'scheduler_delete_task'
+
+/** Tools that need a real, open coding-project workspace to make sense (file I/O, shell,
+ *  semantic code search). Gated off entirely on Assistant-kind tabs and whenever no workspace
+ *  is open — see getToolDefinitions() in agent/tools/definitions.ts. */
+export const CODING_ONLY_TOOLS: ToolName[] = ['write_file', 'edit_file', 'delete_file', 'run_command', 'codebase_search']
+
+/** Tools available everywhere — regular coding-project tabs AND the Assistant tab — because
+ *  they don't depend on a workspace at all. */
+export const ASSISTANT_TOOLS: ToolName[] = [
+  'web_search',
+  'fetch_url',
+  'list_projects',
+  'read_other_project_file',
+  'grep_other_project',
+  'glob_other_project',
+  'read_other_project_memory',
+  'read_memory',
+  'write_memory',
+  'open_settings_panel',
+  'gmail_list_messages',
+  'gmail_get_message',
+  'gmail_send_message',
+  'discord_post_message',
+  'scheduler_create_task',
+  'scheduler_list_tasks',
+  'scheduler_update_task',
+  'scheduler_delete_task'
+]
 
 export interface ToolResultPayload {
   ok: boolean
@@ -274,6 +311,12 @@ export interface TabSession {
   totalSavingsUsd?: number
   /** set while compaction has replaced earlier history */
   compactedThroughMessageId?: string
+  /** 'project' (default, omitted on old persisted tabs): a normal workspace-scoped coding tab.
+   *  'assistant': an ephemeral tab opened via the sidebar "Open Assistant" button — has no
+   *  workspace, only assistant tools (Gmail/Discord/scheduler/web/cross-project/memory), is
+   *  never persisted to disk, and is not archived to History on close. See the Personal
+   *  Assistant Platform plan for the full v1 scope decision. */
+  kind?: 'project' | 'assistant'
 }
 
 /** A tab that was closed and archived for later browsing/reopening in the History panel. */
@@ -323,6 +366,81 @@ export interface AppSettings {
   continueMode: 'auto' | 'checkpoint'
   /** only used when continueMode === 'checkpoint' — how many tool-round-trips to run before pausing */
   turnCheckpointSteps: number
+
+  // ---------- Personal Assistant Platform (Gmail / Discord / Scheduler) ----------
+
+  /** boolean flag only — actual OAuth tokens are encrypted separately and never round-trip to the renderer */
+  hasGmailToken: boolean
+  gmailAccountEmail: string | null
+  /** user's own Google Cloud OAuth client — not a secret on its own, but only meaningful alongside the encrypted refresh token, so stored in settings.json rather than as a *.enc file */
+  gmailClientId: string | null
+  gmailClientSecret: string | null
+  /** set when a token refresh fails (revoked/expired); cleared on next successful connect */
+  lastGmailRefreshError: string | null
+
+  /** boolean flag only — actual bot token is encrypted separately and never round-trips to the renderer */
+  hasDiscordToken: boolean
+  /** cached for display once connected, e.g. "Klenny#1234" */
+  discordBotTag: string | null
+  lastDiscordConnectionError: string | null
+
+  automationPermissions: AutomationPermissions
+
+  /** master toggle for the background scheduler tick loop */
+  schedulerEnabled: boolean
+  /** minimize-to-tray instead of quitting on window close */
+  minimizeToTray: boolean
+  /** start Klenny Code automatically on OS login (wired via app.setLoginItemSettings) */
+  startOnLogin: boolean
+}
+
+/** Per-action-category automation policy. 'auto' = allowed to run unattended (subagent/scheduled
+ *  contexts) and, in live chat tabs, still subject to the existing ApprovalManager gate when
+ *  approvalMode is 'manual'. 'off' = the action is blocked outright, in every context, with a
+ *  clear error returned to the caller. There is deliberately no third 'ask' state in v1 — see
+ *  the Personal Assistant Platform plan's Risks section for why a live approval queue for
+ *  unattended actions is out of scope for now. */
+export type AutomationPolicyValue = 'auto' | 'off'
+
+export interface AutomationPermissions {
+  'gmail.read': AutomationPolicyValue
+  'gmail.send': AutomationPolicyValue
+  'discord.read': AutomationPolicyValue
+  'discord.post': AutomationPolicyValue
+  'scheduler.run': AutomationPolicyValue
+}
+
+export const DEFAULT_AUTOMATION_PERMISSIONS: AutomationPermissions = {
+  'gmail.read': 'auto',
+  'gmail.send': 'off',
+  'discord.read': 'auto',
+  'discord.post': 'off',
+  'scheduler.run': 'auto'
+}
+
+// ---------- Scheduler ----------
+
+export type ScheduledTaskStatus = 'success' | 'error' | 'interrupted'
+
+export interface ScheduledTask {
+  id: string
+  name: string
+  /** natural-language instruction run as a subagent prompt each time the task fires */
+  prompt: string
+  /** standard 5-field cron expression, evaluated in the user's local time */
+  schedule: string
+  /** absolute path of a known coding project to run the task against, or null for the
+   *  workspace-less Assistant tool context (Gmail/Discord/web/cross-project/scheduler tools only) */
+  targetWorkspace: string | null
+  enabled: boolean
+  /** optional per-run USD ceiling in addition to the existing global spending cap / step budget */
+  maxCostUsd: number | null
+  createdAt: number
+  lastRunAt: number | null
+  lastExitStatus: ScheduledTaskStatus | null
+  /** short preview of the run's final summary, for display in the Scheduled Tasks panel */
+  lastOutputPreview: string | null
+  nextRunAt: number | null
 }
 
 // ---------- Shells ----------

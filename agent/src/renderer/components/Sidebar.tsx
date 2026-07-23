@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import klennyImg from '../assets/klenny.jpg'
 import { useAppStore } from '../store/useAppStore'
 import { useWorkspaceActions } from '../hooks/useWorkspaceActions'
+import { useAssistantTabActions } from '../hooks/useAssistantTabActions'
 
 const items = [
   { id: 'chat', label: 'Chat' },
@@ -16,6 +17,7 @@ const items = [
 export function Sidebar() {
   const { panel, setPanel, workspace, updateStatus, updateSupported } = useAppStore()
   const { openWorkspace } = useWorkspaceActions()
+  const { openAssistantTab } = useAssistantTabActions()
   const [justChecked, setJustChecked] = useState<'up-to-date' | 'error' | null>(null)
 
   useEffect(() => {
@@ -82,6 +84,13 @@ export function Sidebar() {
               {checkLabel}
             </button>
           ))}
+        <button
+          className="w-full text-xs px-3 py-2 rounded-md border border-klenny-border text-klenny-muted hover:text-klenny-accent hover:border-klenny-accent"
+          title="Open a new Assistant tab (Gmail, Discord, scheduler, web search — no coding project needed)"
+          onClick={() => void openAssistantTab()}
+        >
+          Open Assistant
+        </button>
         {workspace && (
           <div className="text-[10px] text-klenny-muted truncate px-1" title={workspace}>
             {workspace.split(/[/\\]/).pop()}

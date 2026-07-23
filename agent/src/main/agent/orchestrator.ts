@@ -15,7 +15,7 @@ import type {
   ToolResultPayload
 } from '@shared/types'
 import { getApiKey, loadSettings } from '../settings'
-import { getWorkspace } from '../workspace'
+import { getWorkspace, setWorkspace } from '../workspace'
 import { listKnownProjects } from '../projectsRegistry'
 import { resolveShell } from '../shells'
 import { sessionStore } from '../session/store'
@@ -56,6 +56,9 @@ import { toORMessages } from './messages'
 import { trackDailySpend, getDailySpend } from './spend'
 import { recordUsage } from './costReport'
 import { isIndexActive, searchCode } from './codeindex/manager'
+import { gmailListMessagesTool, gmailGetMessageTool, gmailSendMessageTool } from '../integrations/gmail'
+import { discordPostMessageTool } from '../integrations/discord'
+import { scheduledTaskManager } from '../scheduler/manager'
 import {
   MAX_SUBAGENT_DEPTH,
   MAX_TRUNCATION_RETRIES,
@@ -63,7 +66,8 @@ import {
   checkStepLimit,
   isSubagentBudgetExceeded,
   isTruncatedEmpty,
-  isTruncatedToolCallJson
+  isTruncatedToolCallJson,
+  truncateSummary
 } from './turnControl'
 
 type Emit = (event: AgentStreamEvent) => void
@@ -384,8 +388,15 @@ async function agentLoop(
     model: tab.model,
     messages: orMessages,
     // Subagents can't spawn nested subagents — there's no UI to surface a deeper
-    // level's approvals/questions, and it would risk runaway recursion.
-    tools: getToolDefinitions(tab.mode, subagentCtx?.allowedTools, isIndexActive()).filter(
+    // level's approvals/questions, and it would risk runaway recursion. Coding tools are
+    // hidden entirely on the ephemeral Assistant tab (see TabSession.kind) or when no
+    // workspace is open — they don't apply there.
+    tools: getToolDefinitions(
+      tab.mode,
+      subagentCtx?.allowedTools,
+      isIndexActive(),
+      tab.kind !== 'assistant' && Boolean(getWorkspace())
+    ).filter(
       (t) => !subagentCtx || t.function.name !== 'task'
     ),
     signal,
@@ -753,6 +764,47 @@ async function dispatchTool(
         return { ok: false, summary: 'codebase_search failed', error: e instanceof Error ? e.message : String(e) }
       }
     }
+    case 'open_settings_panel': {
+      const section = String(args.section ?? 'integrations')
+      for (const win of BrowserWindow.getAllWindows()) {
+        win.webContents.send('settings:navigate', section)
+      }
+      return { ok: true, summary: `Opened Settings \u2192 ${section}` }
+    }
+    case 'gmail_list_messages':
+      return gmailListMessagesTool(args as { query?: string; maxResults?: number })
+    case 'gmail_get_message':
+      return gmailGetMessageTool(args as { id: string })
+    case 'gmail_send_message':
+      return gmailSendMessageTool(args as { to: string; subject: string; body: string })
+    case 'discord_post_message':
+      return discordPostMessageTool(args as { channelId: string; text: string })
+    case 'scheduler_create_task': {
+      const task = await scheduledTaskManager.create({
+        name: String(args.name),
+        prompt: String(args.prompt),
+        schedule: String(args.schedule),
+        targetWorkspace: args.targetWorkspace ? String(args.targetWorkspace) : null,
+        maxCostUsd: typeof args.maxCostUsd === 'number' ? args.maxCostUsd : null
+      })
+      return { ok: true, summary: `Created scheduled task "${task.name}"`, data: { task } }
+    }
+    case 'scheduler_list_tasks': {
+      const tasks = scheduledTaskManager.list()
+      return { ok: true, summary: `${tasks.length} scheduled task(s)`, data: { tasks } }
+    }
+    case 'scheduler_update_task': {
+      const id = String(args.id)
+      const patch: Record<string, unknown> = { ...args }
+      delete patch.id
+      const task = await scheduledTaskManager.update(id, patch)
+      if (!task) return { ok: false, summary: `No scheduled task with id ${id}`, error: 'not_found' }
+      return { ok: true, summary: `Updated scheduled task "${task.name}"`, data: { task } }
+    }
+    case 'scheduler_delete_task': {
+      await scheduledTaskManager.delete(String(args.id))
+      return { ok: true, summary: 'Scheduled task deleted' }
+    }
     default:
       return { ok: false, summary: `Unknown tool ${name}`, error: 'unknown' }
   }
@@ -802,6 +854,24 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       return `Finding files matching "${str(args.pattern) ?? ''}" in ${str(args.project) ?? 'another project'}`
     case 'read_other_project_memory':
       return `Reading memory from ${str(args.project) ?? 'another project'}`
+    case 'open_settings_panel':
+      return `Opening Settings \u2192 ${str(args.section) ?? 'integrations'}`
+    case 'gmail_list_messages':
+      return 'Checking Gmail'
+    case 'gmail_get_message':
+      return 'Reading an email'
+    case 'gmail_send_message':
+      return `Sending an email to ${str(args.to) ?? ''}`
+    case 'discord_post_message':
+      return 'Posting to Discord'
+    case 'scheduler_create_task':
+      return `Creating scheduled task "${str(args.name) ?? ''}"`
+    case 'scheduler_list_tasks':
+      return 'Listing scheduled tasks'
+    case 'scheduler_update_task':
+      return 'Updating a scheduled task'
+    case 'scheduler_delete_task':
+      return 'Deleting a scheduled task'
     default:
       return `Running ${toolName}`
   }
@@ -898,7 +968,7 @@ async function runSubagent(
     }
 
     run.status = reason === 'error' || reason === 'truncation_failed' ? 'error' : 'success'
-    run.summary = summary.slice(0, 8000)
+    run.summary = truncateSummary(summary)
     run.activity = undefined
     run.finishedAt = Date.now()
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
@@ -917,6 +987,146 @@ async function runSubagent(
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
     emit({ type: 'turn_end', tabId: subTab.id })
     return { ok: false, summary: run.summary, error: 'subagent_error' }
+  }
+}
+
+/** Runs one scheduled task (Phase 4 of the Personal Assistant Platform plan) as a fully
+ *  unattended subagent — no parent tab, no live UI to stream to. Registered with
+ *  scheduledTaskManager.setRunner() at app startup (see main/index.ts) to avoid a circular
+ *  import between this module and scheduler/manager.ts.
+ *
+ *  Scheduled-task runs never get scheduler_create_task/update/delete in their tool allowlist —
+ *  a scheduled task cannot create, edit, or delete other scheduled tasks (no metaprogramming;
+ *  see the plan's runaway-cost mitigation). If `task.targetWorkspace` is set, the global
+ *  workspace is temporarily switched to it for the duration of the run and restored afterward —
+ *  a known limitation: if the user is actively working in a different project tab while a
+ *  scheduled task fires, coding-tool calls in *that* live tab could transiently resolve against
+ *  the scheduled task's workspace until it finishes. Acceptable for v1; a future version could
+ *  give every tab its own workspace instead of one global one. */
+export async function runScheduledTask(
+  task: import('@shared/types').ScheduledTask
+): Promise<{ status: 'success' | 'error'; summaryPreview: string }> {
+  const apiKey = await getApiKey()
+  if (!apiKey) return { status: 'error', summaryPreview: 'OpenRouter API key not set.' }
+
+  const settings = await loadSettings()
+  if (settings.automationPermissions['scheduler.run'] !== 'auto') {
+    return { status: 'error', summaryPreview: 'Scheduler is disabled by Automation Permissions (scheduler.run).' }
+  }
+
+  const previousWorkspace = getWorkspace()
+  if (task.targetWorkspace) setWorkspace(task.targetWorkspace)
+
+  const subTab: TabSession = {
+    id: `sched_${task.id}_${Date.now()}`,
+    title: `Scheduled: ${task.name}`,
+    mode: 'agent',
+    model: settings.subagentModel,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    // No targetWorkspace => force the assistant tool-only allowlist regardless of whatever
+    // project happens to be the ambient global workspace right now (see getWorkspace() gating
+    // in the tools: getToolDefinitions(...) call above).
+    kind: task.targetWorkspace ? 'project' : 'assistant',
+    messages: [
+      {
+        id: nanoid(),
+        role: 'user',
+        blocks: [{ type: 'text', text: task.prompt }],
+        createdAt: Date.now()
+      }
+    ],
+    totalCostUsd: 0,
+    totalSavingsUsd: 0
+  }
+
+  const subagentCtx: SubagentContext = {
+    allowedTools: [
+      'read_file',
+      'grep',
+      'glob',
+      'run_command',
+      'web_search',
+      'fetch_url',
+      'read_memory',
+      'write_memory',
+      'list_projects',
+      'read_other_project_file',
+      'grep_other_project',
+      'glob_other_project',
+      'read_other_project_memory',
+      'gmail_list_messages',
+      'gmail_get_message',
+      'gmail_send_message',
+      'discord_post_message',
+      'codebase_search'
+      // Deliberately excluded: write_file/edit_file/delete_file (still permitted via
+      // ApprovalManager bypass same as any subagent, but not the point of most scheduled
+      // tasks — can be revisited if a real use case needs it), scheduler_* (no
+      // metaprogramming), open_settings_panel (no renderer to navigate), task (no nested
+      // subagents, same as all subagent contexts).
+    ]
+  }
+
+  const controller = new AbortController()
+  try {
+    const reason = await agentLoop(subTab, apiKey, settings.subagentModel, emitToAll, controller.signal, 1, subagentCtx)
+    const summary =
+      subTab.messages
+        .filter((m) => m.role === 'assistant')
+        .flatMap((m) => m.blocks)
+        .filter((b) => b.type === 'text')
+        .map((b) => (b as { text: string }).text)
+        .join('\n') || 'Scheduled task completed with no text output.'
+    const status = reason === 'error' || reason === 'truncation_failed' ? 'error' : 'success'
+    return { status, summaryPreview: truncateSummary(summary) }
+  } catch (e) {
+    return { status: 'error', summaryPreview: e instanceof Error ? e.message : String(e) }
+  } finally {
+    setWorkspace(previousWorkspace)
+  }
+}
+
+/** Runs an inbound Discord command (see discordBridge.ts) as a fully unattended subagent and
+ *  returns the reply text to post back to Discord. Same tool allowlist rationale as
+ *  runScheduledTask (no scheduler_x tools, no open_settings_panel, no nested task calls), plus
+ *  `discord_post_message` so the subagent could proactively post to a different channel if
+ *  asked, though its primary reply is always the returned string (posted by the Discord
+ *  message-handler itself). */
+export async function runDiscordSubagent(subTab: TabSession, apiKey: string, subagentModel: string): Promise<string> {
+  const subagentCtx: SubagentContext = {
+    allowedTools: [
+      'web_search',
+      'fetch_url',
+      'read_memory',
+      'write_memory',
+      'list_projects',
+      'read_other_project_file',
+      'grep_other_project',
+      'glob_other_project',
+      'read_other_project_memory',
+      'gmail_list_messages',
+      'gmail_get_message',
+      'gmail_send_message',
+      'discord_post_message'
+    ]
+  }
+  const controller = new AbortController()
+  try {
+    const reason = await agentLoop(subTab, apiKey, subagentModel, emitToAll, controller.signal, 1, subagentCtx)
+    const summary =
+      subTab.messages
+        .filter((m) => m.role === 'assistant')
+        .flatMap((m) => m.blocks)
+        .filter((b) => b.type === 'text')
+        .map((b) => (b as { text: string }).text)
+        .join('\n') || "Sorry, I didn't have anything to say."
+    if (reason === 'error' || reason === 'truncation_failed') {
+      return `Sorry, something went wrong while handling that: ${summary}`
+    }
+    return summary
+  } catch (e) {
+    return `Sorry, something went wrong: ${e instanceof Error ? e.message : String(e)}`
   }
 }
 

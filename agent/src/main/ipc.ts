@@ -17,7 +17,11 @@ import { detectShells } from './shells'
 import { createTerminal, writeTerminal, resizeTerminal, disposeTerminal, setTerminalListeners } from './terminal'
 import { startIndexing, stopIndexing, getIndexStatus, rebuildIndex, deleteLocalIndex, setOnStatusChange } from './agent/codeindex/manager'
 import { getCostReport, resetCostReport } from './agent/costReport'
-import type { AgentStreamEvent, IndexStatus } from '@shared/types'
+import type { AgentStreamEvent, IndexStatus, ScheduledTask } from '@shared/types'
+import { createTray, wireMinimizeToTray, refreshMinimizeToTrayCache, applyAutoStartSetting } from './tray'
+import { connectGmail, disconnectGmail } from './integrations/gmail'
+import { connectDiscord, disconnectDiscord, getDiscordStatus, onDiscordStatusChange } from './integrations/discord'
+import { scheduledTaskManager } from './scheduler/manager'
 
 function broadcast(event: AgentStreamEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -82,6 +86,8 @@ export function registerIpcHandlers(): void {
       const ws = getWorkspace()
       if (ws) void refreshIndexingForWorkspace(ws)
     }
+    if ('minimizeToTray' in patch) await refreshMinimizeToTrayCache()
+    if ('startOnLogin' in patch) await applyAutoStartSetting(next.startOnLogin)
     return next
   })
   ipcMain.handle(IPC.setApiKey, async (_e, key: string) => setApiKey(key))
@@ -124,6 +130,7 @@ export function registerIpcHandlers(): void {
     return tabs
   })
   ipcMain.handle(IPC.tabCreate, async () => sessionStore.createTab())
+  ipcMain.handle(IPC.tabCreateAssistant, async () => sessionStore.createAssistantTab())
   ipcMain.handle(IPC.tabClose, async (_e, tabId: string) => {
     // Abort any in-flight turn/questions for this tab and drop its per-tab bookkeeping from
     // the orchestrator's module-level maps — otherwise it leaks for the lifetime of the app
@@ -217,6 +224,27 @@ export function registerIpcHandlers(): void {
     await resetCostReport()
     return getCostReport(getWorkspace())
   })
+
+  ipcMain.handle(IPC.gmailConnect, async () => connectGmail())
+  ipcMain.handle(IPC.gmailDisconnect, async () => disconnectGmail())
+
+  ipcMain.handle(IPC.discordConnect, async (_e, botToken: string) => connectDiscord(botToken))
+  ipcMain.handle(IPC.discordDisconnect, async () => disconnectDiscord())
+  ipcMain.handle(IPC.discordStatusGet, async () => getDiscordStatus())
+  onDiscordStatusChange((status) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.onDiscordStatus, status)
+    }
+  })
+
+  ipcMain.handle(IPC.schedulerList, async () => scheduledTaskManager.list())
+  ipcMain.handle(
+    IPC.schedulerCreate,
+    async (_e, task: Pick<ScheduledTask, 'name' | 'prompt' | 'schedule' | 'targetWorkspace' | 'maxCostUsd'>) =>
+      scheduledTaskManager.create(task)
+  )
+  ipcMain.handle(IPC.schedulerUpdate, async (_e, id: string, patch: Partial<ScheduledTask>) => scheduledTaskManager.update(id, patch))
+  ipcMain.handle(IPC.schedulerDelete, async (_e, id: string) => scheduledTaskManager.delete(id))
 }
 
 export function createMainWindow(): BrowserWindow {
@@ -240,6 +268,7 @@ export function createMainWindow(): BrowserWindow {
   })
 
   win.on('ready-to-show', () => win.show())
+  wireMinimizeToTray(win)
 
   // The renderer's <title> would otherwise overwrite our version-suffixed title on load.
   win.on('page-title-updated', (e) => e.preventDefault())

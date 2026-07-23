@@ -17,6 +17,7 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Diff viewer** — see every code change with accept/reject approval workflow
 - **Memory** — project `KLENNY.md`, global `~/.klenny/KLENNY.md`, and auto-memory notes (Claude Code-style)
 - **Cross-project reference (read-only)** — the agent can read files and memory from *other* projects it has previously opened, so you can ask it to port a feature or convention from one project into the one you're currently working in
+- **Personal Assistant** — an on-demand, ephemeral "Assistant" tab (Gmail, Discord, web search, scheduler, cross-project reference — no coding project required), plus a background scheduler for recurring tasks and a Discord bot for two-way chat/automation — see [Personal Assistant](#personal-assistant) below
 - **No `.gitignore` gymnastics** — plans, auto-memory notes, and the codebase index live in Klenny Code's own app data directory, not in your project
 - **Skills** — Cursor-style `SKILL.md` files, auto-discovered and loaded when relevant
 - **Subagents** — built-in + custom types, parallel execution, separate subagent model setting
@@ -106,11 +107,38 @@ read-only tools (`list_projects`, `read_other_project_file`, `grep_other_project
 `glob_other_project`, `read_other_project_memory`). There is no cross-project write/edit —
 the agent can only ever modify files in the project you currently have open.
 
+### Personal Assistant
+
+Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
+
+- **Assistant tab** — click "Open Assistant" in the sidebar (between "Check for update" and
+  "Change project") to spin up a new chat tab with web search, cross-project reference, memory,
+  Gmail, Discord, and scheduler tools, but no file/shell access (no coding project needed). Every
+  click creates a fresh, independent tab; closing one discards it permanently — there is no
+  persistence or history for Assistant tabs in this version.
+- **Gmail** — connect your own Google Cloud OAuth client in Settings → Integrations to let the
+  agent read and (once you opt in) send email.
+- **Discord** — connect a bot application (never a personal account) to let the agent post
+  updates and respond to DMs/mentions/`!klenny` commands, including reviewing a known project
+  read-only when asked.
+- **Scheduler** — define recurring tasks ("every morning at 8am, summarize my inbox") that run
+  unattended as background subagents, even while the app is minimized to the system tray. Enable
+  "Minimize to tray" / "Start on login" in Settings so the scheduler and Discord bot keep running.
+- **Automation Permissions** (Settings → Integrations) — a simple per-action allow/block toggle
+  (Gmail read/send, Discord read/post, scheduler on/off) governing what the agent may do
+  unattended; there's no live "ask me" prompt for background actions.
+
+Coding tools (file read/write, shell commands, codebase search) remain scoped to an actual open
+project — the Assistant tab and its tools are additive, available everywhere, not a replacement.
+
 ## Architecture
 
 ```
 agent/
 ├── src/main/          # Electron main process (agent orchestrator, tools, IPC)
+│   ├── integrations/  # Gmail (OAuth) and Discord (bot) integrations
+│   ├── scheduler/      # Background recurring-task manager (ScheduledTaskManager)
+│   └── tray.ts         # System tray, minimize-to-tray, auto-start-with-OS
 ├── src/preload/       # Typed contextBridge API
 ├── src/renderer/      # React UI
 ├── shared/            # Types + IPC channel names

@@ -32,7 +32,26 @@ export const DEFAULT_MAX_COMPLETION_TOKENS = 16_000
  *  a real error instead of looping forever. */
 export const MAX_TRUNCATION_RETRIES = 3
 
+/** Ceiling on a subagent's final summary text returned to the parent as the `task` tool result.
+ *  Raised from an old hard 8000-char cap (which silently dropped content with no indication)
+ *  to a much more generous limit — still bounds parent-context growth from a single subagent
+ *  run, but comfortably fits typical subagent output. When actually exceeded, callers should
+ *  use `truncateSummary` below, which appends an explicit marker instead of cutting silently. */
+export const MAX_SUBAGENT_SUMMARY_CHARS = 24_000
+
 export type PauseReason = 'checkpoint' | 'hard_limit'
+
+/**
+ * Truncates a subagent's summary text to `maxChars`, appending a clear, visible marker stating
+ * how many characters were removed when truncation actually occurs — so neither the parent
+ * agent nor the user mistakes a cut-off answer for a complete one. Returns the text unmodified
+ * (no marker) when it's already within the limit.
+ */
+export function truncateSummary(summary: string, maxChars: number = MAX_SUBAGENT_SUMMARY_CHARS): string {
+  if (summary.length <= maxChars) return summary
+  const omitted = summary.length - maxChars
+  return `${summary.slice(0, maxChars)}\n\n[...${omitted} characters truncated...]`
+}
 
 /**
  * Decides whether the main (non-subagent) loop should pause before starting another step.

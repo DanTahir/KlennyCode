@@ -8,6 +8,11 @@ import { sessionStore } from './session/store'
 import { approvalManager } from './agent/approval/manager'
 import { stopIndexing } from './agent/codeindex/manager'
 import { disposeAllTerminals } from './terminal'
+import { createTray, refreshMinimizeToTrayCache, applyAutoStartSetting } from './tray'
+import { scheduledTaskManager } from './scheduler/manager'
+import { runScheduledTask } from './agent/orchestrator'
+import { startDiscordClient, stopDiscordClient, setInboundCommandHandler } from './integrations/discord'
+import { runInboundDiscordCommand } from './agent/discordBridge'
 
 app.whenReady().then(async () => {
   if (process.platform === 'win32') {
@@ -23,7 +28,19 @@ app.whenReady().then(async () => {
     void refreshIndexingForWorkspace(settings.lastWorkspace)
   }
 
+  await refreshMinimizeToTrayCache()
+  await applyAutoStartSetting(settings.startOnLogin)
+
   createMainWindow()
+  createTray(() => BrowserWindow.getAllWindows()[0] ?? null)
+
+  // Personal Assistant Platform (Phase 4): scheduler + Discord gateway run for the lifetime of
+  // the app/tray process, independent of any specific chat tab.
+  scheduledTaskManager.setRunner(runScheduledTask)
+  await scheduledTaskManager.load()
+  scheduledTaskManager.startTicking()
+  setInboundCommandHandler(runInboundDiscordCommand)
+  void startDiscordClient()
 
   initAutoUpdater()
 
@@ -39,4 +56,6 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   void stopIndexing()
   disposeAllTerminals()
+  scheduledTaskManager.stopTicking()
+  void stopDiscordClient()
 })

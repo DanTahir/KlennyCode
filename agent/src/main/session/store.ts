@@ -30,6 +30,10 @@ export class SessionStore {
   private workspace: string | null = null
 
   async load(workspace: string): Promise<TabSession[]> {
+    // Ephemeral Assistant tabs are workspace-independent by design (see TabSession.kind doc
+    // comment) — carry any currently-open ones across the switch instead of losing them, since
+    // they were never written to the outgoing workspace's session file to begin with.
+    const liveAssistantTabs = this.tabs.filter((t) => t.kind === 'assistant')
     this.workspace = workspace
     await mkdir(sessionsDir(), { recursive: true })
     try {
@@ -39,6 +43,7 @@ export class SessionStore {
       this.tabs = [this.createEmptyTab()]
     }
     if (this.tabs.length === 0) this.tabs = [this.createEmptyTab()]
+    this.tabs.push(...liveAssistantTabs)
 
     try {
       const raw = await readFile(historyFile(workspace), 'utf8')
@@ -80,16 +85,28 @@ export class SessionStore {
     return tab
   }
 
-  /** Closes a tab, archiving it into history (unless it never had any messages). */
+  /** Creates a brand-new, ephemeral "Assistant" tab (see TabSession.kind doc comment). Every
+   *  call creates a distinct tab — there is no create-or-focus singleton behavior in v1.
+   *  Assistant tabs live only in memory: they are never written to the per-workspace session
+   *  file (see persist()) and never archived to History on close (see closeTab()), so they
+   *  disappear entirely on close or app quit. */
+  createAssistantTab(): TabSession {
+    const tab = { ...this.createEmptyTab(), kind: 'assistant' as const, title: 'Assistant' }
+    this.tabs.push(tab)
+    return tab
+  }
+
+  /** Closes a tab, archiving it into history (unless it never had any messages, or it's an
+   *  ephemeral Assistant tab — those are excluded from History entirely per the v1 design). */
   async closeTab(tabId: string): Promise<TabSession[]> {
     const tab = this.tabs.find((t) => t.id === tabId)
     this.tabs = this.tabs.filter((t) => t.id !== tabId)
-    if (tab && tab.messages.length > 0) {
+    if (tab && tab.kind !== 'assistant' && tab.messages.length > 0) {
       this.history.unshift({ ...tab, closedAt: Date.now() })
       if (this.history.length > MAX_HISTORY) this.history.length = MAX_HISTORY
       await this.persistHistory()
     }
-    if (this.tabs.length === 0) this.tabs.push(this.createEmptyTab())
+    if (this.tabs.filter((t) => t.kind !== 'assistant').length === 0) this.tabs.push(this.createEmptyTab())
     await this.persist()
     return this.tabs
   }
@@ -99,7 +116,7 @@ export class SessionStore {
     if (idx >= 0) {
       tab.updatedAt = Date.now()
       this.tabs[idx] = tab
-      await this.persist()
+      if (tab.kind !== 'assistant') await this.persist()
     }
   }
 
@@ -130,7 +147,10 @@ export class SessionStore {
   private async persist(): Promise<void> {
     if (!this.workspace) return
     await mkdir(sessionsDir(), { recursive: true })
-    await writeFile(sessionFile(this.workspace), JSON.stringify(this.tabs, null, 2), 'utf8')
+    // Assistant-kind tabs are intentionally ephemeral (see TabSession.kind doc comment) — never
+    // written to disk, so they vanish on close/quit rather than surviving a restart.
+    const persistable = this.tabs.filter((t) => t.kind !== 'assistant')
+    await writeFile(sessionFile(this.workspace), JSON.stringify(persistable, null, 2), 'utf8')
   }
 
   private async persistHistory(): Promise<void> {

@@ -8,6 +8,7 @@ import type {
   ModelInfo,
   PlanArtifact,
   QuestionAnswer,
+  ScheduledTask,
   ShellInfo,
   SkillSummary,
   SubagentTypeSummary,
@@ -35,9 +36,12 @@ export const IPC = {
 
   tabsList: 'tabs:list',
   tabCreate: 'tabs:create',
+  tabCreateAssistant: 'tabs:createAssistant',
   tabClose: 'tabs:close',
   tabSetMode: 'tabs:setMode',
   tabSetModel: 'tabs:setModel',
+
+  settingsNavigate: 'settings:navigate',
 
   historyList: 'history:list',
   historyReopen: 'history:reopen',
@@ -77,7 +81,19 @@ export const IPC = {
   installUpdate: 'app:installUpdate',
 
   costReportGet: 'costReport:get',
-  costReportReset: 'costReport:reset'
+  costReportReset: 'costReport:reset',
+
+  gmailConnect: 'gmail:connect',
+  gmailDisconnect: 'gmail:disconnect',
+  discordConnect: 'discord:connect',
+  discordDisconnect: 'discord:disconnect',
+  discordStatusGet: 'discord:statusGet',
+  onDiscordStatus: 'discord:onStatus',
+
+  schedulerList: 'scheduler:list',
+  schedulerCreate: 'scheduler:create',
+  schedulerUpdate: 'scheduler:update',
+  schedulerDelete: 'scheduler:delete'
 } as const
 
 export interface SendMessagePayload {
@@ -107,9 +123,15 @@ export interface KlennyApi {
 
   listTabs: () => Promise<TabSession[]>
   createTab: () => Promise<TabSession>
+  /** Always creates a brand-new, ephemeral Assistant tab — never focuses/reuses an existing one (v1 design decision). */
+  createAssistantTab: () => Promise<TabSession>
   closeTab: (tabId: string) => Promise<TabSession[]>
   setTabMode: (tabId: string, mode: AgentMode) => Promise<void>
   setTabModel: (tabId: string, model: string) => Promise<void>
+
+  /** Renderer-side listener for the agent's open_settings_panel tool — switches to Settings and
+   *  focuses the given section (e.g. 'integrations'). */
+  onSettingsNavigate: (cb: (section: string) => void) => () => void
 
   listHistory: () => Promise<ArchivedTabSession[]>
   reopenHistory: (tabId: string) => Promise<TabSession | null>
@@ -159,6 +181,24 @@ export interface KlennyApi {
 
   getCostReport: () => Promise<CostReport>
   resetCostReport: () => Promise<CostReport>
+
+  /** Starts the Gmail OAuth loopback flow: opens the system browser, listens on an auto-selected
+   *  free port for the redirect, exchanges the code for tokens, and stores them encrypted.
+   *  Resolves once connected (or rejects with a user-facing error message). */
+  connectGmail: () => Promise<{ email: string }>
+  disconnectGmail: () => Promise<void>
+
+  connectDiscord: (botToken: string) => Promise<{ botTag: string }>
+  disconnectDiscord: () => Promise<void>
+  getDiscordStatus: () => Promise<{ connected: boolean; botTag: string | null; lastError: string | null }>
+  onDiscordStatus: (cb: (status: { connected: boolean; botTag: string | null; lastError: string | null }) => void) => () => void
+
+  listScheduledTasks: () => Promise<ScheduledTask[]>
+  createScheduledTask: (
+    task: Pick<ScheduledTask, 'name' | 'prompt' | 'schedule' | 'targetWorkspace' | 'maxCostUsd'>
+  ) => Promise<ScheduledTask>
+  updateScheduledTask: (id: string, patch: Partial<ScheduledTask>) => Promise<ScheduledTask | null>
+  deleteScheduledTask: (id: string) => Promise<void>
 
   onStreamEvent: (cb: (event: unknown) => void) => () => void
   onUpdateStatus: (cb: (event: UpdateStatusEvent) => void) => () => void

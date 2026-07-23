@@ -1,11 +1,17 @@
 import type { ToolName } from '@shared/types'
+import { CODING_ONLY_TOOLS } from '@shared/types'
 import type { ToolDef } from '../../openrouter/client'
 
 export function getToolDefinitions(
   mode: 'agent' | 'plan',
   restrictTo?: ToolName[] | 'all',
   /** false (default) hides codebase_search entirely — the model never sees a tool it can't use, avoiding confusing failures when the feature isn't configured. */
-  codebaseSearchAvailable = false
+  codebaseSearchAvailable = false,
+  /** true (default) means coding tools (file r/w, run_command, codebase_search) stay available
+   *  as before. Pass false for the ephemeral Assistant tab or any tab with no real workspace
+   *  open — see CODING_ONLY_TOOLS in shared/types.ts and the Personal Assistant Platform plan's
+   *  tool-gating design. */
+  hasWorkspace = true
 ): ToolDef[] {
   const all: ToolDef[] = [
     {
@@ -357,6 +363,140 @@ export function getToolDefinitions(
           required: ['query']
         }
       }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'open_settings_panel',
+        description:
+          'Switches the app to the Settings screen and focuses a specific section — use this when the user asks to connect/configure something (e.g. "connect my Gmail") instead of just telling them where to click.',
+        parameters: {
+          type: 'object',
+          properties: {
+            section: {
+              type: 'string',
+              enum: ['integrations', 'general', 'models', 'automation'],
+              description: '"integrations" for Gmail/Discord connection UI, "automation" for Automation Permissions.'
+            }
+          },
+          required: ['section']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'gmail_list_messages',
+        description: 'List Gmail messages matching an optional Gmail search query (e.g. "is:unread from:boss@example.com"). Requires Gmail to be connected in Settings.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Gmail search syntax; omit to list the most recent messages.' },
+            maxResults: { type: 'number', description: 'Max results, default 10, hard cap 25.' }
+          }
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'gmail_get_message',
+        description: 'Fetch one Gmail message\'s headers and snippet by id (from gmail_list_messages).',
+        parameters: {
+          type: 'object',
+          properties: { id: { type: 'string' } },
+          required: ['id']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'gmail_send_message',
+        description: 'Send an email via the connected Gmail account. Disabled by default until the user enables gmail.send in Automation Permissions.',
+        parameters: {
+          type: 'object',
+          properties: {
+            to: { type: 'string' },
+            subject: { type: 'string' },
+            body: { type: 'string' }
+          },
+          required: ['to', 'subject', 'body']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'discord_post_message',
+        description: 'Post a message to a Discord channel or DM via the connected bot. Disabled by default until the user enables discord.post in Automation Permissions.',
+        parameters: {
+          type: 'object',
+          properties: {
+            channelId: { type: 'string', description: 'Discord channel or DM channel id to post into.' },
+            text: { type: 'string' }
+          },
+          required: ['channelId', 'text']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'scheduler_create_task',
+        description: 'Create a recurring background task that runs as an unattended subagent on a cron schedule (e.g. "0 8 * * *" for every day at 8am).',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            prompt: { type: 'string', description: "Natural-language instruction the subagent will follow each time this task fires." },
+            schedule: { type: 'string', description: 'Standard 5-field cron expression, evaluated in local time.' },
+            targetWorkspace: { type: 'string', description: 'Absolute path of a known coding project to run against, or omit for the general Assistant tool context.' },
+            maxCostUsd: { type: 'number', description: 'Optional per-run USD ceiling.' }
+          },
+          required: ['name', 'prompt', 'schedule']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'scheduler_list_tasks',
+        description: 'List all scheduled background tasks and their last run status.',
+        parameters: { type: 'object', properties: {} }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'scheduler_update_task',
+        description: 'Update a scheduled task (e.g. change its schedule, prompt, or enabled state).',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            name: { type: 'string' },
+            prompt: { type: 'string' },
+            schedule: { type: 'string' },
+            targetWorkspace: { type: 'string' },
+            maxCostUsd: { type: 'number' },
+            enabled: { type: 'boolean' }
+          },
+          required: ['id']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'scheduler_delete_task',
+        description: 'Permanently delete a scheduled task.',
+        parameters: {
+          type: 'object',
+          properties: { id: { type: 'string' } },
+          required: ['id']
+        }
+      }
     }
   ]
 
@@ -401,7 +541,16 @@ export function getToolDefinitions(
     'read_other_project_file',
     'grep_other_project',
     'glob_other_project',
-    'read_other_project_memory'
+    'read_other_project_memory',
+    'open_settings_panel',
+    'gmail_list_messages',
+    'gmail_get_message',
+    'gmail_send_message',
+    'discord_post_message',
+    'scheduler_create_task',
+    'scheduler_list_tasks',
+    'scheduler_update_task',
+    'scheduler_delete_task'
   ])
 
   const allowed = mode === 'plan' ? planAllowed : agentAllowed
@@ -413,6 +562,14 @@ export function getToolDefinitions(
     // are not supported — and always allow ask_question to be filtered out separately
     // by the caller for headless (subagent) runs.
     defs = defs.filter((t) => restrictSet.has(t.function.name as ToolName))
+  }
+
+  // Coding tools (file r/w, run_command, codebase_search) need a real workspace to operate on
+  // — hide them entirely on the ephemeral Assistant tab / whenever no project is open, per the
+  // Personal Assistant Platform plan's tool-gating design (CODING_ONLY_TOOLS in shared/types.ts).
+  if (!hasWorkspace) {
+    const codingOnly = new Set<ToolName>(CODING_ONLY_TOOLS)
+    defs = defs.filter((t) => !codingOnly.has(t.function.name as ToolName))
   }
 
   // codebase_search is only ever surfaced when the feature is fully configured (enabled,

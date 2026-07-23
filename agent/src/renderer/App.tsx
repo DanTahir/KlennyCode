@@ -82,9 +82,14 @@ export default function App() {
 
     const unsub = window.klenny.onStreamEvent((e) => applyStreamEvent(e as never))
     const unsubUpdate = window.klenny.onUpdateStatus((e) => setUpdateStatus(e))
+    const unsubSettingsNav = window.klenny.onSettingsNavigate((section) => {
+      useAppStore.getState().setPanel('settings')
+      useAppStore.getState().setSettingsFocusSection(section)
+    })
     return () => {
       unsub()
       unsubUpdate()
+      unsubSettingsNav()
     }
   }, [])
 
