@@ -1,8 +1,5 @@
-import { describe, expect, mock, test } from 'bun:test'
-
-// ApprovalManager imports `app` from electron (only used by init()/createCheckpoint(),
-// neither of which these tests touch), so stub the module out for the test environment.
-mock.module('electron', () => ({ app: { getPath: () => '' } }))
+import { describe, expect, test } from 'bun:test'
+import './testElectronMock' // registers a shared electron mock — see that file for why this matters
 
 const { ApprovalManager } = await import('../src/main/agent/approval/manager')
 

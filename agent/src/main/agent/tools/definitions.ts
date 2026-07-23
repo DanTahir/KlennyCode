@@ -266,6 +266,85 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'list_projects',
+        description:
+          'List other projects Klenny has previously opened on this machine (read-only, excludes the current workspace). Use this to discover exact project paths before calling read_other_project_file / grep_other_project / glob_other_project / read_other_project_memory — e.g. when the user says "port feature X from my other project Y".',
+        parameters: { type: 'object', properties: {} }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'read_other_project_file',
+        description:
+          'Read a file from a DIFFERENT project Klenny has previously opened (read-only — there is no write/edit equivalent). "project" must be an exact path from list_projects (or an unambiguous folder name). Never use this on the current workspace — use read_file for that.',
+        parameters: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Path (or unique folder name) of the other project, as returned by list_projects.' },
+            path: { type: 'string', description: 'File path relative to that project\'s root (or absolute, inside it).' },
+            offset: { type: 'number' },
+            limit: { type: 'number' }
+          },
+          required: ['project', 'path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'grep_other_project',
+        description: 'Search files with regex (ripgrep) inside a DIFFERENT known project. Same semantics as grep, scoped to that project.',
+        parameters: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Path (or unique folder name) of the other project, as returned by list_projects.' },
+            pattern: { type: 'string' },
+            path: { type: 'string' },
+            glob: { type: 'string' },
+            case_insensitive: { type: 'boolean' },
+            context: { type: 'number', description: 'Lines of context before/after each match, 0-10 (default 0).' }
+          },
+          required: ['project', 'pattern']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'glob_other_project',
+        description: 'Find files by glob pattern inside a DIFFERENT known project. Same semantics as glob, scoped to that project.',
+        parameters: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Path (or unique folder name) of the other project, as returned by list_projects.' },
+            pattern: { type: 'string' },
+            cwd: { type: 'string' }
+          },
+          required: ['project', 'pattern']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'read_other_project_memory',
+        description:
+          'Read memory from a DIFFERENT known project: its KLENNY.md/auto-memory index and topic list (omit "topic"), or one specific auto-memory topic note (set "topic" to its exact title). Only "scope": "project" is meaningful here — global memory is shared everywhere, so use read_memory for that instead.',
+        parameters: {
+          type: 'object',
+          properties: {
+            project: { type: 'string', description: 'Path (or unique folder name) of the other project, as returned by list_projects.' },
+            scope: { type: 'string', enum: ['project', 'global'] },
+            topic: { type: 'string', description: 'Optional — exact auto-memory topic title. Omit to get the overview + topic list.' }
+          },
+          required: ['project', 'scope']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'codebase_search',
         description:
           'Semantic search across the codebase — finds relevant code by meaning, not exact text. Use for "where is X handled" / "find code related to Y" style questions; use grep for exact string/symbol matches. Only available when the user has enabled codebase indexing in Settings.',
@@ -293,7 +372,12 @@ export function getToolDefinitions(
     'ask_question',
     'task',
     'save_plan',
-    'codebase_search'
+    'codebase_search',
+    'list_projects',
+    'read_other_project_file',
+    'grep_other_project',
+    'glob_other_project',
+    'read_other_project_memory'
   ])
 
   const agentAllowed = new Set<ToolName>([
@@ -312,7 +396,12 @@ export function getToolDefinitions(
     'write_memory',
     'task',
     'ask_question',
-    'codebase_search'
+    'codebase_search',
+    'list_projects',
+    'read_other_project_file',
+    'grep_other_project',
+    'glob_other_project',
+    'read_other_project_memory'
   ])
 
   const allowed = mode === 'plan' ? planAllowed : agentAllowed

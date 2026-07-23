@@ -16,6 +16,7 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Thinking display** — streams reasoning tokens from supported models live
 - **Diff viewer** — see every code change with accept/reject approval workflow
 - **Memory** — project `KLENNY.md`, global `~/.klenny/KLENNY.md`, and auto-memory notes (Claude Code-style)
+- **Cross-project reference (read-only)** — the agent can read files and memory from *other* projects it has previously opened, so you can ask it to port a feature or convention from one project into the one you're currently working in
 - **No `.gitignore` gymnastics** — plans, auto-memory notes, and the codebase index live in Klenny Code's own app data directory, not in your project
 - **Skills** — Cursor-style `SKILL.md` files, auto-discovered and loaded when relevant
 - **Subagents** — built-in + custom types, parallel execution, separate subagent model setting
@@ -94,6 +95,17 @@ there's nothing to `.gitignore` and no risk of accidentally committing local age
 Global config (shared across all projects) lives in `~/.klenny/` — global skills, global
 custom subagents, and global memory (`KLENNY.md` + auto-memory notes).
 
+### Cross-project reference (read-only)
+
+Because every project's memory/plans/index and chat sessions are keyed by path under Klenny
+Code's own `userData` directory (not inside the project itself — see above), Klenny Code
+already knows about every project you've previously opened. The agent can use this to read
+files and memory notes from *other* projects while working in your current one — e.g.
+"port the shell-selection feature from my other project into this one" — via a small set of
+read-only tools (`list_projects`, `read_other_project_file`, `grep_other_project`,
+`glob_other_project`, `read_other_project_memory`). There is no cross-project write/edit —
+the agent can only ever modify files in the project you currently have open.
+
 ## Architecture
 
 ```
@@ -125,6 +137,26 @@ Packaged Klenny Code apps (installer builds on Windows/macOS/Linux) check for up
 hours thereafter, download new versions in the background, and prompt to restart once ready. The Windows
 **portable** exe cannot auto-update (electron-builder only supports auto-update for the NSIS installer target on
 Windows) — grab new portable builds manually from Releases.
+
+### macOS: "app is damaged and can't be opened"
+
+Klenny Code isn't signed with a paid Apple Developer certificate, so macOS Gatekeeper blocks the downloaded
+`.dmg`/`.app` and reports it as damaged. This isn't actual corruption — it's Gatekeeper refusing to run an
+unsigned app. Clear the quarantine flag from Terminal to fix it (the installed app bundle is `KlennyCode.app`
+— no space — even though it displays as "Klenny Code"):
+
+```bash
+xattr -cr /Applications/KlennyCode.app
+```
+
+Then launch it normally. If you haven't dragged it into `/Applications` yet, you can strip quarantine from the
+`.dmg` itself first instead:
+
+```bash
+xattr -cr ~/Downloads/KlennyCode.dmg
+```
+
+(Adjust the path if your downloaded file has a version suffix, e.g. `KlennyCode-0.1.42-arm64.dmg`.)
 
 ## License
 

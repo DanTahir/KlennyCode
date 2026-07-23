@@ -133,6 +133,11 @@ export type ToolName =
   | 'ask_question'
   | 'save_plan'
   | 'codebase_search'
+  | 'list_projects'
+  | 'read_other_project_file'
+  | 'grep_other_project'
+  | 'glob_other_project'
+  | 'read_other_project_memory'
 
 export interface ToolResultPayload {
   ok: boolean
@@ -152,7 +157,12 @@ export const READ_ONLY_TOOLS: ToolName[] = [
   'read_skill',
   'read_memory',
   'ask_question',
-  'codebase_search'
+  'codebase_search',
+  'list_projects',
+  'read_other_project_file',
+  'grep_other_project',
+  'glob_other_project',
+  'read_other_project_memory'
 ]
 
 export const MUTATING_TOOLS: ToolName[] = ['write_file', 'edit_file', 'delete_file', 'run_command', 'write_memory', 'task']

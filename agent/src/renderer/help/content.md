@@ -108,3 +108,17 @@ The **Windows portable build** (`Klenny-Code-*.exe`, no installer) cannot auto-u
 underlying packaging tool, not something Klenny Code can work around. Download the latest portable exe manually
 from [GitHub Releases](https://github.com/DanTahir/KlennyCode/releases/latest) instead, or switch to the installer
 build to get automatic updates.
+
+## macOS: "app is damaged and can't be opened"
+
+Klenny Code isn't signed with a paid Apple Developer certificate, so macOS Gatekeeper blocks the downloaded
+`.dmg`/`.app` and reports it as damaged — it isn't actually corrupted, Gatekeeper is just refusing to run an
+unsigned app. Fix it from Terminal by clearing the quarantine flag (the app bundle is `KlennyCode.app` — no
+space — even though it displays as "Klenny Code"):
+
+```bash
+xattr -cr /Applications/KlennyCode.app
+```
+
+Then launch it normally. If you haven't moved it to `/Applications` yet, you can run the same command on the
+downloaded `.dmg` instead (e.g. `xattr -cr ~/Downloads/KlennyCode.dmg`), then mount and install as usual.

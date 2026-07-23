@@ -16,6 +16,7 @@ import type {
 } from '@shared/types'
 import { getApiKey, loadSettings } from '../settings'
 import { getWorkspace } from '../workspace'
+import { listKnownProjects } from '../projectsRegistry'
 import { resolveShell } from '../shells'
 import { sessionStore } from '../session/store'
 import { streamChatCompletion, fetchModels, type ToolCall } from '../openrouter/client'
@@ -33,6 +34,13 @@ import {
   fetchUrlTool,
   resolveWorkspacePath
 } from './tools/index'
+import {
+  listProjectsTool,
+  readOtherProjectFileTool,
+  grepOtherProjectTool,
+  globOtherProjectTool,
+  readOtherProjectMemoryTool
+} from './tools/otherProjects'
 import { readFile } from 'node:fs/promises'
 import { toLf } from './tools/eol'
 import { loadProjectMemory, loadGlobalMemory, loadAutoMemoryIndex, writeMemory, readMemoryTopic } from './memory/manager'
@@ -708,6 +716,27 @@ async function dispatchTool(
     case 'write_memory':
       await writeMemory(args.scope as 'project' | 'global', String(args.topic), String(args.content))
       return { ok: true, summary: 'Memory saved' }
+    case 'list_projects':
+      return listProjectsTool()
+    case 'read_other_project_file':
+      return readOtherProjectFileTool(
+        args as { project: string; path: string; offset?: number; limit?: number }
+      )
+    case 'grep_other_project':
+      return grepOtherProjectTool(
+        args as {
+          project: string
+          pattern: string
+          path?: string
+          glob?: string
+          case_insensitive?: boolean
+          context?: number
+        }
+      )
+    case 'glob_other_project':
+      return globOtherProjectTool(args as { project: string; pattern: string; cwd?: string })
+    case 'read_other_project_memory':
+      return readOtherProjectMemoryTool(args as { project: string; scope: 'project' | 'global'; topic?: string })
     case 'save_plan': {
       const plan = await savePlan(String(args.slug), String(args.title), String(args.markdown))
       return { ok: true, summary: 'Plan saved', data: { plan } }
@@ -763,6 +792,16 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       return 'Asking a clarifying question'
     case 'codebase_search':
       return `Searching codebase for "${str(args.query) ?? ''}"`
+    case 'list_projects':
+      return 'Listing other known projects'
+    case 'read_other_project_file':
+      return `Reading ${str(args.path) ?? 'file'} from ${str(args.project) ?? 'another project'}`
+    case 'grep_other_project':
+      return `Searching "${str(args.pattern) ?? ''}" in ${str(args.project) ?? 'another project'}`
+    case 'glob_other_project':
+      return `Finding files matching "${str(args.pattern) ?? ''}" in ${str(args.project) ?? 'another project'}`
+    case 'read_other_project_memory':
+      return `Reading memory from ${str(args.project) ?? 'another project'}`
     default:
       return `Running ${toolName}`
   }
@@ -883,12 +922,13 @@ async function runSubagent(
 
 async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string | null): Promise<string> {
   const ws = getWorkspace()
-  const [projMem, globalMem, autoMem, skills, subagents] = await Promise.all([
+  const [projMem, globalMem, autoMem, skills, subagents, otherProjects] = await Promise.all([
     loadProjectMemory(),
     loadGlobalMemory(),
     loadAutoMemoryIndex(),
     listSkills(),
-    listSubagentTypes()
+    listSubagentTypes(),
+    listKnownProjects()
   ])
 
   const shell = resolveShell(shellId)
@@ -900,6 +940,8 @@ async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string | null
     projMem && `Project memory:\n${projMem}`,
     globalMem && `Global memory:\n${globalMem}`,
     autoMem && `Auto-memory index:\n${autoMem}`,
+    otherProjects.length > 0 &&
+      `Other known projects (read-only — use read_other_project_file/grep_other_project/glob_other_project/read_other_project_memory to reference or port things from these; never write to them):\n${otherProjects.map((p) => `- ${p}`).join('\n')}`,
     skillsCatalogPrompt(skills),
     `Subagents:\n${subagentsCatalog(subagents)}`
   ].filter(Boolean)

@@ -13,8 +13,8 @@ function projectMemoryDir(ws: string): string {
   return join(projectDataDir(ws), 'memory')
 }
 
-export async function loadProjectMemory(): Promise<string> {
-  const ws = getWorkspace()
+export async function loadProjectMemory(workspace?: string): Promise<string> {
+  const ws = workspace ?? getWorkspace()
   if (!ws) return ''
   const parts: string[] = []
   for (const name of ['KLENNY.md', 'KLENNY.local.md', join('.klenny', 'KLENNY.md')]) {
@@ -35,8 +35,8 @@ export async function loadGlobalMemory(): Promise<string> {
   }
 }
 
-export async function loadAutoMemoryIndex(): Promise<string> {
-  const ws = getWorkspace()
+export async function loadAutoMemoryIndex(workspace?: string): Promise<string> {
+  const ws = workspace ?? getWorkspace()
   if (!ws) return ''
   const memDir = projectMemoryDir(ws)
   try {
@@ -114,12 +114,12 @@ export async function writeMemoryFile(scope: 'project' | 'global', content: stri
  * These notes live under `<userData>/projects/<id>/memory/` (project) or `~/.klenny/memory/`
  * (global) — NOT in the workspace tree — so they are not reachable via read_file.
  */
-export async function readMemoryTopic(scope: 'project' | 'global', topic: string): Promise<string> {
+export async function readMemoryTopic(scope: 'project' | 'global', topic: string, workspace?: string): Promise<string> {
   const dir =
     scope === 'global'
       ? join(GLOBAL_DIR, 'memory')
       : (() => {
-          const ws = getWorkspace()
+          const ws = workspace ?? getWorkspace()
           if (!ws) throw new Error('No workspace open')
           return projectMemoryDir(ws)
         })()
@@ -127,13 +127,9 @@ export async function readMemoryTopic(scope: 'project' | 'global', topic: string
   return readFile(join(dir, `${safeTopic}.md`), 'utf8')
 }
 
-export async function listMemoryTopics(scope: 'project' | 'global'): Promise<string[]> {
-  const dir =
-    scope === 'global'
-      ? join(GLOBAL_DIR, 'memory')
-      : getWorkspace()
-        ? projectMemoryDir(getWorkspace()!)
-        : null
+export async function listMemoryTopics(scope: 'project' | 'global', workspace?: string): Promise<string[]> {
+  const ws = workspace ?? getWorkspace()
+  const dir = scope === 'global' ? join(GLOBAL_DIR, 'memory') : ws ? projectMemoryDir(ws) : null
   if (!dir) return []
   try {
     const entries = await readdir(dir)

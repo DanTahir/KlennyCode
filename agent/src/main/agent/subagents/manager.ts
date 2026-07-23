@@ -15,13 +15,39 @@ const BUILT_IN: SubagentTypeSummary[] = [
   {
     name: 'explore',
     description: 'Fast read-only codebase exploration. Use for searching files and understanding structure.',
-    tools: ['read_file', 'grep', 'glob', 'web_search', 'fetch_url', 'read_memory', 'codebase_search'],
+    tools: [
+      'read_file',
+      'grep',
+      'glob',
+      'web_search',
+      'fetch_url',
+      'read_memory',
+      'codebase_search',
+      'list_projects',
+      'read_other_project_file',
+      'grep_other_project',
+      'glob_other_project',
+      'read_other_project_memory'
+    ],
     builtIn: true
   },
   {
     name: 'plan-checker',
     description: 'Review a plan for gaps, risks, and missing steps before implementation.',
-    tools: ['read_file', 'grep', 'glob', 'web_search', 'fetch_url', 'read_memory', 'codebase_search'],
+    tools: [
+      'read_file',
+      'grep',
+      'glob',
+      'web_search',
+      'fetch_url',
+      'read_memory',
+      'codebase_search',
+      'list_projects',
+      'read_other_project_file',
+      'grep_other_project',
+      'glob_other_project',
+      'read_other_project_memory'
+    ],
     builtIn: true
   }
 ]

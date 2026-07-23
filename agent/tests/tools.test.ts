@@ -22,6 +22,22 @@ describe('tool definitions', () => {
     expect(getToolDefinitions('agent').map((t) => t.function.name)).toContain('read_memory')
   })
 
+  test('cross-project read-only tools are available in both plan and agent mode', () => {
+    const crossProjectTools = [
+      'list_projects',
+      'read_other_project_file',
+      'grep_other_project',
+      'glob_other_project',
+      'read_other_project_memory'
+    ]
+    const planTools = getToolDefinitions('plan').map((t) => t.function.name)
+    const agentTools = getToolDefinitions('agent').map((t) => t.function.name)
+    for (const name of crossProjectTools) {
+      expect(planTools).toContain(name)
+      expect(agentTools).toContain(name)
+    }
+  })
+
   test('restrictTo narrows the tool set for restricted subagents', () => {
     const tools = getToolDefinitions('agent', ['read_file', 'grep', 'glob']).map((t) => t.function.name)
     expect(tools).toContain('read_file')
