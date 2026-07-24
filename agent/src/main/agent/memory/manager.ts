@@ -80,21 +80,30 @@ async function updateMemoryIndex(memDir: string, topic: string, summary: string)
   }
 }
 
+/**
+ * Read/write pair used by the Memory settings panel editor. These must read and write the
+ * exact same single file — the canonical, user-editable `KLENNY.md` for the given scope —
+ * with nothing else mixed in.
+ *
+ * Previously `readMemoryFile` concatenated the canonical file with other read-only sources
+ * (the auto-memory `MEMORY.md` index, and for project scope also `KLENNY.local.md` /
+ * `.klenny/KLENNY.md`) to build a "full picture" view, while `writeMemoryFile` only ever wrote
+ * back to the single canonical file. That asymmetry meant: open the panel -> see canonical +
+ * auto-notes blended together -> edit -> Save (writes only to canonical file) -> the editor's
+ * "reload after save" step re-blends the *unchanged* auto-notes back in, making it look like
+ * the save was silently reverted. Auto-memory notes are system-managed (written via
+ * `write_memory`/agent tools) and aren't meant to be hand-edited here, so they're intentionally
+ * left out of this editor entirely.
+ */
 export async function readMemoryFile(scope: 'project' | 'global'): Promise<string> {
-  if (scope === 'global') {
-    const global = await loadGlobalMemory()
-    const autoDir = join(GLOBAL_DIR, 'memory')
-    let auto = ''
-    try {
-      auto = await readFile(join(autoDir, 'MEMORY.md'), 'utf8')
-    } catch {
-      // none
-    }
-    return [global, auto].filter(Boolean).join('\n\n')
+  if (scope === 'global') return loadGlobalMemory()
+  const ws = getWorkspace()
+  if (!ws) return ''
+  try {
+    return await readFile(join(ws, 'KLENNY.md'), 'utf8')
+  } catch {
+    return ''
   }
-  const project = await loadProjectMemory()
-  const auto = await loadAutoMemoryIndex()
-  return [project, auto].filter(Boolean).join('\n\n')
 }
 
 export async function writeMemoryFile(scope: 'project' | 'global', content: string): Promise<void> {

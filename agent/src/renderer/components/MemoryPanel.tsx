@@ -7,14 +7,15 @@ export function MemoryPanel() {
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const load = useCallback((s: 'project' | 'global') => {
-    void window.klenny.readMemory(s).then(setContent)
+  const load = useCallback(async (s: 'project' | 'global') => {
+    const value = await window.klenny.readMemory(s)
+    setContent(value)
   }, [])
 
   useEffect(() => {
     setSavedAt(null)
     setError(null)
-    load(scope)
+    void load(scope)
   }, [scope, load])
 
   const handleSave = async () => {
@@ -39,6 +40,11 @@ export function MemoryPanel() {
   return (
     <div className="flex-1 overflow-y-auto p-6 max-w-3xl space-y-4">
       <h2 className="text-xl font-semibold">Memory</h2>
+      <p className="text-sm text-klenny-muted">
+        Edits here apply only to the main <code>KLENNY.md</code> file for the selected scope.
+        Auto-memory notes the agent writes for itself (via <code>write_memory</code>) are stored
+        separately and aren't shown or editable in this box.
+      </p>
       <select
         className="px-2 py-1 bg-klenny-bg border border-klenny-border rounded"
         value={scope}
