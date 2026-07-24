@@ -26,7 +26,19 @@ export class ApprovalManager {
   }
 
   setMode(mode: ApprovalMode): void {
-    if (mode === 'manual') this.acceptAllTabs.clear()
+    // 'auto' is the only mode where accept-all is a no-op anyway (nothing gets queued); leaving
+    // it set is harmless there. Both 'manual' and 'command' still queue some actions, so any
+    // stale accept-all state from a previous 'auto' stint must be cleared or those actions would
+    // silently bypass the review the user just asked for by switching modes.
+    if (mode === 'manual' || mode === 'command') this.acceptAllTabs.clear()
+  }
+
+  /** Marks (or unmarks) a single tab as "accept all" — used when a tab's own approval-mode
+   *  override changes (e.g. switching a tab to 'auto' should behave like accept-all for any
+   *  actions already queued for it; switching away from 'auto' should stop auto-accepting). */
+  setTabAcceptAll(tabId: string, acceptAll: boolean): void {
+    if (acceptAll) this.acceptAllTabs.add(tabId)
+    else this.acceptAllTabs.delete(tabId)
   }
 
   async createCheckpoint(workspace: string): Promise<string> {

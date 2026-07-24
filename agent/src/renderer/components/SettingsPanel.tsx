@@ -457,10 +457,14 @@ export function SettingsPanel() {
 
       <section className="mb-6 space-y-2">
         <h3 className="font-medium">Approval mode</h3>
-        <select className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded" value={settings.approvalMode} onChange={(e) => void patch({ approvalMode: e.target.value as 'manual' | 'auto' })}>
+        <select className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded" value={settings.approvalMode} onChange={(e) => void patch({ approvalMode: e.target.value as 'manual' | 'auto' | 'command' })}>
           <option value="manual">Manual review (default)</option>
+          <option value="command">Command approve — auto-apply edits, manually approve commands</option>
           <option value="auto">Auto-apply with checkpoints</option>
         </select>
+        <p className="text-xs text-klenny-muted">
+          This is the default for new tabs — each chat tab can override it individually from the dropdown next to Send.
+        </p>
       </section>
 
       <section className="mb-6 space-y-2">

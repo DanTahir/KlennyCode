@@ -36,6 +36,7 @@ const api: KlennyApi = {
   closeTab: (tabId) => ipcRenderer.invoke(IPC.tabClose, tabId),
   setTabMode: (tabId, mode) => ipcRenderer.invoke(IPC.tabSetMode, tabId, mode),
   setTabModel: (tabId, model) => ipcRenderer.invoke(IPC.tabSetModel, tabId, model),
+  setTabApprovalMode: (tabId, mode) => ipcRenderer.invoke(IPC.tabSetApprovalMode, tabId, mode),
 
   onSettingsNavigate: (cb) => {
     const listener = (_: unknown, section: string) => cb(section)

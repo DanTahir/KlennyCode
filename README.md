@@ -78,9 +78,15 @@ Installers are written to `agent/dist/`.
 
 ### Approval modes
 
+Set a default in Settings, and override it per chat tab from the dropdown next to Send/Stop
+(useful when you want one tab to run hands-off while another stays under manual review). Clicking
+"Accept all" on a pending approval card also flips that tab's dropdown to Auto approve — you can
+switch it back to Manual or Command approve afterward.
+
 | Mode | Behavior |
 |------|----------|
 | Manual review (default) | Every edit/delete/command shows a diff or preview — accept or reject |
+| Command approve | File edits/deletes apply immediately (with checkpoints); shell commands still require approval |
 | Auto-apply | Changes apply immediately; shadow-git checkpoints enable revert |
 
 ### Project layout (created by Klenny Code)

@@ -3,7 +3,17 @@
 
 export type AgentMode = 'agent' | 'plan'
 
-export type ApprovalMode = 'manual' | 'auto'
+/** 'manual': every mutating tool call (file edits and shell commands) waits for user approval.
+ *  'auto': every mutating tool call is applied immediately, with a checkpoint commit for
+ *  potential revert. 'command': file edits (write_file/edit_file/multi_edit/delete_file) are
+ *  auto-applied like 'auto', but run_command calls still require manual approval — a middle
+ *  ground for users who trust the agent's code changes but want to review shell commands. */
+export type ApprovalMode = 'manual' | 'auto' | 'command'
+
+/** Per-tab approval mode override, selectable from the dropdown next to Send/Stop. 'default'
+ *  means "use whatever AppSettings.approvalMode currently is" — the only value that's not one
+ *  of the three concrete ApprovalMode values. */
+export type TabApprovalMode = ApprovalMode | 'default'
 
 export type ReasoningEffort = 'low' | 'medium' | 'high'
 
@@ -329,6 +339,10 @@ export interface TabSession {
    *  never persisted to disk, and is not archived to History on close. See the Personal
    *  Assistant Platform plan for the full v1 scope decision. */
   kind?: 'project' | 'assistant'
+  /** Per-tab override for approval mode, shown in the dropdown next to Send/Stop. undefined
+   *  (or 'default' on older persisted tabs) means "use AppSettings.approvalMode". Clicking
+   *  "Accept all" on a pending action sets this to 'auto' for that tab. */
+  approvalMode?: TabApprovalMode
 }
 
 /** A tab that was closed and archived for later browsing/reopening in the History panel. */

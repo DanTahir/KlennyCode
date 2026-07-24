@@ -63,6 +63,63 @@ describe('ApprovalManager accept-all scoping', () => {
     expect(await wait2).toBe('accept')
   })
 
+  test('setMode("command") also clears accept-all state for all tabs', async () => {
+    const mgr = new ApprovalManager()
+    const action1 = mgr.buildPendingFromTool('tabA', 'tc1', 'write_file', 'write a.txt', {})
+    mgr.resolve(action1.id, 'accept_all')
+
+    mgr.setMode('command')
+
+    const action2 = mgr.buildPendingFromTool('tabA', 'tc2', 'run_command', 'run a command', {})
+    let resolved = false
+    const wait2 = mgr.waitForDecision(action2.id).then((d) => {
+      resolved = true
+      return d
+    })
+    await Promise.resolve()
+    expect(resolved).toBe(false)
+    mgr.resolve(action2.id, 'accept')
+    expect(await wait2).toBe('accept')
+  })
+
+  test('setMode("auto") leaves accept-all state untouched', async () => {
+    const mgr = new ApprovalManager()
+    const action1 = mgr.buildPendingFromTool('tabA', 'tc1', 'write_file', 'write a.txt', {})
+    mgr.resolve(action1.id, 'accept_all')
+
+    mgr.setMode('auto')
+
+    const action2 = mgr.buildPendingFromTool('tabA', 'tc2', 'write_file', 'write a2.txt', {})
+    expect(await mgr.waitForDecision(action2.id)).toBe('accept')
+  })
+
+  test('setTabAcceptAll(tabId, true) makes future actions on that tab auto-accept', async () => {
+    const mgr = new ApprovalManager()
+    mgr.setTabAcceptAll('tabA', true)
+
+    const action = mgr.buildPendingFromTool('tabA', 'tc1', 'write_file', 'write a.txt', {})
+    expect(await mgr.waitForDecision(action.id)).toBe('accept')
+  })
+
+  test('setTabAcceptAll(tabId, false) stops auto-accepting for that tab', async () => {
+    const mgr = new ApprovalManager()
+    const action1 = mgr.buildPendingFromTool('tabA', 'tc1', 'write_file', 'write a.txt', {})
+    mgr.resolve(action1.id, 'accept_all')
+
+    mgr.setTabAcceptAll('tabA', false)
+
+    const action2 = mgr.buildPendingFromTool('tabA', 'tc2', 'write_file', 'write a2.txt', {})
+    let resolved = false
+    const wait2 = mgr.waitForDecision(action2.id).then((d) => {
+      resolved = true
+      return d
+    })
+    await Promise.resolve()
+    expect(resolved).toBe(false)
+    mgr.resolve(action2.id, 'reject')
+    expect(await wait2).toBe('reject')
+  })
+
   test('clearTab removes accept-all state for that tab only', async () => {
     const mgr = new ApprovalManager()
     const actionA1 = mgr.buildPendingFromTool('tabA', 'tc1', 'write_file', 'write a.txt', {})

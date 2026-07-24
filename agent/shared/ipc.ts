@@ -12,6 +12,7 @@ import type {
   ShellInfo,
   SkillSummary,
   SubagentTypeSummary,
+  TabApprovalMode,
   TabSession,
   UpdateStatusEvent
 } from './types'
@@ -40,6 +41,7 @@ export const IPC = {
   tabClose: 'tabs:close',
   tabSetMode: 'tabs:setMode',
   tabSetModel: 'tabs:setModel',
+  tabSetApprovalMode: 'tabs:setApprovalMode',
 
   settingsNavigate: 'settings:navigate',
 
@@ -140,6 +142,9 @@ export interface KlennyApi {
   closeTab: (tabId: string) => Promise<TabSession[]>
   setTabMode: (tabId: string, mode: AgentMode) => Promise<void>
   setTabModel: (tabId: string, model: string) => Promise<void>
+  /** Sets a tab's own approval-mode override, shown in the dropdown next to Send/Stop.
+   *  'default' clears the override so the tab follows AppSettings.approvalMode again. */
+  setTabApprovalMode: (tabId: string, mode: TabApprovalMode) => Promise<void>
 
   /** Renderer-side listener for the agent's open_settings_panel tool — switches to Settings and
    *  focuses the given section (e.g. 'integrations'). */

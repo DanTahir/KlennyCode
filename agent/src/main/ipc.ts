@@ -18,7 +18,7 @@ import { detectShells } from './shells'
 import { createTerminal, writeTerminal, resizeTerminal, disposeTerminal, setTerminalListeners } from './terminal'
 import { startIndexing, stopIndexing, getIndexStatus, rebuildIndex, deleteLocalIndex, setOnStatusChange } from './agent/codeindex/manager'
 import { getCostReport, resetCostReport } from './agent/costReport'
-import type { AgentStreamEvent, IndexStatus, ScheduledTask } from '@shared/types'
+import type { AgentStreamEvent, IndexStatus, ScheduledTask, TabApprovalMode } from '@shared/types'
 import { DEFAULT_BRAND_NAME } from '@shared/types'
 import { createTray, wireMinimizeToTray, refreshMinimizeToTrayCache, applyAutoStartSetting, refreshTrayIcon } from './tray'
 import { connectGmail, disconnectGmail } from './integrations/gmail'
@@ -182,6 +182,16 @@ export function registerIpcHandlers(): void {
       await sessionStore.updateTab(tab)
     }
   })
+  ipcMain.handle(IPC.tabSetApprovalMode, async (_e, tabId: string, mode: TabApprovalMode) => {
+    const tab = sessionStore.getTab(tabId)
+    if (tab) {
+      tab.approvalMode = mode
+      // Leaving 'auto' should stop auto-accepting anything still queued for this tab from an
+      // earlier "Accept all" click or dropdown selection; only 'auto' itself should keep it on.
+      approvalManager.setTabAcceptAll(tabId, mode === 'auto')
+      await sessionStore.updateTab(tab)
+    }
+  })
 
   ipcMain.handle(IPC.historyList, async () => sessionStore.getHistory())
   ipcMain.handle(IPC.historyReopen, async (_e, tabId: string) => sessionStore.reopenHistoryEntry(tabId))
@@ -196,7 +206,19 @@ export function registerIpcHandlers(): void {
   })
 
   ipcMain.handle(IPC.resolveApproval, async (_e, actionId: string, decision) => {
+    // Capture the tabId before resolve() removes the pending action from the map.
+    const tabId = approvalManager.getPending().find((a) => a.id === actionId)?.tabId
     approvalManager.resolve(actionId, decision)
+    if (decision === 'accept_all' && tabId) {
+      // Reflect the accept-all in the tab's own approval-mode dropdown (so it visibly flips to
+      // "Auto approve"), not just in ApprovalManager's internal accept-all set.
+      const tab = sessionStore.getTab(tabId)
+      if (tab) {
+        tab.approvalMode = 'auto'
+        await sessionStore.updateTab(tab)
+        broadcast({ type: 'tab_upserted', tab })
+      }
+    }
   })
   ipcMain.handle(IPC.resolveQuestion, async (_e, questionId: string, answers) => {
     resolveQuestion(questionId, answers)

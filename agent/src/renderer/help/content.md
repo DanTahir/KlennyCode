@@ -43,9 +43,14 @@ Read-only tools only. Klenny Code will ask clarifying questions, research your c
 ## Approval workflow
 
 - **Manual review** (default): every edit, delete, and command shows a diff or preview — accept or reject before it runs.
+- **Command approve**: file edits and deletes apply immediately (with checkpoints), but shell commands still need approval.
 - **Auto-apply**: changes apply immediately, with shadow-git checkpoints for revert.
 
-Toggle this in **Settings**.
+Set the default in **Settings**. Each chat tab also has its own approval-mode dropdown next to
+Send/Stop, which overrides the Settings default just for that tab — handy for letting one tab run
+hands-off while another stays under manual review. Clicking **Accept all** on a pending approval
+card switches that tab's dropdown to Auto approve automatically; you can change it back to Manual
+or Command approve at any time.
 
 ## Memory
 

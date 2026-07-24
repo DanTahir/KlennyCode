@@ -2,6 +2,7 @@ import { BrowserWindow, Notification } from 'electron'
 import { nanoid } from 'nanoid'
 import type {
   AgentStreamEvent,
+  ApprovalMode,
   ChatMessage,
   ContentBlock,
   ModelInfo,
@@ -547,7 +548,14 @@ async function agentLoop(
   // Execute tools (parallel where independent).
   // Subagents run headless (no UI to answer approvals/questions), so force
   // auto-approval for their mutating tool calls to avoid deadlocking forever.
-  const effectiveApprovalMode = subagentCtx ? 'auto' : settings.approvalMode
+  // Otherwise a tab's own approval-mode override (set via the dropdown next to Send/Stop,
+  // or by "Accept all" on a pending action) wins over the global settings default.
+  const tabApprovalMode = tab.approvalMode
+  const effectiveApprovalMode: ApprovalMode = subagentCtx
+    ? 'auto'
+    : tabApprovalMode && tabApprovalMode !== 'default'
+      ? tabApprovalMode
+      : settings.approvalMode
   const results = await Promise.all(
     toolCalls.map((tc) =>
       executeTool(
@@ -613,7 +621,7 @@ async function executeTool(
   tab: TabSession,
   apiKey: string,
   subagentModel: string,
-  approvalMode: 'manual' | 'auto',
+  approvalMode: ApprovalMode,
   emit: Emit,
   signal: AbortSignal,
   subagentDepth: number,
@@ -662,7 +670,10 @@ async function executeTool(
   }
 
   if (['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command'].includes(name)) {
-    if (approvalMode === 'manual') {
+    // 'manual': everything needs review. 'command': only run_command needs review — file edits
+    // are auto-applied like 'auto' mode. 'auto': nothing needs review.
+    const needsApproval = approvalMode === 'manual' || (approvalMode === 'command' && name === 'run_command')
+    if (needsApproval) {
       const kind = name as PendingActionKind
       const preview = await previewMutatingTool(name, args)
       const action = approvalManager.buildPendingFromTool(tab.id, tc.id, kind, preview.title, preview.extra)

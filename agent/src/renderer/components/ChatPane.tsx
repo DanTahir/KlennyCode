@@ -6,6 +6,7 @@ import { MessageBubble } from './MessageBubble'
 import { ApprovalCard } from './ApprovalCard'
 import { QuestionCard } from './QuestionCard'
 import { ModeToggle } from './ModeToggle'
+import { ApprovalModeSelect } from './ApprovalModeSelect'
 
 export function ChatPane() {
   const { tabs, activeTabId, pendingActions, pendingQuestions, streamingTabIds, workspace, settings, tabErrors, pausedTabs } =
@@ -158,7 +159,10 @@ export function ChatPane() {
               }}
             />
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
+            {tab.kind !== 'assistant' && settings && (
+              <ApprovalModeSelect tabId={tab.id} mode={tab.approvalMode} globalMode={settings.approvalMode} />
+            )}
             {isStreaming && (
               <button
                 className="px-3 py-1.5 rounded-md border border-klenny-border text-sm"
