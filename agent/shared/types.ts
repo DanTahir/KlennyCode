@@ -441,6 +441,21 @@ export interface ScheduledTask {
   /** short preview of the run's final summary, for display in the Scheduled Tasks panel */
   lastOutputPreview: string | null
   nextRunAt: number | null
+  /** id of the tab that was active when this task was created via the scheduler_create_task
+   *  tool, so a completed run can be reported back to that same tab. Null for tasks created
+   *  without a live tab context (should not normally happen, but kept optional/nullable for
+   *  forward/backward compatibility with tasks persisted before this field existed). */
+  creatorTabId?: string | null
+  /** 'project' | 'assistant' kind of the creator tab at creation time — determines what kind of
+   *  tab gets opened as a fallback if the creator tab can no longer be found (closed and not in
+   *  history, or history entry deleted). Falls back to inferring from targetWorkspace when
+   *  absent (older persisted tasks). */
+  creatorTabKind?: 'project' | 'assistant' | null
+  /** absolute path of the workspace that was active (if any) when this task was created —
+   *  used to know which workspace's session/history file to look in for the creator tab when
+   *  the task fires and that workspace isn't the currently-open one. Null for tasks created
+   *  from an Assistant tab (no workspace) or before this field existed. */
+  creatorWorkspace?: string | null
 }
 
 // ---------- Shells ----------
@@ -483,6 +498,16 @@ export type AgentStreamEvent =
   | { type: 'compaction'; tabId: string; summaryMessageId: string }
   | { type: 'spend_update'; tabId: string; totalCostUsd: number; totalSavingsUsd: number; capUsd: number | null }
   | { type: 'spend_blocked'; tabId: string }
+  /** A tab was created, restored from history, or had a message appended to it outside of a
+   *  normal user-driven turn (currently only used to deliver a finished scheduled task's result
+   *  back into the tab that created it). Renderer should replace the tab if its id is already
+   *  present in `tabs`, or append it as a new tab otherwise. Only ever emitted for tabs in the
+   *  currently-open workspace (or workspace-less Assistant tabs) — never for a background
+   *  workspace the user doesn't have open right now. */
+  | { type: 'tab_upserted'; tab: TabSession }
+  /** Companion to `tab_upserted` for the reopened-from-history case, so the History panel (if
+   *  open) drops the entry it just got restored from. */
+  | { type: 'history_entry_removed'; tabId: string }
   | {
       type: 'index_progress'
       phase: 'scanning' | 'embedding' | 'idle' | 'error'

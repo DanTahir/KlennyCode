@@ -315,6 +315,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ tabs })
         break
       }
+      case 'tab_upserted': {
+        const exists = state.tabs.some((t) => t.id === e.tab.id)
+        const tabs = exists ? state.tabs.map((t) => (t.id === e.tab.id ? e.tab : t)) : [...state.tabs, e.tab]
+        set({ tabs })
+        break
+      }
+      case 'history_entry_removed': {
+        set({ history: state.history.filter((t) => t.id !== e.tabId) })
+        break
+      }
       case 'index_progress': {
         // Patches the fields this event actually carries; `enabled`/`backend`/`embeddingsModel`/
         // `lastUpdatedAt` come from the one-shot getIndexStatus() IPC call on Settings mount and

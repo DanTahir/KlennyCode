@@ -124,6 +124,11 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
 - **Scheduler** — define recurring tasks ("every morning at 8am, summarize my inbox") that run
   unattended as background subagents, even while the app is minimized to the system tray. Enable
   "Minimize to tray" / "Start on login" in Settings so the scheduler and Discord bot keep running.
+  When a run finishes, its final answer is delivered as a new message in the tab that created the
+  task — reopening that tab from History first if it had been closed — or, if the tab can no
+  longer be found at all, a brand-new tab is opened for it instead (an Assistant tab for
+  workspace-less tasks, or a project tab in the task's target workspace otherwise). A desktop
+  notification is shown if no Klenny Code window is currently focused.
 - **Automation Permissions** (Settings → Integrations) — a simple per-action allow/block toggle
   (Gmail read/send, Discord read/post, scheduler on/off) governing what the agent may do
   unattended; there's no live "ask me" prompt for background actions.

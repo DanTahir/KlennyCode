@@ -39,7 +39,14 @@ jobs:
 
       - name: Set release version
         working-directory: agent
-        run: npm version 0.1.${{ github.run_number }} --no-git-tag-version --allow-same-version
+        shell: bash
+        # Keep the major.minor already committed in package.json (bump that by hand when we
+        # want a "real" version change, e.g. 0.2.0 -> 0.3.0) and only auto-set the patch number
+        # to the CI run number, so every build gets a unique version without clobbering the
+        # minor bump back to 0.1.x like this step used to do.
+        run: |
+          BASE_VERSION=$(node -p "require('./package.json').version.split('.').slice(0,2).join('.')")
+          npm version "${BASE_VERSION}.${{ github.run_number }}" --no-git-tag-version --allow-same-version
 
       - name: Install dependencies
         working-directory: agent

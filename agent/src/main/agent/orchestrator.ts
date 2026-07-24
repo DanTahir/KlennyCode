@@ -18,7 +18,7 @@ import { getApiKey, loadSettings } from '../settings'
 import { getWorkspace, setWorkspace } from '../workspace'
 import { listKnownProjects } from '../projectsRegistry'
 import { resolveShell } from '../shells'
-import { sessionStore } from '../session/store'
+import { sessionStore, appendMessageToWorkspaceTab } from '../session/store'
 import { streamChatCompletion, fetchModels, type ToolCall } from '../openrouter/client'
 import { modelSupportsCaching, computeCacheSavings } from '../openrouter/caching'
 import { getToolDefinitions } from './tools/definitions'
@@ -785,7 +785,12 @@ async function dispatchTool(
         prompt: String(args.prompt),
         schedule: String(args.schedule),
         targetWorkspace: args.targetWorkspace ? String(args.targetWorkspace) : null,
-        maxCostUsd: typeof args.maxCostUsd === 'number' ? args.maxCostUsd : null
+        maxCostUsd: typeof args.maxCostUsd === 'number' ? args.maxCostUsd : null,
+        // Remember where this task was created so a finished run can be reported back to the
+        // same tab (or a stand-in for it) instead of vanishing into the scheduler's log only.
+        creatorTabId: tab.id,
+        creatorTabKind: tab.kind ?? 'project',
+        creatorWorkspace: getWorkspace()
       })
       return { ok: true, summary: `Created scheduled task "${task.name}"`, data: { task } }
     }
@@ -1069,21 +1074,138 @@ export async function runScheduledTask(
   }
 
   const controller = new AbortController()
+  let status: 'success' | 'error'
+  let summary: string
   try {
     const reason = await agentLoop(subTab, apiKey, settings.subagentModel, emitToAll, controller.signal, 1, subagentCtx)
-    const summary =
+    summary =
       subTab.messages
         .filter((m) => m.role === 'assistant')
         .flatMap((m) => m.blocks)
         .filter((b) => b.type === 'text')
         .map((b) => (b as { text: string }).text)
         .join('\n') || 'Scheduled task completed with no text output.'
-    const status = reason === 'error' || reason === 'truncation_failed' ? 'error' : 'success'
-    return { status, summaryPreview: truncateSummary(summary) }
+    status = reason === 'error' || reason === 'truncation_failed' ? 'error' : 'success'
   } catch (e) {
-    return { status: 'error', summaryPreview: e instanceof Error ? e.message : String(e) }
+    status = 'error'
+    summary = e instanceof Error ? e.message : String(e)
   } finally {
     setWorkspace(previousWorkspace)
+  }
+
+  const summaryPreview = truncateSummary(summary)
+  try {
+    await deliverScheduledTaskResult(task, status, summaryPreview)
+  } catch (e) {
+    console.error('Failed to deliver scheduled task result to its tab:', e)
+  }
+  return { status, summaryPreview }
+}
+
+/** Reports a finished scheduled task's result back into a chat tab, per the following
+ *  preference order:
+ *   1. The tab that created it (`task.creatorTabId`), if it's still open right now.
+ *   2. That same tab restored from History, if it was closed but not deleted from history.
+ *   3. A brand-new tab — an Assistant tab if the task has no `targetWorkspace`, otherwise a
+ *      project tab in `targetWorkspace`.
+ *  Only ever mutates the SessionStore singleton (and emits a live `tab_upserted` event) when the
+ *  destination workspace matches whatever workspace the UI currently has loaded — a task firing
+ *  for a workspace the user doesn't have open right now is instead patched directly into that
+ *  workspace's session/history files on disk (see appendMessageToWorkspaceTab), with no live
+ *  event, so it's simply there next time that workspace is opened. Assistant-tab destinations are
+ *  always live (Assistant tabs only ever exist in memory, workspace-independent). */
+async function deliverScheduledTaskResult(
+  task: import('@shared/types').ScheduledTask,
+  status: 'success' | 'error',
+  summaryPreview: string
+): Promise<void> {
+  const header = status === 'success' ? '✅ **Scheduled task finished:**' : '⚠️ **Scheduled task failed:**'
+  const message: ChatMessage = {
+    id: nanoid(),
+    role: 'assistant',
+    blocks: [{ type: 'text', text: `${header} *${task.name}*\n\n${summaryPreview}` }],
+    createdAt: Date.now()
+  }
+
+  // Fallback destination if the creator tab (and its history entry) can no longer be found.
+  const wantsAssistantFallback = !task.targetWorkspace
+  const fallbackTitle = `Scheduled: ${task.name}`
+
+  const creatorIsAssistant = task.creatorTabKind
+    ? task.creatorTabKind === 'assistant'
+    : wantsAssistantFallback
+
+  if (creatorIsAssistant) {
+    // Assistant tabs only ever exist in memory, so the live SessionStore is the only place to
+    // look — if the creator tab is gone, it's gone for good (no history for Assistant tabs).
+    let tab = task.creatorTabId ? sessionStore.getTab(task.creatorTabId) : undefined
+    if (!tab || tab.kind !== 'assistant') {
+      tab = sessionStore.createAssistantTab()
+      tab.title = fallbackTitle
+    }
+    tab.messages.push(message)
+    await sessionStore.updateTab(tab)
+    emitToAll({ type: 'tab_upserted', tab })
+    notifyIfUnfocused(task)
+    return
+  }
+
+  const destinationWorkspace = task.targetWorkspace ?? task.creatorWorkspace
+  if (!destinationWorkspace) {
+    // No workspace to anchor a project tab to (shouldn't normally happen once creatorWorkspace
+    // is populated going forward) — fall back to a fresh Assistant tab so the result isn't lost.
+    const tab = sessionStore.createAssistantTab()
+    tab.title = fallbackTitle
+    tab.messages.push(message)
+    await sessionStore.updateTab(tab)
+    emitToAll({ type: 'tab_upserted', tab })
+    notifyIfUnfocused(task)
+    return
+  }
+
+  if (sessionStore.getWorkspace() === destinationWorkspace) {
+    // The destination workspace is exactly what the UI has loaded right now — safe to use the
+    // live SessionStore so any open window reflects the update immediately.
+    let tab = task.creatorTabId ? sessionStore.getTab(task.creatorTabId) : undefined
+    if (tab) {
+      tab.messages.push(message)
+      await sessionStore.updateTab(tab)
+      emitToAll({ type: 'tab_upserted', tab })
+      notifyIfUnfocused(task)
+      return
+    }
+
+    if (task.creatorTabId && sessionStore.getHistory().some((t) => t.id === task.creatorTabId)) {
+      const reopened = await sessionStore.reopenHistoryEntry(task.creatorTabId)
+      if (reopened) {
+        reopened.messages.push(message)
+        await sessionStore.updateTab(reopened)
+        emitToAll({ type: 'history_entry_removed', tabId: task.creatorTabId })
+        emitToAll({ type: 'tab_upserted', tab: reopened })
+        notifyIfUnfocused(task)
+        return
+      }
+    }
+
+    const created = await sessionStore.createTab()
+    created.title = fallbackTitle
+    created.messages.push(message)
+    await sessionStore.updateTab(created)
+    emitToAll({ type: 'tab_upserted', tab: created })
+    notifyIfUnfocused(task)
+    return
+  }
+
+  // Destination workspace isn't the one currently open in the UI — patch it on disk without
+  // touching the live SessionStore or emitting any events (nothing to refresh right now; the
+  // change will simply be there next time that workspace is opened).
+  await appendMessageToWorkspaceTab(destinationWorkspace, task.creatorTabId ?? null, message, fallbackTitle)
+  notifyIfUnfocused(task)
+}
+
+function notifyIfUnfocused(task: import('@shared/types').ScheduledTask): void {
+  if (!BrowserWindow.getFocusedWindow()) {
+    new Notification({ title: 'Klenny Code scheduled task finished', body: task.name }).show()
   }
 }
 

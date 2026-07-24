@@ -66,7 +66,10 @@ class ScheduledTaskManager {
     return this.tasks
   }
 
-  async create(input: Pick<ScheduledTask, 'name' | 'prompt' | 'schedule' | 'targetWorkspace' | 'maxCostUsd'>): Promise<ScheduledTask> {
+  async create(
+    input: Pick<ScheduledTask, 'name' | 'prompt' | 'schedule' | 'targetWorkspace' | 'maxCostUsd'> &
+      Partial<Pick<ScheduledTask, 'creatorTabId' | 'creatorTabKind' | 'creatorWorkspace'>>
+  ): Promise<ScheduledTask> {
     const task: ScheduledTask = {
       id: nanoid(),
       name: input.name,
@@ -79,7 +82,10 @@ class ScheduledTaskManager {
       lastRunAt: null,
       lastExitStatus: null,
       lastOutputPreview: null,
-      nextRunAt: null
+      nextRunAt: null,
+      creatorTabId: input.creatorTabId ?? null,
+      creatorTabKind: input.creatorTabKind ?? null,
+      creatorWorkspace: input.creatorWorkspace ?? null
     }
     this.recomputeNextRun(task)
     this.tasks.push(task)

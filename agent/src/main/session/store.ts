@@ -29,6 +29,14 @@ export class SessionStore {
   private history: ArchivedTabSession[] = []
   private workspace: string | null = null
 
+  /** The workspace currently loaded in memory (i.e. what the UI is showing right now), or null
+   *  if none is open. Used by callers that need to decide whether a given workspace's tabs can
+   *  be mutated live (via this store) or must be patched on disk instead — see
+   *  deliverScheduledTaskResult in orchestrator.ts. */
+  getWorkspace(): string | null {
+    return this.workspace
+  }
+
   async load(workspace: string): Promise<TabSession[]> {
     // Ephemeral Assistant tabs are workspace-independent by design (see TabSession.kind doc
     // comment) — carry any currently-open ones across the switch instead of losing them, since
@@ -161,3 +169,96 @@ export class SessionStore {
 }
 
 export const sessionStore = new SessionStore()
+
+// ---------- Background-workspace file helpers ----------
+//
+// The SessionStore singleton above only ever holds ONE workspace's tabs/history in memory at a
+// time (whatever the UI currently has open). A scheduled task can fire for a *different*
+// workspace than the one the user has open right now, so delivering its result there can't go
+// through the live in-memory store (that would corrupt the currently-open workspace's state).
+// These standalone helpers read/write a given workspace's session+history files directly,
+// independent of whatever SessionStore.workspace currently is. They intentionally duplicate the
+// tiny amount of file-format logic above rather than refactor the class, to keep the live path
+// (used on every turn) untouched.
+
+async function readWorkspaceTabs(workspace: string): Promise<TabSession[]> {
+  try {
+    const raw = await readFile(sessionFile(workspace), 'utf8')
+    return JSON.parse(raw) as TabSession[]
+  } catch {
+    return []
+  }
+}
+
+async function writeWorkspaceTabs(workspace: string, tabs: TabSession[]): Promise<void> {
+  await mkdir(sessionsDir(), { recursive: true })
+  await writeFile(sessionFile(workspace), JSON.stringify(tabs, null, 2), 'utf8')
+}
+
+async function readWorkspaceHistory(workspace: string): Promise<ArchivedTabSession[]> {
+  try {
+    const raw = await readFile(historyFile(workspace), 'utf8')
+    return JSON.parse(raw) as ArchivedTabSession[]
+  } catch {
+    return []
+  }
+}
+
+async function writeWorkspaceHistory(workspace: string, history: ArchivedTabSession[]): Promise<void> {
+  await mkdir(sessionsDir(), { recursive: true })
+  await writeFile(historyFile(workspace), JSON.stringify(history, null, 2), 'utf8')
+}
+
+/** Appends `message` to the given tab, wherever it lives in `workspace`'s persisted state:
+ *  - if `tabId` matches a live (non-archived) tab, appends to it in place;
+ *  - else if it matches an archived (History) entry, restores it as a live tab (fresh id, like
+ *    reopenHistoryEntry) and appends to it, removing it from history;
+ *  - else (not found anywhere, or `tabId` is null) creates a brand-new tab titled
+ *    `fallbackTitle`/`fallbackKind` and appends to it.
+ *  Operates purely on disk — does NOT touch the live SessionStore singleton, so it is safe to
+ *  call for a workspace the user doesn't currently have open. Returns the id of the tab the
+ *  message actually landed in. */
+export async function appendMessageToWorkspaceTab(
+  workspace: string,
+  tabId: string | null,
+  message: TabSession['messages'][number],
+  fallbackTitle: string
+): Promise<string> {
+  const tabs = await readWorkspaceTabs(workspace)
+  const idx = tabId ? tabs.findIndex((t) => t.id === tabId) : -1
+  if (idx >= 0) {
+    tabs[idx] = { ...tabs[idx], messages: [...tabs[idx].messages, message], updatedAt: Date.now() }
+    await writeWorkspaceTabs(workspace, tabs)
+    return tabs[idx].id
+  }
+
+  if (tabId) {
+    const history = await readWorkspaceHistory(workspace)
+    const archivedIdx = history.findIndex((t) => t.id === tabId)
+    if (archivedIdx >= 0) {
+      const { closedAt: _closedAt, ...rest } = history[archivedIdx]
+      const restored: TabSession = { ...rest, id: nanoid(), messages: [...rest.messages, message], updatedAt: Date.now() }
+      tabs.push(restored)
+      history.splice(archivedIdx, 1)
+      await Promise.all([writeWorkspaceTabs(workspace, tabs), writeWorkspaceHistory(workspace, history)])
+      return restored.id
+    }
+  }
+
+  const now = Date.now()
+  const created: TabSession = {
+    id: nanoid(),
+    title: fallbackTitle,
+    mode: 'agent',
+    model: DEFAULT_MAIN_MODEL,
+    createdAt: now,
+    updatedAt: now,
+    messages: [message],
+    totalCostUsd: 0,
+    totalSavingsUsd: 0,
+    kind: 'project'
+  }
+  tabs.push(created)
+  await writeWorkspaceTabs(workspace, tabs)
+  return created.id
+}
