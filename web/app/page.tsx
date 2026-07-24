@@ -37,14 +37,7 @@ export default function HomePage() {
       </header>
 
       {/* ---------- Hero ---------- */}
-      <section className="relative mx-auto flex max-w-4xl flex-col items-center px-6 pb-20 pt-10 text-center">
-        <Image
-          src="/Klenny4.png"
-          alt="Klenny the corgi mascot, illustrated"
-          width={1127}
-          height={1396}
-          className="pointer-events-none absolute -right-8 top-4 hidden w-36 -rotate-6 drop-shadow-2xl lg:right-[-6rem] lg:block lg:w-48 xl:right-[-10rem] xl:w-56"
-        />
+      <section className="mx-auto flex max-w-4xl flex-col items-center px-6 pb-20 pt-10 text-center">
         <Image
           src="/Klenny.jpg"
           alt="Klenny, the corgi mascot of Klenny Code"
@@ -86,6 +79,33 @@ export default function HomePage() {
         </a>
       </section>
 
+      {/* ---------- Mascot trio ---------- */}
+      <section className="mx-auto max-w-4xl px-6 pb-20">
+        <div className="flex items-end justify-center gap-4 sm:gap-6">
+          <Image
+            src="/Klenny2.png"
+            alt="Klenny the corgi mascot, illustrated"
+            width={1024}
+            height={1536}
+            className="w-24 -rotate-6 rounded-2xl shadow-xl shadow-black/40 sm:w-32 md:w-40"
+          />
+          <Image
+            src="/Klenny4.png"
+            alt="Klenny the corgi mascot, illustrated"
+            width={1127}
+            height={1396}
+            className="w-28 rounded-2xl shadow-xl shadow-black/40 sm:w-36 md:w-44"
+          />
+          <Image
+            src="/Klenny6.png"
+            alt="Klenny the corgi mascot, illustrated"
+            width={1024}
+            height={1536}
+            className="w-24 rotate-6 rounded-2xl shadow-xl shadow-black/40 sm:w-32 md:w-40"
+          />
+        </div>
+      </section>
+
       {/* ---------- Screenshot ---------- */}
       <section className="mx-auto max-w-5xl px-6 pb-24">
         <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/5 shadow-2xl shadow-black/40">
@@ -106,15 +126,7 @@ export default function HomePage() {
       </section>
 
       {/* ---------- Features ---------- */}
-      <section id="features" className="relative mx-auto max-w-6xl px-6 pb-24">
-        <Image
-          src="/Klenny2.png"
-          alt="Klenny the corgi mascot, illustrated"
-          width={1024}
-          height={1536}
-          className="pointer-events-none absolute -left-16 top-6 hidden w-40 rotate-3 drop-shadow-2xl xl:-left-28 xl:block xl:w-52"
-        />
-
+      <section id="features" className="mx-auto max-w-6xl px-6 pb-24">
         <div className="mb-12 text-center">
           <h2 className="mb-3 text-3xl font-bold text-corgi-cream sm:text-4xl">
             Everything a coding agent should be. And then some.
@@ -177,16 +189,8 @@ export default function HomePage() {
       {/* ---------- Download ---------- */}
       <section
         id="download"
-        className="relative mx-auto max-w-4xl overflow-hidden rounded-3xl border border-white/10 bg-white/5 px-6 py-16 text-center sm:mx-6 lg:mx-auto"
+        className="mx-auto max-w-4xl rounded-3xl border border-white/10 bg-white/5 px-6 py-16 text-center sm:mx-6 lg:mx-auto"
       >
-        <Image
-          src="/Klenny6.png"
-          alt="Klenny the corgi mascot, illustrated"
-          width={1024}
-          height={1536}
-          className="pointer-events-none absolute -bottom-10 -right-10 hidden w-40 rotate-6 opacity-90 drop-shadow-2xl sm:block sm:w-48"
-        />
-
         <h2 className="mb-3 text-3xl font-bold text-corgi-cream sm:text-4xl">
           Ready to fetch some code?
         </h2>
