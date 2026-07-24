@@ -41,7 +41,7 @@ const DEFAULTS: AppSettings = {
   lastDiscordConnectionError: null,
   automationPermissions: DEFAULT_AUTOMATION_PERMISSIONS,
   schedulerEnabled: true,
-  minimizeToTray: false,
+  minimizeToTray: true,
   startOnLogin: false,
   brandName: null,
   hasCustomIcon: false,

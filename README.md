@@ -137,13 +137,16 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
   updates and respond to DMs/mentions/`!klenny` commands, including reviewing a known project
   read-only when asked.
 - **Scheduler** — define recurring tasks ("every morning at 8am, summarize my inbox") that run
-  unattended as background subagents, even while the app is minimized to the system tray. Enable
-  "Minimize to tray" / "Start on login" in Settings so the scheduler and Discord bot keep running.
-  When a run finishes, its final answer is delivered as a new message in the tab that created the
-  task — reopening that tab from History first if it had been closed — or, if the tab can no
-  longer be found at all, a brand-new tab is opened for it instead (an Assistant tab for
-  workspace-less tasks, or a project tab in the task's target workspace otherwise). A desktop
-  notification is shown if no Klenny Code window is currently focused.
+  unattended as background subagents, even while the app is minimized to the system tray.
+  "Minimize to tray" is on by default in Settings (and "Start on login" can be enabled there too)
+  so the scheduler and Discord bot keep running. When a run finishes, its final answer is
+  delivered as a new message in the tab that created the task — reopening that tab from History
+  first if it had been closed — or, if the tab can no longer be found at all, a brand-new tab is
+  opened for it instead (an Assistant tab for workspace-less tasks, or a project tab in the task's
+  target workspace otherwise).
+- **Desktop notifications** — a native OS notification is shown whenever Klenny Code has no
+  focused window and any of the following finishes: a subagent run, a main chat turn (the agent's
+  final summary), or a scheduled task run.
 - **One-time and limited-repetition tasks** — every scheduled task can carry an optional `maxRuns`:
   once it has fired that many times, it deletes itself instead of rescheduling. Asking the agent to
   "do this at 8pm" or "remind me in 10 minutes" creates a one-shot task (`maxRuns: 1`); "every 10

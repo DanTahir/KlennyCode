@@ -174,10 +174,18 @@ async function startAgentLoop(
   ac: AbortController
 ): Promise<void> {
   const signal = ac.signal
+  // Only 'natural' (finished normally), 'truncation_failed', and 'error' are genuine end-of-turn
+  // states — 'aborted' means a newer turn preempted this one, and 'checkpoint'/'hard_limit' just
+  // pause the turn waiting for the user to click "Continue", so none of those warrant a
+  // "task finished" notification.
+  let stopReason: LoopStopReason | 'thrown' = 'thrown'
   try {
-    await agentLoop(tab, apiKey, subagentModel, emit, signal)
+    stopReason = await agentLoop(tab, apiKey, subagentModel, emit, signal)
   } catch (e) {
-    if (!signal.aborted) {
+    if (signal.aborted) {
+      stopReason = 'aborted'
+    } else {
+      stopReason = 'thrown'
       emit({
         type: 'error',
         tabId: tab.id,
@@ -186,6 +194,10 @@ async function startAgentLoop(
     }
   } finally {
     endTurn(tab.id, emit)
+    const isRealCompletion = stopReason === 'natural' || stopReason === 'error' || stopReason === 'truncation_failed' || stopReason === 'thrown'
+    if (isRealCompletion && !BrowserWindow.getFocusedWindow()) {
+      new Notification({ title: 'Klenny Code task finished', body: tab.title }).show()
+    }
     // Only clear the bookkeeping if we're still the "current" controller for this tab — a
     // newer call may have already preempted us (see launchAgentLoop) and installed its own
     // controller, in which case clearing here would wrongly wipe its state out from under it.
