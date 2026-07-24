@@ -12,6 +12,7 @@ import { listSkills, readSkill, writeSkill } from './agent/skills/manager'
 import { listSubagentTypes, writeSubagentType } from './agent/subagents/manager'
 import { listPlans, readPlan } from './agent/plan/manager'
 import { readMemoryFile, writeMemoryFile } from './agent/memory/manager'
+import { readSoul, writeSoul, resetSoul } from './agent/soul/manager'
 import { getApiKey } from './settings'
 import { detectShells } from './shells'
 import { createTerminal, writeTerminal, resizeTerminal, disposeTerminal, setTerminalListeners } from './terminal'
@@ -191,6 +192,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.memoryWrite, async (_e, scope: 'project' | 'global', content: string) =>
     writeMemoryFile(scope, content)
   )
+
+  ipcMain.handle(IPC.soulRead, async () => readSoul())
+  ipcMain.handle(IPC.soulWrite, async (_e, content: string) => writeSoul(content))
+  ipcMain.handle(IPC.soulReset, async () => resetSoul())
 
   ipcMain.handle(IPC.checkpointRevert, async () => {
     // best-effort placeholder — full shadow revert can be expanded later

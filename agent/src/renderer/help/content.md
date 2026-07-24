@@ -52,6 +52,7 @@ Toggle this in **Settings**.
 - **Project**: `KLENNY.md` in your project root (shared via git).
 - **Global**: `~/.klenny/KLENNY.md` (personal, all projects).
 - **Auto-memory**: Klenny Code can write topic files (stored outside your project, in Klenny Code's app data directory) and index them in `MEMORY.md`.
+- **Personality**: `~/.klenny/SOUL.md` (personal, all projects) — describes who the agent is and how it expresses itself in chat. Editable from the Memory tab's "Personality" scope; defaults to a playful corgi persona, but you can rewrite or blank it out for a plain, personality-free voice, or click **Restore default personality** to bring back Klenny's built-in default. A separate, hardcoded set of guardrails (not user-editable) always keeps personality from affecting reasoning, plans, or code quality, no matter what SOUL.md says.
 
 ## Cross-project reference (read-only)
 

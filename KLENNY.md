@@ -15,7 +15,9 @@ and hundreds of other models via a single API key.
   - `src/main/agent/tools/` — tool definitions + implementations (read/write/edit/delete file,
     grep, glob, run_command, web_search, fetch_url, ask_question, subagent dispatch, memory tools)
   - `src/main/agent/memory/manager.ts` — project/global `KLENNY.md` + auto-memory notes
-  - `src/main/agent/plan/manager.ts` — Plan mode system prompt, plan artifacts, corgi persona text
+  - `src/main/agent/soul/manager.ts` — `SOUL.md` (user-editable agent personality) read/write/reset
+  - `src/main/agent/plan/manager.ts` — Plan/agent mode system prompt builders + hardcoded
+    personality guardrails (`PERSONA_GUARDRAILS_PROMPT`)
   - `src/main/agent/skills/`, `src/main/agent/subagents/` — Cursor-style `SKILL.md` skills and
     built-in/custom subagent types
   - `src/main/agent/codeindex/` — optional semantic codebase search (embeddings + vectra store)
@@ -35,8 +37,12 @@ and hundreds of other models via a single API key.
   tree (Electron `userData` dir, keyed per-project) specifically so nothing needs `.gitignore`
   entries. Only `KLENNY.md`, `KLENNY.local.md`, and `.klenny/skills|agents` at the project root
   are meant to live inside the repo.
-- The corgi persona (playful asides in chat responses) lives in `plan/manager.ts` as
-  `CORGI_PERSONA_PROMPT` — it must never leak into code, commit messages, or plan documents.
+- The agent's personality is user-editable via `SOUL.md` (`~/.klenny/SOUL.md`, edited from the
+  Memory tab's "Personality" scope; see `agent/src/main/agent/soul/manager.ts`), defaulting to a
+  playful corgi persona. The hardcoded, non-editable guardrails that keep personality from ever
+  overriding coding rigor live in `plan/manager.ts` as `PERSONA_GUARDRAILS_PROMPT` — personality
+  (from SOUL.md or otherwise) must never leak into internal reasoning, code, commit messages, or
+  plan documents.
 - When changing agent behavior (tools, prompts, memory, orchestrator flow), check
   `agent/tests/` for coverage and update `README.md` if the change affects documented behavior.
 

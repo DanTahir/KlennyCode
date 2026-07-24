@@ -46,7 +46,8 @@ import { toLf } from './tools/eol'
 import { loadProjectMemory, loadGlobalMemory, loadAutoMemoryIndex, writeMemory, readMemoryTopic } from './memory/manager'
 import { listSkills, readSkill, skillsCatalogPrompt } from './skills/manager'
 import { listSubagentTypes, getSubagentType, subagentsCatalog } from './subagents/manager'
-import { savePlan, AGENT_MODE_PROMPT, PLAN_MODE_PROMPT } from './plan/manager'
+import { savePlan, buildAgentModePrompt, buildPlanModePrompt } from './plan/manager'
+import { readSoul } from './soul/manager'
 import { approvalManager } from './approval/manager'
 import { maybeCompact } from './compaction/compactor'
 import { makeDiff } from './tools/diff'
@@ -1275,19 +1276,20 @@ export async function runDiscordSubagent(subTab: TabSession, apiKey: string, sub
 
 async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string | null): Promise<string> {
   const ws = getWorkspace()
-  const [projMem, globalMem, autoMem, skills, subagents, otherProjects] = await Promise.all([
+  const [projMem, globalMem, autoMem, skills, subagents, otherProjects, soul] = await Promise.all([
     loadProjectMemory(),
     loadGlobalMemory(),
     loadAutoMemoryIndex(),
     listSkills(),
     listSubagentTypes(),
-    listKnownProjects()
+    listKnownProjects(),
+    readSoul()
   ])
 
   const shell = resolveShell(shellId)
 
   const parts = [
-    mode === 'plan' ? PLAN_MODE_PROMPT : AGENT_MODE_PROMPT,
+    mode === 'plan' ? buildPlanModePrompt(soul) : buildAgentModePrompt(soul),
     ws ? `Workspace: ${ws}` : 'No workspace open.',
     `run_command executes via ${shell.name} — write commands using that shell's syntax (quoting, path separators, env vars, chaining operators).`,
     projMem && `Project memory:\n${projMem}`,

@@ -18,6 +18,7 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Thinking display** — streams reasoning tokens from supported models live
 - **Diff viewer** — see every code change with accept/reject approval workflow
 - **Memory** — project `KLENNY.md`, global `~/.klenny/KLENNY.md`, and auto-memory notes (Claude Code-style)
+- **Personality** — a user-editable `~/.klenny/SOUL.md` describing who the agent is and how it talks, defaulting to a playful corgi persona; edit it from the Memory tab's "Personality" scope, blank it out for a neutral voice, or restore the built-in default with one click — hardcoded guardrails always keep personality from affecting reasoning, plans, or code quality
 - **Cross-project reference (read-only)** — the agent can read files and memory from *other* projects it has previously opened, so you can ask it to port a feature or convention from one project into the one you're currently working in
 - **Personal Assistant** — an on-demand, ephemeral "Assistant" tab (Gmail, Discord, web search, scheduler, cross-project reference — no coding project required), plus a background scheduler for recurring tasks and a Discord bot for two-way chat/automation — see [Personal Assistant](#personal-assistant) below
 - **History panel** — closed chat tabs (with messages) are archived, not deleted; reopen or permanently delete them from the History panel
@@ -101,7 +102,8 @@ Code's own Electron `userData` directory (e.g. `%APPDATA%/Klenny Code/` on Windo
 there's nothing to `.gitignore` and no risk of accidentally committing local agent state.
 
 Global config (shared across all projects) lives in `~/.klenny/` — global skills, global
-custom subagents, and global memory (`KLENNY.md` + auto-memory notes).
+custom subagents, global memory (`KLENNY.md` + auto-memory notes), and the agent's personality
+(`SOUL.md`).
 
 ### Cross-project reference (read-only)
 

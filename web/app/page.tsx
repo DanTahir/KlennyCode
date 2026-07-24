@@ -65,8 +65,9 @@ export default function HomePage() {
           Klenny Code is a free, open-source AI coding agent for Windows, macOS, and Linux.
           Bring your own OpenRouter key and unleash hundreds of frontier models — Claude, GPT,
           Gemini, and more — on your real codebase, with memory, cross-project lookup, and a
-          scheduler that works even while you&apos;re away. No subscriptions. No lock-in. Just a
-          very good boy with a very big toolbox.
+          scheduler that works even while you&apos;re away. It comes with a playful corgi
+          personality by default, fully yours to rewrite, dial down, or switch off in a plain-text
+          file. No subscriptions. No lock-in. Just a very good boy with a very big toolbox.
         </p>
 
         <DownloadButtons release={release} />
@@ -147,6 +148,13 @@ export default function HomePage() {
           <FeatureCard icon="🧠" title="Memory that actually sticks">
             Project and global memory files plus auto-generated notes mean Klenny remembers your
             conventions, decisions, and quirks across sessions — so you stop repeating yourself.
+          </FeatureCard>
+
+          <FeatureCard icon="🐕" title="Personality, tuned by you">
+            Klenny ships with a playful corgi personality out of the box — tail-wags while it
+            debugs, a happy bark when a task lands — but it&apos;s never hardcoded. Rewrite,
+            tone down, or turn it off entirely in a plain-text SOUL.md file, editable right from
+            the Memory tab, with one click to restore the default.
           </FeatureCard>
 
           <FeatureCard icon="🔎" title="Cross-project lookup">

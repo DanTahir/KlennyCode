@@ -69,6 +69,10 @@ const api: KlennyApi = {
   readMemory: (scope) => ipcRenderer.invoke(IPC.memoryRead, scope),
   writeMemory: (scope, content) => ipcRenderer.invoke(IPC.memoryWrite, scope, content),
 
+  readSoul: () => ipcRenderer.invoke(IPC.soulRead),
+  writeSoul: (content) => ipcRenderer.invoke(IPC.soulWrite, content),
+  resetSoul: () => ipcRenderer.invoke(IPC.soulReset),
+
   revertCheckpoint: (id) => ipcRenderer.invoke(IPC.checkpointRevert, id),
 
   setPineconeKey: (key) => ipcRenderer.invoke(IPC.pineconeSetKey, key),

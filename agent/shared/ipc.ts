@@ -67,6 +67,10 @@ export const IPC = {
   memoryRead: 'memory:read',
   memoryWrite: 'memory:write',
 
+  soulRead: 'soul:read',
+  soulWrite: 'soul:write',
+  soulReset: 'soul:reset',
+
   checkpointRevert: 'checkpoint:revert',
 
   pineconeSetKey: 'codeindex:setPineconeKey',
@@ -165,6 +169,12 @@ export interface KlennyApi {
 
   readMemory: (scope: 'project' | 'global') => Promise<string>
   writeMemory: (scope: 'project' | 'global', content: string) => Promise<void>
+
+  /** SOUL.md — user-editable agent personality, global across all projects (`~/.klenny/SOUL.md`). */
+  readSoul: () => Promise<string>
+  writeSoul: (content: string) => Promise<void>
+  /** Overwrites SOUL.md with Klenny's built-in default personality and returns the new content. */
+  resetSoul: () => Promise<string>
 
   revertCheckpoint: (checkpointId: string) => Promise<void>
 
