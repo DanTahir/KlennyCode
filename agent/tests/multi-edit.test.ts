@@ -137,6 +137,39 @@ describe('multiEditFileTool', () => {
     expect(result.ok).toBe(false)
     expect(result.error).toBe('sandbox')
   })
+
+  test('rejects a malformed edit (missing path) with a clean error instead of throwing', async () => {
+    const { multiEditFileTool } = await import('../src/main/agent/tools/index')
+    const rel = 'malformed.ts'
+    await writeFile(join(workspaceDir, rel), 'const a = 1\n', 'utf8')
+
+    const result = await multiEditFileTool({
+      edits: [
+        { path: rel, old_string: 'const a = 1', new_string: 'const a = 10' },
+        // Missing `path` on a second edit to the same file — a real quirk seen from some
+        // models on repeated-edit batches. Must not crash the tool.
+        { old_string: 'const a = 10', new_string: 'const a = 100' } as unknown as {
+          path: string
+          old_string: string
+          new_string: string
+        }
+      ]
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('invalid_edit')
+    // Nothing should have been written — the batch is all-or-nothing.
+    expect(await readFile(join(workspaceDir, rel), 'utf8')).toBe('const a = 1\n')
+  })
+
+  test('does not throw when edits is not an array (e.g. a double-encoded JSON string)', async () => {
+    const { multiEditFileTool } = await import('../src/main/agent/tools/index')
+    const result = await multiEditFileTool({
+      edits: '[{"path":"whatever.ts","old_string":"a","new_string":"b"}]' as unknown as never
+    })
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('no_edits')
+  })
 })
 
 describe('previewMultiEdit', () => {
@@ -162,5 +195,17 @@ describe('previewMultiEdit', () => {
     // Nothing should have been written — this is a dry run only.
     expect(await readFile(join(workspaceDir, relA), 'utf8')).toBe('export const a = "before-a"\n')
     expect(await readFile(join(workspaceDir, relB), 'utf8')).toBe('export const b = "before-b"\n')
+  })
+
+  test('degrades gracefully instead of throwing when an edit is malformed', async () => {
+    const { previewMultiEdit } = await import('../src/main/agent/tools/index')
+    // Used to throw a raw, uncaught TypeError out of resolveWorkspacePath when `path` was
+    // missing — which crashed the whole agent turn during the pre-approval preview step
+    // (see "multi_edit tool broken" fix). Must now resolve to a plain, empty-ish preview.
+    const { paths, diff } = await previewMultiEdit([
+      { old_string: 'a', new_string: 'b' } as unknown as { path: string; old_string: string; new_string: string }
+    ])
+    expect(Array.isArray(paths)).toBe(true)
+    expect(diff).toBeUndefined()
   })
 })

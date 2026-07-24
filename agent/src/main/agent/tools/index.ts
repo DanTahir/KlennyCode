@@ -17,6 +17,13 @@ import { buildShellInvocation, resolveShell } from '../../shells'
 const fileReadCache = new Map<string, { mtimeMs: number; content: string }>()
 
 export function resolveWorkspacePath(relOrAbs: string): string {
+  if (typeof relOrAbs !== 'string' || relOrAbs.length === 0) {
+    // Guards against a malformed tool call (e.g. a batch edit missing/nulling `path`) crashing
+    // with a raw TypeError from node:path — throw a clean, catchable Error instead so callers
+    // (multi_edit's preview + real run in particular) can turn it into a normal tool error
+    // rather than an unhandled exception that kills the whole agent turn.
+    throw new Error(`Invalid path: expected a non-empty string, got ${JSON.stringify(relOrAbs)}`)
+  }
   const ws = getWorkspace()
   if (!ws) throw new Error('No workspace open.')
   return isAbsolute(relOrAbs) ? resolve(relOrAbs) : resolve(ws, relOrAbs)
@@ -162,6 +169,28 @@ async function planMultiEdit(
 
   for (let i = 0; i < edits.length; i++) {
     const op = edits[i]
+    // Defensive validation: a malformed batch entry (missing/wrong-typed field — seen from
+    // models that occasionally drop `path` on a repeated edit to the same file, or send
+    // `edits` double-encoded as a JSON string) must not crash the whole tool call. Report it
+    // as a normal not-ok result the model can see and correct, instead of letting
+    // resolveWorkspacePath/String methods throw a raw, uncaught TypeError further down.
+    if (
+      !op ||
+      typeof op !== 'object' ||
+      typeof op.path !== 'string' ||
+      op.path.length === 0 ||
+      typeof op.old_string !== 'string' ||
+      typeof op.new_string !== 'string'
+    ) {
+      return {
+        ok: false,
+        index: i,
+        path: typeof op?.path === 'string' ? op.path : '',
+        summary: `Malformed edit at index ${i}: each entry needs string "path", "old_string", and "new_string" fields`,
+        error: 'invalid_edit'
+      }
+    }
+
     const abs = resolveWorkspacePath(op.path)
     if (!assertInWorkspace(abs)) {
       return { ok: false, index: i, path: op.path, summary: 'Path outside workspace', error: 'sandbox' }
@@ -229,7 +258,11 @@ async function planMultiEdit(
 }
 
 export async function multiEditFileTool(args: { edits: MultiEditOp[] }): Promise<ToolResultPayload> {
-  const edits = args.edits ?? []
+  // `edits` should always be an array per the tool schema, but guard against a non-array value
+  // (e.g. a model double-encoding it as a JSON string) rather than silently iterating over the
+  // wrong thing — that previously led to malformed "edits" (string chars, not edit objects)
+  // crashing deep inside planMultiEdit with an uncaught TypeError.
+  const edits = Array.isArray(args.edits) ? args.edits : []
   if (edits.length === 0) {
     return { ok: false, summary: 'multi_edit called with no edits', error: 'no_edits' }
   }
@@ -275,7 +308,9 @@ export async function multiEditFileTool(args: { edits: MultiEditOp[] }): Promise
  *  itself; the real staleness check still runs when the tool actually executes post-approval). */
 export async function previewMultiEdit(edits: MultiEditOp[]): Promise<{ paths: string[]; diff?: string }> {
   const plan = await planMultiEdit(edits, false)
-  if (!plan.ok) return { paths: [...new Set(edits.map((e) => e.path))] }
+  if (!plan.ok) {
+    return { paths: [...new Set(edits.map((e) => (typeof e?.path === 'string' ? e.path : '')).filter(Boolean))] }
+  }
   const changed = plan.files.filter((f) => f.newContent !== f.oldContent)
   return {
     paths: changed.map((f) => f.path),

@@ -1362,9 +1362,19 @@ async function previewMutatingTool(
   }
   if (name === 'multi_edit') {
     const edits = (Array.isArray(args.edits) ? args.edits : []) as MultiEditOp[]
-    const { paths, diff } = await previewMultiEdit(edits)
-    const title = paths.length === 1 ? `Edit ${paths[0]}` : `Edit ${paths.length} files (${edits.length} edits)`
-    return { title, extra: { filePaths: paths, diff } }
+    // previewMultiEdit/planMultiEdit validate each edit and reject malformed paths cleanly, but
+    // guard here too (matching the edit_file/write_file branches above) so any unexpected
+    // failure degrades to a plain preview instead of crashing the whole tool call and leaving
+    // its tool_call block stuck at "running" forever — see "multi_edit tool broken" fix.
+    try {
+      const { paths, diff } = await previewMultiEdit(edits)
+      const title = paths.length === 1 ? `Edit ${paths[0]}` : `Edit ${paths.length} files (${edits.length} edits)`
+      return { title, extra: { filePaths: paths, diff } }
+    } catch {
+      const paths = [...new Set(edits.map((e) => (typeof e?.path === 'string' ? e.path : '')).filter(Boolean))]
+      const title = paths.length === 1 ? `Edit ${paths[0]}` : `Edit ${paths.length || edits.length} files (${edits.length} edits)`
+      return { title, extra: { filePaths: paths } }
+    }
   }
   try {
     const abs = resolveWorkspacePath(path)
