@@ -55,7 +55,7 @@ export function ChatPane() {
   return (
     <div className="flex-1 flex flex-col min-w-0 min-h-0">
       <div className="px-4 py-2 border-b border-klenny-border flex items-center justify-between">
-        <ModeToggle tabId={tab.id} mode={tab.mode} model={tab.model} />
+        <ModeToggle tabId={tab.id} mode={tab.mode} model={tab.model} kind={tab.kind} />
         <div className="text-xs text-klenny-muted">
           ${tab.totalCostUsd.toFixed(4)} this chat
           {(tab.totalSavingsUsd ?? 0) > 0 && (
@@ -67,7 +67,9 @@ export function ChatPane() {
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {tab.messages.length === 0 && (
           <div className="text-klenny-muted text-sm">
-            Ask Klenny Code to explore, plan, or edit your project. Use Plan mode to research before making changes.
+            {tab.kind === 'assistant'
+              ? 'Ask Klenny Code to schedule a task, check your email, or post to Discord.'
+              : 'Ask Klenny Code to explore, plan, or edit your project. Use Plan mode to research before making changes.'}
           </div>
         )}
         {tab.compactedThroughMessageId && (
