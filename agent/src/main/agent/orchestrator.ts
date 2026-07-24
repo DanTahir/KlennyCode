@@ -252,9 +252,14 @@ export async function runUserTurn(tabId: string, userText: string, images?: stri
     }
     const userMsg: ChatMessage = { id: nanoid(), role: 'user', blocks: userBlocks, createdAt: Date.now() }
     tab.messages.push(userMsg)
-    if (tab.title === 'New chat') tab.title = userText.slice(0, 40)
+    const titleChanged = tab.title === 'New chat'
+    if (titleChanged) tab.title = userText.slice(0, 40)
     await sessionStore.updateTab(tab)
     emitToAll({ type: 'user_message', tabId, message: userMsg })
+    // The 'user_message' event above only carries the new message, not the tab itself, so a
+    // freshly-renamed tab title never reaches the renderer's tab list until some other event
+    // happens to refresh it. Broadcast the updated tab so the title change shows up immediately.
+    if (titleChanged) emitToAll({ type: 'tab_upserted', tab })
   })
 }
 
