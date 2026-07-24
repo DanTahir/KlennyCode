@@ -240,8 +240,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.schedulerList, async () => scheduledTaskManager.list())
   ipcMain.handle(
     IPC.schedulerCreate,
-    async (_e, task: Pick<ScheduledTask, 'name' | 'prompt' | 'schedule' | 'targetWorkspace' | 'maxCostUsd'>) =>
-      scheduledTaskManager.create(task)
+    async (
+      _e,
+      task: Pick<ScheduledTask, 'name' | 'prompt' | 'schedule' | 'targetWorkspace' | 'maxCostUsd'> &
+        Partial<Pick<ScheduledTask, 'maxRuns'>>
+    ) => scheduledTaskManager.create(task)
   )
   ipcMain.handle(IPC.schedulerUpdate, async (_e, id: string, patch: Partial<ScheduledTask>) => scheduledTaskManager.update(id, patch))
   ipcMain.handle(IPC.schedulerDelete, async (_e, id: string) => scheduledTaskManager.delete(id))

@@ -796,6 +796,7 @@ async function dispatchTool(
         schedule: String(args.schedule),
         targetWorkspace: args.targetWorkspace ? String(args.targetWorkspace) : null,
         maxCostUsd: typeof args.maxCostUsd === 'number' ? args.maxCostUsd : null,
+        maxRuns: typeof args.maxRuns === 'number' ? args.maxRuns : null,
         // Remember where this task was created so a finished run can be reported back to the
         // same tab (or a stand-in for it) instead of vanishing into the scheduler's log only.
         creatorTabId: tab.id,
@@ -1019,7 +1020,8 @@ async function runSubagent(
  *  the scheduled task's workspace until it finishes. Acceptable for v1; a future version could
  *  give every tab its own workspace instead of one global one. */
 export async function runScheduledTask(
-  task: import('@shared/types').ScheduledTask
+  task: import('@shared/types').ScheduledTask,
+  isFinalRun: boolean
 ): Promise<{ status: 'success' | 'error'; summaryPreview: string }> {
   const apiKey = await getApiKey()
   if (!apiKey) return { status: 'error', summaryPreview: 'OpenRouter API key not set.' }
@@ -1105,7 +1107,7 @@ export async function runScheduledTask(
 
   const summaryPreview = truncateSummary(summary)
   try {
-    await deliverScheduledTaskResult(task, status, summaryPreview)
+    await deliverScheduledTaskResult(task, status, summaryPreview, isFinalRun)
   } catch (e) {
     console.error('Failed to deliver scheduled task result to its tab:', e)
   }
@@ -1127,13 +1129,17 @@ export async function runScheduledTask(
 async function deliverScheduledTaskResult(
   task: import('@shared/types').ScheduledTask,
   status: 'success' | 'error',
-  summaryPreview: string
+  summaryPreview: string,
+  isFinalRun: boolean
 ): Promise<void> {
   const header = status === 'success' ? '✅ **Scheduled task finished:**' : '⚠️ **Scheduled task failed:**'
+  const finalRunNote = isFinalRun
+    ? `\n\n_This was the task's final scheduled run (${task.runCount + 1}/${task.maxRuns}) — it has been removed from the scheduler._`
+    : ''
   const message: ChatMessage = {
     id: nanoid(),
     role: 'assistant',
-    blocks: [{ type: 'text', text: `${header} *${task.name}*\n\n${summaryPreview}` }],
+    blocks: [{ type: 'text', text: `${header} *${task.name}*\n\n${summaryPreview}${finalRunNote}` }],
     createdAt: Date.now()
   }
 

@@ -28,6 +28,7 @@ export function SettingsPanel() {
   const [newTaskName, setNewTaskName] = useState('')
   const [newTaskPrompt, setNewTaskPrompt] = useState('')
   const [newTaskSchedule, setNewTaskSchedule] = useState('0 8 * * *')
+  const [newTaskMaxRuns, setNewTaskMaxRuns] = useState('')
 
   const integrationsRef = useRef<HTMLDivElement>(null)
   const automationRef = useRef<HTMLDivElement>(null)
@@ -638,6 +639,15 @@ export function SettingsPanel() {
               value={newTaskSchedule}
               onChange={(e) => setNewTaskSchedule(e.target.value)}
             />
+            <input
+              className="w-28 px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+              type="number"
+              min={1}
+              placeholder="Max runs"
+              title="Optional: stop and delete this task after it has fired this many times. Leave blank to run indefinitely on schedule."
+              value={newTaskMaxRuns}
+              onChange={(e) => setNewTaskMaxRuns(e.target.value)}
+            />
             <button
               className="px-3 py-1 rounded bg-klenny-accent text-black text-sm disabled:opacity-60"
               disabled={!newTaskName || !newTaskPrompt || !newTaskSchedule}
@@ -648,11 +658,13 @@ export function SettingsPanel() {
                     prompt: newTaskPrompt,
                     schedule: newTaskSchedule,
                     targetWorkspace: null,
-                    maxCostUsd: null
+                    maxCostUsd: null,
+                    maxRuns: newTaskMaxRuns ? Number(newTaskMaxRuns) : null
                   })
                   .then(() => {
                     setNewTaskName('')
                     setNewTaskPrompt('')
+                    setNewTaskMaxRuns('')
                     refreshTasks()
                   })
               }
@@ -660,7 +672,10 @@ export function SettingsPanel() {
               Add task
             </button>
           </div>
-          <p className="text-xs text-klenny-muted">Standard 5-field cron syntax, evaluated in your local time.</p>
+          <p className="text-xs text-klenny-muted">
+            Standard 5-field cron syntax, evaluated in your local time. Set "Max runs" to make the task delete itself after N firings
+            (e.g. 1 for a one-time reminder) — leave blank to run indefinitely.
+          </p>
         </div>
 
         <div className="space-y-2">
@@ -688,7 +703,10 @@ export function SettingsPanel() {
                   </button>
                 </div>
               </div>
-              <p className="text-klenny-muted text-xs font-mono">{t.schedule}</p>
+              <p className="text-klenny-muted text-xs font-mono">
+                {t.schedule}
+                {t.maxRuns != null && ` · run ${Math.min(t.runCount + 1, t.maxRuns)}/${t.maxRuns}`}
+              </p>
               <p className="text-xs">{t.prompt}</p>
               <p className="text-xs text-klenny-muted">
                 {t.lastRunAt

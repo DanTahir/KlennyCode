@@ -442,6 +442,14 @@ export interface ScheduledTask {
   enabled: boolean
   /** optional per-run USD ceiling in addition to the existing global spending cap / step budget */
   maxCostUsd: number | null
+  /** optional cap on total number of firings before the task deletes itself automatically.
+   *  null/undefined means "run indefinitely on schedule" (the pre-existing behavior). A one-shot
+   *  task ("do this at 8pm", "remind me in 10 minutes") should be created with a cron expression
+   *  matching that single moment and maxRuns: 1, rather than left to fire forever. */
+  maxRuns: number | null
+  /** how many times this task has fired so far (including the current/most recent run).
+   *  Compared against maxRuns to decide whether to self-delete after each run. */
+  runCount: number
   createdAt: number
   lastRunAt: number | null
   lastExitStatus: ScheduledTaskStatus | null

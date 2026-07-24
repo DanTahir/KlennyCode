@@ -23,8 +23,13 @@ function tasksPath(): string {
 /** Runs one scheduled task as an unattended subagent. Wired up by main/index.ts at startup to
  *  avoid a circular import between this module and orchestrator.ts. Must resolve with a short
  *  summary of the run outcome and never throw — failures should be captured in the returned
- *  status/summary instead so the tick loop can keep going. */
-export type ScheduledTaskRunner = (task: ScheduledTask) => Promise<{ status: 'success' | 'error'; summaryPreview: string }>
+ *  status/summary instead so the tick loop can keep going. `isFinalRun` tells the runner whether
+ *  this firing will exhaust the task's maxRuns budget (so the delivered result can say so before
+ *  the task is deleted). */
+export type ScheduledTaskRunner = (
+  task: ScheduledTask,
+  isFinalRun: boolean
+) => Promise<{ status: 'success' | 'error'; summaryPreview: string }>
 
 class ScheduledTaskManager {
   private tasks: ScheduledTask[] = []
@@ -44,8 +49,11 @@ class ScheduledTaskManager {
       this.tasks = []
     }
     // Crash/restart recovery: nothing left mid-flight should be trusted as still running —
-    // recompute next fire time normally rather than leaving stale state.
+    // recompute next fire time normally rather than leaving stale state. Also backfill
+    // maxRuns/runCount for tasks persisted before those fields existed (older versions).
     for (const t of this.tasks) {
+      if (t.maxRuns === undefined) t.maxRuns = null
+      if (t.runCount === undefined || t.runCount === null) t.runCount = 0
       this.recomputeNextRun(t)
     }
     await this.persist()
@@ -68,7 +76,7 @@ class ScheduledTaskManager {
 
   async create(
     input: Pick<ScheduledTask, 'name' | 'prompt' | 'schedule' | 'targetWorkspace' | 'maxCostUsd'> &
-      Partial<Pick<ScheduledTask, 'creatorTabId' | 'creatorTabKind' | 'creatorWorkspace'>>
+      Partial<Pick<ScheduledTask, 'creatorTabId' | 'creatorTabKind' | 'creatorWorkspace' | 'maxRuns'>>
   ): Promise<ScheduledTask> {
     const task: ScheduledTask = {
       id: nanoid(),
@@ -77,6 +85,8 @@ class ScheduledTaskManager {
       schedule: input.schedule,
       targetWorkspace: input.targetWorkspace,
       maxCostUsd: input.maxCostUsd,
+      maxRuns: input.maxRuns ?? null,
+      runCount: 0,
       enabled: true,
       createdAt: Date.now(),
       lastRunAt: null,
@@ -125,9 +135,14 @@ class ScheduledTaskManager {
       if (this.runningIds.has(task.id)) continue
       if (task.nextRunAt === null || task.nextRunAt > now) continue
 
+      // Decided up front so the runner can tell the user this is the last firing before the
+      // task deletes itself (e.g. in the delivered chat message), rather than finding out only
+      // after the fact.
+      const isFinalRun = task.maxRuns !== null && task.runCount + 1 >= task.maxRuns
+
       this.runningIds.add(task.id)
       try {
-        const result = await this.runner(task)
+        const result = await this.runner(task, isFinalRun)
         task.lastRunAt = now
         task.lastExitStatus = result.status
         task.lastOutputPreview = result.summaryPreview.slice(0, 500)
@@ -136,8 +151,14 @@ class ScheduledTaskManager {
         task.lastExitStatus = 'error'
         task.lastOutputPreview = e instanceof Error ? e.message : String(e)
       } finally {
+        task.runCount += 1
         this.runningIds.delete(task.id)
-        this.recomputeNextRun(task)
+        if (task.maxRuns !== null && task.runCount >= task.maxRuns) {
+          // Exhausted its run budget — self-delete instead of recomputing a next fire time.
+          this.tasks = this.tasks.filter((t) => t.id !== task.id)
+        } else {
+          this.recomputeNextRun(task)
+        }
         await this.persist()
       }
     }

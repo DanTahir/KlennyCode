@@ -195,7 +195,8 @@ export interface KlennyApi {
 
   listScheduledTasks: () => Promise<ScheduledTask[]>
   createScheduledTask: (
-    task: Pick<ScheduledTask, 'name' | 'prompt' | 'schedule' | 'targetWorkspace' | 'maxCostUsd'>
+    task: Pick<ScheduledTask, 'name' | 'prompt' | 'schedule' | 'targetWorkspace' | 'maxCostUsd'> &
+      Partial<Pick<ScheduledTask, 'maxRuns'>>
   ) => Promise<ScheduledTask>
   updateScheduledTask: (id: string, patch: Partial<ScheduledTask>) => Promise<ScheduledTask | null>
   deleteScheduledTask: (id: string) => Promise<void>

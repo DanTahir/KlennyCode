@@ -216,3 +216,95 @@ describe('ScheduledTaskManager tick execution', () => {
     expect(updated!.lastOutputPreview).toContain('boom')
   })
 })
+
+describe('ScheduledTaskManager maxRuns (limited-repetition / one-shot tasks)', () => {
+  test('create() defaults maxRuns to null (unlimited) and runCount to 0', async () => {
+    const task = await scheduledTaskManager.create({
+      name: 'Unlimited',
+      prompt: 'x',
+      schedule: '0 8 * * *',
+      targetWorkspace: null,
+      maxCostUsd: null
+    })
+    expect(task.maxRuns).toBeNull()
+    expect(task.runCount).toBe(0)
+  })
+
+  test('a task with maxRuns: 1 (one-shot) fires once, then self-deletes instead of rescheduling', async () => {
+    const task = await scheduledTaskManager.create({
+      name: 'One-shot reminder',
+      prompt: 'x',
+      schedule: '* * * * *',
+      targetWorkspace: null,
+      maxCostUsd: null,
+      maxRuns: 1
+    })
+    await scheduledTaskManager.update(task.id, { nextRunAt: Date.now() - 1 })
+
+    let receivedFinalRunFlag: boolean | undefined
+    scheduledTaskManager.setRunner(async (_t, isFinalRun) => {
+      receivedFinalRunFlag = isFinalRun
+      return { status: 'success' as const, summaryPreview: 'done' }
+    })
+
+    scheduledTaskManager.startTicking()
+    await new Promise((r) => setTimeout(r, 50))
+    scheduledTaskManager.stopTicking()
+
+    expect(receivedFinalRunFlag).toBe(true)
+    expect(scheduledTaskManager.list().find((t) => t.id === task.id)).toBeUndefined()
+  })
+
+  test('a task with maxRuns: 3 fires up to 3 times then self-deletes, incrementing runCount each time', async () => {
+    const task = await scheduledTaskManager.create({
+      name: 'Three times',
+      prompt: 'x',
+      schedule: '* * * * *',
+      targetWorkspace: null,
+      maxCostUsd: null,
+      maxRuns: 3
+    })
+
+    let callCount = 0
+    scheduledTaskManager.setRunner(async () => {
+      callCount++
+      return { status: 'success' as const, summaryPreview: `run ${callCount}` }
+    })
+
+    // Fire it three times, forcing it due each time (ticking wouldn't naturally re-fire within
+    // the same minute otherwise).
+    for (let i = 0; i < 3; i++) {
+      const stillThere = scheduledTaskManager.list().find((t) => t.id === task.id)
+      expect(stillThere).toBeDefined()
+      await scheduledTaskManager.update(task.id, { nextRunAt: Date.now() - 1 })
+      scheduledTaskManager.startTicking()
+      await new Promise((r) => setTimeout(r, 50))
+      scheduledTaskManager.stopTicking()
+    }
+
+    expect(callCount).toBe(3)
+    expect(scheduledTaskManager.list().find((t) => t.id === task.id)).toBeUndefined()
+  })
+
+  test('a task with maxRuns unset (null) keeps rescheduling indefinitely instead of self-deleting', async () => {
+    const task = await scheduledTaskManager.create({
+      name: 'Recurring',
+      prompt: 'x',
+      schedule: '* * * * *',
+      targetWorkspace: null,
+      maxCostUsd: null
+    })
+    await scheduledTaskManager.update(task.id, { nextRunAt: Date.now() - 1 })
+
+    scheduledTaskManager.setRunner(async () => ({ status: 'success' as const, summaryPreview: 'x' }))
+
+    scheduledTaskManager.startTicking()
+    await new Promise((r) => setTimeout(r, 50))
+    scheduledTaskManager.stopTicking()
+
+    const updated = scheduledTaskManager.list().find((t) => t.id === task.id)
+    expect(updated).toBeDefined()
+    expect(updated!.runCount).toBe(1)
+    expect(updated!.nextRunAt).toBeGreaterThan(Date.now())
+  })
+})

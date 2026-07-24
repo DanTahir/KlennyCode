@@ -444,7 +444,13 @@ export function getToolDefinitions(
       type: 'function',
       function: {
         name: 'scheduler_create_task',
-        description: 'Create a recurring background task that runs as an unattended subagent on a cron schedule (e.g. "0 8 * * *" for every day at 8am).',
+        description:
+          'Create a background task that runs as an unattended subagent on a cron schedule (e.g. "0 8 * * *" for every day at 8am). ' +
+          'IMPORTANT — one-time vs. recurring: if the user names a single moment ("at 8pm", "in 10 minutes", "tomorrow morning") without ' +
+          'saying it should repeat, treat it as a ONE-TIME task: set `schedule` to the cron expression for that single next occurrence and ' +
+          'set `maxRuns: 1` so it fires once and deletes itself. Only omit `maxRuns` (unlimited/indefinite) or set it >1 when the user explicitly ' +
+          'asks for repetition ("every day", "every 10 minutes", "three times in a row", "each Monday", etc.) — in the "N times" case, set ' +
+          '`maxRuns` to that N so the task self-deletes after its last run. When in doubt about which the user means, ask.',
         parameters: {
           type: 'object',
           properties: {
@@ -452,7 +458,14 @@ export function getToolDefinitions(
             prompt: { type: 'string', description: "Natural-language instruction the subagent will follow each time this task fires." },
             schedule: { type: 'string', description: 'Standard 5-field cron expression, evaluated in local time.' },
             targetWorkspace: { type: 'string', description: 'Absolute path of a known coding project to run against, or omit for the general Assistant tool context.' },
-            maxCostUsd: { type: 'number', description: 'Optional per-run USD ceiling.' }
+            maxCostUsd: { type: 'number', description: 'Optional per-run USD ceiling.' },
+            maxRuns: {
+              type: 'number',
+              description:
+                'Optional cap on total number of firings before the task automatically deletes itself. Use 1 for a one-time task ' +
+                '("at 8pm", "in 10 minutes"), or N for "run N times" ("every 10 minutes, 3 times in a row"). Omit for a task that should ' +
+                'recur indefinitely on its schedule until the user deletes it.'
+            }
           },
           required: ['name', 'prompt', 'schedule']
         }
@@ -480,6 +493,7 @@ export function getToolDefinitions(
             schedule: { type: 'string' },
             targetWorkspace: { type: 'string' },
             maxCostUsd: { type: 'number' },
+            maxRuns: { type: 'number', description: 'See scheduler_create_task for semantics — how many more total firings before this task self-deletes.' },
             enabled: { type: 'boolean' }
           },
           required: ['id']

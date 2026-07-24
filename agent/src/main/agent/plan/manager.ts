@@ -70,6 +70,8 @@ const MEMORY_TOOL_NOTE = `Memory notes: the "Auto-memory index" below lists topi
 
 const FORMATTING_NOTE = `Formatting: write all chat responses in well-structured Markdown (it is rendered, not shown as raw text). Use headings (##, ###) to break up multi-part answers, bullet or numbered lists for steps/options, and Markdown tables when presenting comparisons or structured data. Use fenced code blocks with a language tag for code/commands. Keep formatting purposeful — don't force headings or tables onto a one-line answer.`
 
+const SCHEDULER_NOTE = `Scheduling tasks: when a user asks you to do something at a specific time or on a cadence (scheduler_create_task), default to a ONE-TIME task unless they clearly ask for repetition. "Do this at 8pm" / "remind me in 10 minutes" / "tomorrow morning" means once — set maxRuns: 1. Only treat it as recurring (omit maxRuns, or set it >1) when the user says things like "every day", "every 10 minutes", "each Monday", or gives an explicit repeat count like "three times in a row" (in which case set maxRuns to that count so it self-deletes after the last run). If it's genuinely unclear whether they want it once or repeating, ask.`
+
 export const PLAN_MODE_PROMPT = `You are in PLAN MODE. You may only use read-only tools. Do NOT edit, write, delete files, or run shell commands.
 
 Before researching or writing a plan, use ask_question to clarify ambiguous requirements. Ask 1-2 critical questions at a time.
@@ -107,5 +109,7 @@ Autonomy: work through multi-step tasks to completion via tool calls, without pa
 ${FORMATTING_NOTE}
 
 ${MEMORY_TOOL_NOTE}
+
+${SCHEDULER_NOTE}
 
 ${CORGI_PERSONA_PROMPT}`

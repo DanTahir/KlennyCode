@@ -136,6 +136,12 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
   longer be found at all, a brand-new tab is opened for it instead (an Assistant tab for
   workspace-less tasks, or a project tab in the task's target workspace otherwise). A desktop
   notification is shown if no Klenny Code window is currently focused.
+- **One-time and limited-repetition tasks** — every scheduled task can carry an optional `maxRuns`:
+  once it has fired that many times, it deletes itself instead of rescheduling. Asking the agent to
+  "do this at 8pm" or "remind me in 10 minutes" creates a one-shot task (`maxRuns: 1`); "every 10
+  minutes, 3 times in a row" sets `maxRuns: 3`. Leaving `maxRuns` unset means the task recurs
+  indefinitely until deleted, same as before. The Settings → Scheduled tasks panel has a "Max runs"
+  field for creating these by hand, and shows each task's current run count when applicable.
 - **Automation Permissions** (Settings → Integrations) — a simple per-action allow/block toggle
   (Gmail read/send, Discord read/post, scheduler on/off) governing what the agent may do
   unattended; there's no live "ask me" prompt for background actions.
