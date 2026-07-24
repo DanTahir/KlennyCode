@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { DEFAULT_BRAND_NAME } from '@shared/types'
 import { useAppStore } from './store/useAppStore'
 import { useWorkspaceActions } from './hooks/useWorkspaceActions'
 import { Sidebar } from './components/Sidebar'
@@ -33,12 +34,15 @@ export default function App() {
     setSkills,
     setPlans,
     setUpdateStatus,
-    setUpdateSupported
+    setUpdateSupported,
+    setCustomIconUrl,
+    setCustomRunningGifUrl
   } = useAppStore()
 
   const { openWorkspace } = useWorkspaceActions()
   const [ready, setReady] = useState(false)
   const needsSetup = !workspace || !settings?.hasApiKey
+  const brandName = settings?.brandName || DEFAULT_BRAND_NAME
 
   useEffect(() => {
     if (settings?.theme === 'light') {
@@ -56,14 +60,16 @@ export default function App() {
       return
     }
     void (async () => {
-      const [s, ws, modelList, tabList, skills, plans, updateSupported] = await Promise.all([
+      const [s, ws, modelList, tabList, skills, plans, updateSupported, customIcon, customGif] = await Promise.all([
         window.klenny.getSettings(),
         window.klenny.getWorkspace(),
         window.klenny.listModels().catch(() => []),
         window.klenny.listTabs(),
         window.klenny.listSkills().catch(() => []),
         window.klenny.listPlans().catch(() => []),
-        window.klenny.isUpdateSupported().catch(() => false)
+        window.klenny.isUpdateSupported().catch(() => false),
+        window.klenny.getCustomIcon().catch(() => null),
+        window.klenny.getCustomRunningGif().catch(() => null)
       ])
       setSettings(s)
       setWorkspace(ws)
@@ -73,6 +79,8 @@ export default function App() {
       setSkills(skills)
       setPlans(plans)
       setUpdateSupported(updateSupported)
+      setCustomIconUrl(customIcon)
+      setCustomRunningGifUrl(customGif)
       setReady(true)
 
       if (!ws && !s.hasApiKey) {
@@ -118,7 +126,7 @@ export default function App() {
   if (!ready) {
     return (
       <div className="h-screen flex items-center justify-center bg-klenny-bg text-klenny-muted">
-        Loading Klenny Code…
+        Loading {brandName}…
       </div>
     )
   }
@@ -127,7 +135,7 @@ export default function App() {
     return (
       <div className="h-screen flex items-center justify-center bg-klenny-bg text-klenny-text p-8">
         <div className="max-w-md text-center space-y-3">
-          <h1 className="text-xl font-semibold text-klenny-accent">Failed to start Klenny Code</h1>
+          <h1 className="text-xl font-semibold text-klenny-accent">Failed to start {brandName}</h1>
           <p className="text-sm text-klenny-muted">
             The app UI could not connect to the main process. Try rebuilding with{' '}
             <code className="text-klenny-accent">npm run dist:dir</code> from the agent folder.
@@ -142,7 +150,7 @@ export default function App() {
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         <header className="h-12 border-b border-klenny-border flex items-center px-4 justify-between bg-klenny-panel">
-          <div className="font-semibold text-klenny-accent">Klenny Code</div>
+          <div className="font-semibold text-klenny-accent">{brandName}</div>
           <button
             type="button"
             className="text-xs text-klenny-muted truncate max-w-[50%] hover:text-klenny-accent underline-offset-2 hover:underline"

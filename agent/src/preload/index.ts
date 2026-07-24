@@ -106,6 +106,14 @@ const api: KlennyApi = {
   updateScheduledTask: (id, patch) => ipcRenderer.invoke(IPC.schedulerUpdate, id, patch),
   deleteScheduledTask: (id) => ipcRenderer.invoke(IPC.schedulerDelete, id),
 
+  getCustomIcon: () => ipcRenderer.invoke(IPC.brandingGetIcon),
+  setCustomIcon: (dataUrl) => ipcRenderer.invoke(IPC.brandingSetIcon, dataUrl),
+  clearCustomIcon: () => ipcRenderer.invoke(IPC.brandingClearIcon),
+  getCustomRunningGif: () => ipcRenderer.invoke(IPC.brandingGetRunningGif),
+  setCustomRunningGif: (dataUrl) => ipcRenderer.invoke(IPC.brandingSetRunningGif, dataUrl),
+  clearCustomRunningGif: () => ipcRenderer.invoke(IPC.brandingClearRunningGif),
+  resetBranding: () => ipcRenderer.invoke(IPC.brandingResetAll),
+
   onStreamEvent: (cb) => {
     const listener = (_: unknown, event: AgentStreamEvent) => cb(event)
     ipcRenderer.on('agent:stream', listener)

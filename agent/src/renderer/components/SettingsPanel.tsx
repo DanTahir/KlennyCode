@@ -1,11 +1,39 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
-import { DEFAULT_EMBEDDINGS_MODEL } from '@shared/types'
+import { BRAND_NAME_MAX_LENGTH, DEFAULT_BRAND_NAME, DEFAULT_EMBEDDINGS_MODEL } from '@shared/types'
 import type { ScheduledTask } from '@shared/types'
 
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read file'))
+    reader.readAsDataURL(file)
+  })
+}
+
 export function SettingsPanel() {
-  const { settings, models, shells, indexStatus, setSettings, setModels, setShells, setIndexStatus, settingsFocusSection, setSettingsFocusSection } =
-    useAppStore()
+  const {
+    settings,
+    models,
+    shells,
+    indexStatus,
+    setSettings,
+    setModels,
+    setShells,
+    setIndexStatus,
+    settingsFocusSection,
+    setSettingsFocusSection,
+    customIconUrl,
+    setCustomIconUrl,
+    customRunningGifUrl,
+    setCustomRunningGifUrl
+  } = useAppStore()
+  const [brandNameInput, setBrandNameInput] = useState('')
+  const [iconError, setIconError] = useState<string | null>(null)
+  const [gifError, setGifError] = useState<string | null>(null)
+  const [uploadingIcon, setUploadingIcon] = useState(false)
+  const [uploadingGif, setUploadingGif] = useState(false)
   const [apiKey, setApiKey] = useState('')
   const [search, setSearch] = useState('')
   const [providerOnly, setProviderOnly] = useState('')
@@ -32,6 +60,7 @@ export function SettingsPanel() {
 
   const integrationsRef = useRef<HTMLDivElement>(null)
   const automationRef = useRef<HTMLDivElement>(null)
+  const appearanceRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     void window.klenny.listModels(true).then(setModels)
@@ -45,7 +74,14 @@ export function SettingsPanel() {
 
   useEffect(() => {
     if (!settingsFocusSection) return
-    const el = settingsFocusSection === 'integrations' ? integrationsRef.current : settingsFocusSection === 'automation' ? automationRef.current : null
+    const el =
+      settingsFocusSection === 'integrations'
+        ? integrationsRef.current
+        : settingsFocusSection === 'automation'
+          ? automationRef.current
+          : settingsFocusSection === 'appearance'
+            ? appearanceRef.current
+            : null
     if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
     setSettingsFocusSection(null)
   }, [settingsFocusSection])
@@ -57,6 +93,10 @@ export function SettingsPanel() {
     setProviderOnly((settings.providerPreference.only ?? []).join(', '))
     setProviderOrder((settings.providerPreference.order ?? []).join(', '))
   }, [settings?.providerPreference])
+
+  useEffect(() => {
+    setBrandNameInput(settings?.brandName ?? '')
+  }, [settings?.brandName])
 
   // Pre-fill the recommended embeddings model the first time the feature is enabled and a
   // model list is available — a convenience default, not a silent fallback if the catalog
@@ -446,6 +486,151 @@ export function SettingsPanel() {
           <option value="dark">Dark</option>
           <option value="light">Light</option>
         </select>
+      </section>
+
+      <section ref={appearanceRef} className="mb-6 space-y-3 border-t border-klenny-border pt-6">
+        <h3 className="font-medium text-lg">Appearance</h3>
+        <p className="text-xs text-klenny-muted">
+          Rebrand the app to your own name and imagery — shown in the sidebar, header, window/taskbar icon, and
+          system tray. Everything here can be restored to Klenny's defaults with one click.
+        </p>
+
+        <div className="space-y-1">
+          <label className="block text-sm">App name</label>
+          <input
+            className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded text-sm"
+            placeholder={DEFAULT_BRAND_NAME}
+            maxLength={BRAND_NAME_MAX_LENGTH}
+            value={brandNameInput}
+            onChange={(e) => setBrandNameInput(e.target.value.slice(0, BRAND_NAME_MAX_LENGTH))}
+            onBlur={() => void patch({ brandName: brandNameInput.trim() || null })}
+          />
+          <p className="text-xs text-klenny-muted">
+            {brandNameInput.length}/{BRAND_NAME_MAX_LENGTH} characters. Leave blank to use "{DEFAULT_BRAND_NAME}".
+          </p>
+        </div>
+
+        <div className="space-y-1">
+          <label className="block text-sm">App icon</label>
+          <div className="flex items-center gap-3">
+            <img
+              src={customIconUrl ?? undefined}
+              alt="Current app icon"
+              className={`w-10 h-10 rounded-full object-cover border border-klenny-border ${customIconUrl ? '' : 'hidden'}`}
+            />
+            <label className="px-3 py-1 rounded border border-klenny-border text-sm cursor-pointer hover:bg-klenny-panel2">
+              {uploadingIcon ? 'Uploading…' : 'Upload icon…'}
+              <input
+                type="file"
+                accept="image/png,image/jpeg"
+                className="hidden"
+                disabled={uploadingIcon}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  e.target.value = ''
+                  if (!file) return
+                  setIconError(null)
+                  setUploadingIcon(true)
+                  void readFileAsDataUrl(file)
+                    .then((dataUrl) => window.klenny.setCustomIcon(dataUrl))
+                    .then((s) => {
+                      setSettings(s)
+                      return window.klenny.getCustomIcon()
+                    })
+                    .then(setCustomIconUrl)
+                    .catch((err) => setIconError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setUploadingIcon(false))
+                }}
+              />
+            </label>
+            {customIconUrl && (
+              <button
+                className="px-3 py-1 rounded border border-klenny-border text-sm"
+                onClick={() =>
+                  void window.klenny
+                    .clearCustomIcon()
+                    .then((s) => {
+                      setSettings(s)
+                      setCustomIconUrl(null)
+                    })
+                }
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-klenny-muted">PNG or JPEG. Used for the sidebar avatar, window/taskbar icon, and tray icon.</p>
+          {iconError && <p className="text-xs text-red-400">{iconError}</p>}
+        </div>
+
+        <div className="space-y-1">
+          <label className="block text-sm">"AI is working" animation</label>
+          <div className="flex items-center gap-3">
+            <img
+              src={customRunningGifUrl ?? undefined}
+              alt="Current running animation"
+              className={`h-10 w-10 rounded-md object-cover border border-klenny-border ${customRunningGifUrl ? '' : 'hidden'}`}
+            />
+            <label className="px-3 py-1 rounded border border-klenny-border text-sm cursor-pointer hover:bg-klenny-panel2">
+              {uploadingGif ? 'Uploading…' : 'Upload animation…'}
+              <input
+                type="file"
+                accept="image/gif,image/webp"
+                className="hidden"
+                disabled={uploadingGif}
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  e.target.value = ''
+                  if (!file) return
+                  setGifError(null)
+                  setUploadingGif(true)
+                  void readFileAsDataUrl(file)
+                    .then((dataUrl) => window.klenny.setCustomRunningGif(dataUrl))
+                    .then((s) => {
+                      setSettings(s)
+                      return window.klenny.getCustomRunningGif()
+                    })
+                    .then(setCustomRunningGifUrl)
+                    .catch((err) => setGifError(err instanceof Error ? err.message : String(err)))
+                    .finally(() => setUploadingGif(false))
+                }}
+              />
+            </label>
+            {customRunningGifUrl && (
+              <button
+                className="px-3 py-1 rounded border border-klenny-border text-sm"
+                onClick={() =>
+                  void window.klenny
+                    .clearCustomRunningGif()
+                    .then((s) => {
+                      setSettings(s)
+                      setCustomRunningGifUrl(null)
+                    })
+                }
+              >
+                Remove
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-klenny-muted">GIF or animated WebP. Shown in chat while the agent is working.</p>
+          {gifError && <p className="text-xs text-red-400">{gifError}</p>}
+        </div>
+
+        <button
+          className="px-3 py-1 rounded border border-klenny-border text-sm text-klenny-muted hover:text-klenny-accent hover:border-klenny-accent"
+          onClick={() =>
+            void window.klenny.resetBranding().then((s) => {
+              setSettings(s)
+              setCustomIconUrl(null)
+              setCustomRunningGifUrl(null)
+              setBrandNameInput('')
+              setIconError(null)
+              setGifError(null)
+            })
+          }
+        >
+          Reset appearance to defaults
+        </button>
       </section>
 
       <section ref={integrationsRef} className="mb-6 space-y-4 border-t border-klenny-border pt-6">

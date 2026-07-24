@@ -97,7 +97,15 @@ export const IPC = {
   schedulerList: 'scheduler:list',
   schedulerCreate: 'scheduler:create',
   schedulerUpdate: 'scheduler:update',
-  schedulerDelete: 'scheduler:delete'
+  schedulerDelete: 'scheduler:delete',
+
+  brandingGetIcon: 'branding:getIcon',
+  brandingSetIcon: 'branding:setIcon',
+  brandingClearIcon: 'branding:clearIcon',
+  brandingGetRunningGif: 'branding:getRunningGif',
+  brandingSetRunningGif: 'branding:setRunningGif',
+  brandingClearRunningGif: 'branding:clearRunningGif',
+  brandingResetAll: 'branding:resetAll'
 } as const
 
 export interface SendMessagePayload {
@@ -210,6 +218,21 @@ export interface KlennyApi {
   ) => Promise<ScheduledTask>
   updateScheduledTask: (id: string, patch: Partial<ScheduledTask>) => Promise<ScheduledTask | null>
   deleteScheduledTask: (id: string) => Promise<void>
+
+  /** Returns a data URL (or null if no custom icon is set) for the sidebar/welcome-screen icon. */
+  getCustomIcon: () => Promise<string | null>
+  /** dataUrl must be a `data:image/...;base64,...` string (PNG or JPEG) — applied immediately
+   *  to the app icon, taskbar/dock icon, and tray. */
+  setCustomIcon: (dataUrl: string) => Promise<AppSettings>
+  clearCustomIcon: () => Promise<AppSettings>
+  /** Returns a data URL (or null if no custom "AI is working" animation is set). */
+  getCustomRunningGif: () => Promise<string | null>
+  /** dataUrl must be a `data:image/gif;base64,...` or `data:image/webp;base64,...` string. */
+  setCustomRunningGif: (dataUrl: string) => Promise<AppSettings>
+  clearCustomRunningGif: () => Promise<AppSettings>
+  /** Clears custom icon, custom running gif, and brandName in one call — used by the
+   *  Settings → Appearance "Reset to defaults" button. */
+  resetBranding: () => Promise<AppSettings>
 
   onStreamEvent: (cb: (event: unknown) => void) => () => void
   onUpdateStatus: (cb: (event: UpdateStatusEvent) => void) => () => void

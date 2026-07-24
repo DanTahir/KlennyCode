@@ -4,8 +4,9 @@
  * window is closed, without fully quitting the app.
  */
 import { app, BrowserWindow, Menu, Tray, nativeImage } from 'electron'
-import { join } from 'node:path'
 import { loadSettings } from './settings'
+import { resolveActiveIconPath } from './branding'
+import { DEFAULT_BRAND_NAME } from '@shared/types'
 
 let tray: Tray | null = null
 /** True once the user has explicitly chosen Quit from the tray menu — lets the window's
@@ -16,15 +17,12 @@ export function isAppQuitting(): boolean {
   return isQuitting
 }
 
-function iconPath(): string {
-  return join(__dirname, '../../build/icons/icon.png')
-}
-
-export function createTray(getMainWindow: () => BrowserWindow | null): void {
+export async function createTray(getMainWindow: () => BrowserWindow | null): Promise<void> {
   if (tray) return
-  const image = nativeImage.createFromPath(iconPath())
+  const image = nativeImage.createFromPath(await resolveActiveIconPath())
   tray = new Tray(image.isEmpty() ? image : image.resize({ width: 16, height: 16 }))
-  tray.setToolTip('Klenny Code')
+  const settings = await loadSettings().catch(() => null)
+  tray.setToolTip(settings?.brandName || DEFAULT_BRAND_NAME)
 
   const menu = Menu.buildFromTemplate([
     {
@@ -59,6 +57,17 @@ export function createTray(getMainWindow: () => BrowserWindow | null): void {
 export function destroyTray(): void {
   tray?.destroy()
   tray = null
+}
+
+/** Re-applies the current icon (custom if set, otherwise the default) and tooltip to the
+ *  already-created tray — called after the user uploads/clears a custom icon or changes the
+ *  brand name in Settings → Appearance. No-op if the tray hasn't been created yet. */
+export async function refreshTrayIcon(): Promise<void> {
+  if (!tray) return
+  const image = nativeImage.createFromPath(await resolveActiveIconPath())
+  tray.setImage(image.isEmpty() ? image : image.resize({ width: 16, height: 16 }))
+  const settings = await loadSettings().catch(() => null)
+  tray.setToolTip(settings?.brandName || DEFAULT_BRAND_NAME)
 }
 
 /** Cached synchronously-readable mirror of settings.minimizeToTray — Electron's 'close' event

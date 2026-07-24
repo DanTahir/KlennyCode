@@ -399,7 +399,25 @@ export interface AppSettings {
   minimizeToTray: boolean
   /** start Klenny Code automatically on OS login (wired via app.setLoginItemSettings) */
   startOnLogin: boolean
+
+  // ---------- Appearance / branding ----------
+
+  /** custom display name shown in the sidebar, header, and window title in place of "Klenny
+   *  Code" — max BRAND_NAME_MAX_LENGTH characters. null/empty = use the default. */
+  brandName: string | null
+  /** boolean flag only — the actual image bytes live on disk under the app's userData
+   *  directory (see agent/src/main/branding.ts), never round-tripped through settings.json,
+   *  mirroring the hasApiKey-style pattern used for secrets. */
+  hasCustomIcon: boolean
+  /** boolean flag only — see hasCustomIcon */
+  hasCustomRunningGif: boolean
 }
+
+/** Max length enforced for AppSettings.brandName, both in the renderer input and defensively
+ *  in the main-process settings save path. */
+export const BRAND_NAME_MAX_LENGTH = 15
+
+export const DEFAULT_BRAND_NAME = 'Klenny Code'
 
 /** Per-action-category automation policy. 'auto' = allowed to run unattended (subagent/scheduled
  *  contexts) and, in live chat tabs, still subject to the existing ApprovalManager gate when

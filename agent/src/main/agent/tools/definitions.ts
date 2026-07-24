@@ -375,8 +375,9 @@ export function getToolDefinitions(
           properties: {
             section: {
               type: 'string',
-              enum: ['integrations', 'general', 'models', 'automation'],
-              description: '"integrations" for Gmail/Discord connection UI, "automation" for Automation Permissions.'
+              enum: ['integrations', 'general', 'models', 'automation', 'appearance'],
+              description:
+                '"integrations" for Gmail/Discord connection UI, "automation" for Automation Permissions, "appearance" for custom app name/icon/animation branding.'
             }
           },
           required: ['section']

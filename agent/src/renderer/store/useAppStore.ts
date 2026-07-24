@@ -28,6 +28,14 @@ export interface OpenPlanTab {
 interface AppState {
   settings: AppSettings | null
   workspace: string | null
+  /** Data URL of the user's custom app icon (sidebar/welcome screen), or null to use the
+   *  bundled default. Loaded once at startup and refreshed after upload/reset in Settings. */
+  customIconUrl: string | null
+  setCustomIconUrl: (url: string | null) => void
+  /** Data URL of the user's custom "AI is working" animation, or null to use the bundled
+   *  default klenny.gif. */
+  customRunningGifUrl: string | null
+  setCustomRunningGifUrl: (url: string | null) => void
   models: ModelInfo[]
   shells: ShellInfo[]
   tabs: TabSession[]
@@ -85,6 +93,10 @@ interface AppState {
 export const useAppStore = create<AppState>((set, get) => ({
   settings: null,
   workspace: null,
+  customIconUrl: null,
+  setCustomIconUrl: (customIconUrl) => set({ customIconUrl }),
+  customRunningGifUrl: null,
+  setCustomRunningGifUrl: (customRunningGifUrl) => set({ customRunningGifUrl }),
   models: [],
   shells: [],
   tabs: [],

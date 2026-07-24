@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, Menu, nativeImage } from 'electron'
 import { join } from 'node:path'
 import { checkForUpdates, installUpdate, isUpdateSupported } from './updater'
 import { IPC } from '@shared/ipc'
@@ -19,10 +19,20 @@ import { createTerminal, writeTerminal, resizeTerminal, disposeTerminal, setTerm
 import { startIndexing, stopIndexing, getIndexStatus, rebuildIndex, deleteLocalIndex, setOnStatusChange } from './agent/codeindex/manager'
 import { getCostReport, resetCostReport } from './agent/costReport'
 import type { AgentStreamEvent, IndexStatus, ScheduledTask } from '@shared/types'
-import { createTray, wireMinimizeToTray, refreshMinimizeToTrayCache, applyAutoStartSetting } from './tray'
+import { DEFAULT_BRAND_NAME } from '@shared/types'
+import { createTray, wireMinimizeToTray, refreshMinimizeToTrayCache, applyAutoStartSetting, refreshTrayIcon } from './tray'
 import { connectGmail, disconnectGmail } from './integrations/gmail'
 import { connectDiscord, disconnectDiscord, getDiscordStatus, onDiscordStatusChange } from './integrations/discord'
 import { scheduledTaskManager } from './scheduler/manager'
+import {
+  getCustomIconDataUrl,
+  setCustomIcon as saveCustomIcon,
+  clearCustomIcon,
+  getCustomRunningGifDataUrl,
+  setCustomRunningGif as saveCustomRunningGif,
+  clearCustomRunningGif,
+  resolveActiveIconPath
+} from './branding'
 
 function broadcast(event: AgentStreamEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -40,6 +50,23 @@ function broadcastTerminalExit(id: string, exitCode: number): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send('terminal:exit', id, exitCode)
   }
+}
+
+/** Applies the current icon (custom if set, otherwise the bundled default) and the
+ *  version-suffixed window title (using the custom brand name if set) to every open window —
+ *  called at startup and whenever the user changes either in Settings → Appearance. */
+async function applyBrandingToAllWindows(): Promise<void> {
+  const [iconPath, settings] = await Promise.all([resolveActiveIconPath(), loadSettings()])
+  const image = nativeImage.createFromPath(iconPath)
+  const title = `${settings.brandName || DEFAULT_BRAND_NAME} ${app.getVersion()}`
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!image.isEmpty()) win.setIcon(image)
+    win.setTitle(title)
+  }
+  // Windows/Linux taskbar icon comes from BrowserWindow.setIcon above; macOS dock icon is
+  // separate and needs app.dock.setIcon (undefined on non-macOS platforms).
+  if (!image.isEmpty()) app.dock?.setIcon(image)
+  await refreshTrayIcon()
 }
 
 /** Fire-and-forget: resolves the current settings + model catalog and (re)starts the codebase index for `root`, or stops it if the feature isn't fully configured. Never throws into the caller — indexing failures surface via index_progress status, not a rejected promise on workspace open. Exported so main/index.ts can trigger it for the auto-restored last-opened workspace on app launch. */
@@ -89,6 +116,7 @@ export function registerIpcHandlers(): void {
     }
     if ('minimizeToTray' in patch) await refreshMinimizeToTrayCache()
     if ('startOnLogin' in patch) await applyAutoStartSetting(next.startOnLogin)
+    if ('brandName' in patch) await applyBrandingToAllWindows()
     return next
   })
   ipcMain.handle(IPC.setApiKey, async (_e, key: string) => setApiKey(key))
@@ -253,6 +281,34 @@ export function registerIpcHandlers(): void {
   )
   ipcMain.handle(IPC.schedulerUpdate, async (_e, id: string, patch: Partial<ScheduledTask>) => scheduledTaskManager.update(id, patch))
   ipcMain.handle(IPC.schedulerDelete, async (_e, id: string) => scheduledTaskManager.delete(id))
+
+  ipcMain.handle(IPC.brandingGetIcon, async () => getCustomIconDataUrl())
+  ipcMain.handle(IPC.brandingSetIcon, async (_e, dataUrl: string) => {
+    await saveCustomIcon(dataUrl)
+    await applyBrandingToAllWindows()
+    return loadSettings()
+  })
+  ipcMain.handle(IPC.brandingClearIcon, async () => {
+    await clearCustomIcon()
+    await applyBrandingToAllWindows()
+    return loadSettings()
+  })
+  ipcMain.handle(IPC.brandingGetRunningGif, async () => getCustomRunningGifDataUrl())
+  ipcMain.handle(IPC.brandingSetRunningGif, async (_e, dataUrl: string) => {
+    await saveCustomRunningGif(dataUrl)
+    return loadSettings()
+  })
+  ipcMain.handle(IPC.brandingClearRunningGif, async () => {
+    await clearCustomRunningGif()
+    return loadSettings()
+  })
+  ipcMain.handle(IPC.brandingResetAll, async () => {
+    await clearCustomIcon()
+    await clearCustomRunningGif()
+    const next = await saveSettings({ brandName: null })
+    await applyBrandingToAllWindows()
+    return next
+  })
 }
 
 export function createMainWindow(): BrowserWindow {
@@ -263,7 +319,7 @@ export function createMainWindow(): BrowserWindow {
     height: 860,
     minWidth: 900,
     minHeight: 600,
-    title: `Klenny Code ${app.getVersion()}`,
+    title: `${DEFAULT_BRAND_NAME} ${app.getVersion()}`,
     show: false,
     autoHideMenuBar: true,
     icon: join(__dirname, '../../build/icons/icon.png'),
@@ -274,6 +330,10 @@ export function createMainWindow(): BrowserWindow {
       sandbox: false
     }
   })
+
+  // Swap in the user's custom icon/brand name (if any) once settings/branding files are
+  // readable — the synchronous options above only cover the default, first-paint case.
+  void applyBrandingToAllWindows()
 
   win.on('ready-to-show', () => win.show())
   wireMinimizeToTray(win)

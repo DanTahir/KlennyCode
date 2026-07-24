@@ -2,7 +2,14 @@ import { app, safeStorage } from 'electron'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { AppSettings } from '@shared/types'
-import { DEFAULT_MAIN_MODEL, DEFAULT_SUBAGENT_MODEL, DEFAULT_UTILITY_MODEL, DEFAULT_AUTOMATION_PERMISSIONS } from '@shared/types'
+import {
+  DEFAULT_MAIN_MODEL,
+  DEFAULT_SUBAGENT_MODEL,
+  DEFAULT_UTILITY_MODEL,
+  DEFAULT_AUTOMATION_PERMISSIONS,
+  BRAND_NAME_MAX_LENGTH
+} from '@shared/types'
+import { hasCustomIcon, hasCustomRunningGif } from './branding'
 
 const DEFAULTS: AppSettings = {
   hasApiKey: false,
@@ -35,7 +42,10 @@ const DEFAULTS: AppSettings = {
   automationPermissions: DEFAULT_AUTOMATION_PERMISSIONS,
   schedulerEnabled: true,
   minimizeToTray: false,
-  startOnLogin: false
+  startOnLogin: false,
+  brandName: null,
+  hasCustomIcon: false,
+  hasCustomRunningGif: false
 }
 
 function settingsPath(): string {
@@ -69,7 +79,9 @@ export async function loadSettings(): Promise<AppSettings> {
       hasApiKey: await hasApiKey(),
       hasPineconeKey: await hasPineconeKey(),
       hasGmailToken: await hasGmailToken(),
-      hasDiscordToken: await hasDiscordToken()
+      hasDiscordToken: await hasDiscordToken(),
+      hasCustomIcon: await hasCustomIcon(),
+      hasCustomRunningGif: await hasCustomRunningGif()
     }
   } catch {
     return {
@@ -77,7 +89,9 @@ export async function loadSettings(): Promise<AppSettings> {
       hasApiKey: await hasApiKey(),
       hasPineconeKey: await hasPineconeKey(),
       hasGmailToken: await hasGmailToken(),
-      hasDiscordToken: await hasDiscordToken()
+      hasDiscordToken: await hasDiscordToken(),
+      hasCustomIcon: await hasCustomIcon(),
+      hasCustomRunningGif: await hasCustomRunningGif()
     }
   }
 }
@@ -85,10 +99,16 @@ export async function loadSettings(): Promise<AppSettings> {
 export async function saveSettings(patch: Partial<AppSettings>): Promise<AppSettings> {
   const current = await loadSettings()
   const next = { ...current, ...patch }
+  if (typeof next.brandName === 'string') {
+    const trimmed = next.brandName.trim().slice(0, BRAND_NAME_MAX_LENGTH)
+    next.brandName = trimmed || null
+  }
   delete (next as { hasApiKey?: boolean }).hasApiKey
   delete (next as { hasPineconeKey?: boolean }).hasPineconeKey
   delete (next as { hasGmailToken?: boolean }).hasGmailToken
   delete (next as { hasDiscordToken?: boolean }).hasDiscordToken
+  delete (next as { hasCustomIcon?: boolean }).hasCustomIcon
+  delete (next as { hasCustomRunningGif?: boolean }).hasCustomRunningGif
   await mkdir(app.getPath('userData'), { recursive: true })
   await writeFile(settingsPath(), JSON.stringify(next, null, 2), 'utf8')
   return loadSettings()

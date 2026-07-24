@@ -32,7 +32,7 @@ app.whenReady().then(async () => {
   await applyAutoStartSetting(settings.startOnLogin)
 
   createMainWindow()
-  createTray(() => BrowserWindow.getAllWindows()[0] ?? null)
+  void createTray(() => BrowserWindow.getAllWindows()[0] ?? null)
 
   // Personal Assistant Platform (Phase 4): scheduler + Discord gateway run for the lifetime of
   // the app/tray process, independent of any specific chat tab.

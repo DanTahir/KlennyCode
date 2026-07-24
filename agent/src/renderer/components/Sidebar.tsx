@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import klennyImg from '../assets/klenny.jpg'
+import { DEFAULT_BRAND_NAME } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { useWorkspaceActions } from '../hooks/useWorkspaceActions'
 import { useAssistantTabActions } from '../hooks/useAssistantTabActions'
@@ -15,10 +16,11 @@ const items = [
 ] as const
 
 export function Sidebar() {
-  const { panel, setPanel, workspace, updateStatus, updateSupported } = useAppStore()
+  const { panel, setPanel, workspace, updateStatus, updateSupported, settings, customIconUrl } = useAppStore()
   const { openWorkspace } = useWorkspaceActions()
   const { openAssistantTab } = useAssistantTabActions()
   const [justChecked, setJustChecked] = useState<'up-to-date' | 'error' | null>(null)
+  const brandName = settings?.brandName || DEFAULT_BRAND_NAME
 
   useEffect(() => {
     if (updateStatus?.status === 'not-available') {
@@ -49,8 +51,8 @@ export function Sidebar() {
   return (
     <aside className="w-52 border-r border-klenny-border bg-klenny-panel flex flex-col">
       <div className="p-3 border-b border-klenny-border flex items-center gap-2">
-        <img src={klennyImg} alt="Klenny Code" className="w-10 h-10 rounded-full object-cover" />
-        <span className="font-semibold text-sm text-klenny-accent">Klenny Code</span>
+        <img src={customIconUrl ?? klennyImg} alt={brandName} className="w-10 h-10 rounded-full object-cover" />
+        <span className="font-semibold text-sm text-klenny-accent">{brandName}</span>
       </div>
       <nav className="flex-1 p-2 space-y-1">
         {items.map((item) => (

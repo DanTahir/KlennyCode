@@ -1,19 +1,27 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage, ToolCallBlock } from '@shared/types'
+import { DEFAULT_BRAND_NAME } from '@shared/types'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallCard } from './ToolCallCard'
 import { DiffViewer } from './DiffViewer'
 import klennyGif from '../assets/klenny.gif'
+import { useAppStore } from '../store/useAppStore'
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
   const isUser = message.role === 'user'
   const isEmptyAssistant = !isUser && message.blocks.length === 0
+  const customRunningGifUrl = useAppStore((s) => s.customRunningGifUrl)
+  const brandName = useAppStore((s) => s.settings?.brandName) || DEFAULT_BRAND_NAME
 
   if (isEmptyAssistant) {
     return (
       <div className="flex justify-start">
-        <img src={klennyGif} alt="Klenny is working…" className="h-12 w-12 rounded-md object-cover" />
+        <img
+          src={customRunningGifUrl ?? klennyGif}
+          alt={`${brandName} is working…`}
+          className="h-12 w-12 rounded-md object-cover"
+        />
       </div>
     )
   }

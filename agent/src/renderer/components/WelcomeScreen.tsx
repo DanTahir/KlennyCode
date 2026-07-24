@@ -1,4 +1,5 @@
 import klennyImg from '../assets/klenny.jpg'
+import { DEFAULT_BRAND_NAME } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 
 interface WelcomeScreenProps {
@@ -7,16 +8,21 @@ interface WelcomeScreenProps {
 }
 
 export function WelcomeScreen({ onOpenWorkspace, onOpenSettings }: WelcomeScreenProps) {
-  const { workspace, settings } = useAppStore()
+  const { workspace, settings, customIconUrl } = useAppStore()
   const needsApiKey = !settings?.hasApiKey
   const needsWorkspace = !workspace
+  const brandName = settings?.brandName || DEFAULT_BRAND_NAME
 
   return (
     <div className="flex-1 flex items-center justify-center p-8 bg-klenny-bg">
       <div className="max-w-lg w-full text-center space-y-6">
-        <img src={klennyImg} alt="Klenny Code" className="w-24 h-24 rounded-full object-cover mx-auto border-2 border-klenny-accent/40" />
+        <img
+          src={customIconUrl ?? klennyImg}
+          alt={brandName}
+          className="w-24 h-24 rounded-full object-cover mx-auto border-2 border-klenny-accent/40"
+        />
         <div>
-          <h1 className="text-2xl font-semibold text-klenny-accent">Welcome to Klenny Code</h1>
+          <h1 className="text-2xl font-semibold text-klenny-accent">Welcome to {brandName}</h1>
           <p className="text-klenny-muted text-sm mt-2">
             A desktop coding agent powered by OpenRouter. Open a project folder, add your API key, and start chatting.
           </p>
@@ -36,7 +42,7 @@ export function WelcomeScreen({ onOpenWorkspace, onOpenSettings }: WelcomeScreen
             done={!needsWorkspace}
             number={2}
             title="Open a project folder"
-            detail="Point Klenny Code at a git repo or any codebase directory"
+            detail={`Point ${brandName} at a git repo or any codebase directory`}
             action={needsWorkspace ? 'Open project folder' : workspace ?? 'Project open'}
             onAction={needsWorkspace ? onOpenWorkspace : onOpenWorkspace}
             disabled={false}
