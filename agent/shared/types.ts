@@ -309,8 +309,15 @@ export interface TabSession {
   totalCostUsd: number
   /** cumulative USD saved via prompt caching this session (display only, not used for spend caps) */
   totalSavingsUsd?: number
-  /** set while compaction has replaced earlier history */
+  /** id of the last message in `messages` that has been folded into `compactionSummary`.
+   *  Compaction never removes or rewrites anything in `messages` (that stays the full,
+   *  authentic history shown in the UI) — instead this + `compactionSummary` are consulted
+   *  only when building the wire-format request to the model, replacing every message up to
+   *  and including this id with the summary text. */
   compactedThroughMessageId?: string
+  /** rolling summary text covering all messages up to and including `compactedThroughMessageId`.
+   *  Sent to the model as a system message in place of the real (older) messages. */
+  compactionSummary?: string
   /** 'project' (default, omitted on old persisted tabs): a normal workspace-scoped coding tab.
    *  'assistant': an ephemeral tab opened via the sidebar "Open Assistant" button — has no
    *  workspace, only assistant tools (Gmail/Discord/scheduler/web/cross-project/memory), is
@@ -495,7 +502,7 @@ export type AgentStreamEvent =
   | { type: 'pending_question'; tabId: string; question: PendingQuestion }
   | { type: 'pending_question_resolved'; tabId: string; questionId: string }
   | { type: 'subagent_update'; tabId: string; run: SubagentRun }
-  | { type: 'compaction'; tabId: string; summaryMessageId: string }
+  | { type: 'compaction'; tabId: string; compactedThroughMessageId: string; summary: string }
   | { type: 'spend_update'; tabId: string; totalCostUsd: number; totalSavingsUsd: number; capUsd: number | null }
   | { type: 'spend_blocked'; tabId: string }
   /** A tab was created, restored from history, or had a message appended to it outside of a

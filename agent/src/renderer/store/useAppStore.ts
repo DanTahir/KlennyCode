@@ -303,7 +303,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
       case 'compaction': {
         const tabs = state.tabs.map((t) =>
-          t.id === e.tabId ? { ...t, compactedThroughMessageId: e.summaryMessageId } : t
+          t.id === e.tabId
+            ? { ...t, compactedThroughMessageId: e.compactedThroughMessageId, compactionSummary: e.summary }
+            : t
         )
         set({ tabs })
         break

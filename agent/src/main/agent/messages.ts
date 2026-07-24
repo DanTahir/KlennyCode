@@ -4,9 +4,16 @@ import type { ChatMessage as ORMessage } from '../openrouter/client'
 /**
  * Projects `tab.messages` (the persisted, UI-facing history) into the wire format sent to
  * OpenRouter. Kept dependency-free (no Electron imports) so it's directly unit-testable.
+ *
+ * `messages` here should already be the slice actually meant for the wire (i.e. with any
+ * compacted-away prefix removed by the caller) — see `messagesForWire` — while `compactionSummary`,
+ * if given, is injected as its own system message standing in for that removed prefix.
  */
-export function toORMessages(messages: ChatMessage[], systemPrompt: string): ORMessage[] {
+export function toORMessages(messages: ChatMessage[], systemPrompt: string, compactionSummary?: string): ORMessage[] {
   const out: ORMessage[] = [{ role: 'system', content: systemPrompt }]
+  if (compactionSummary) {
+    out.push({ role: 'system', content: `Summary of earlier conversation (older messages were omitted to save context):\n\n${compactionSummary}` })
+  }
   const sentToolResults = new Set<string>()
   for (const m of messages) {
     if (m.role === 'user') {
@@ -57,6 +64,19 @@ export function toORMessages(messages: ChatMessage[], systemPrompt: string): ORM
     }
   }
   return out
+}
+
+/**
+ * Returns the suffix of `messages` that still needs to be sent verbatim to the model — i.e.
+ * everything after (and not including) `compactedThroughMessageId`. The prefix this drops is
+ * assumed to already be represented by the tab's `compactionSummary`, injected separately by
+ * `toORMessages`. `messages` itself (the UI-facing history) is never touched by this — it's a
+ * read-only view used only when building the outgoing request.
+ */
+export function messagesForWire(messages: ChatMessage[], compactedThroughMessageId?: string): ChatMessage[] {
+  if (!compactedThroughMessageId) return messages
+  const idx = messages.findIndex((m) => m.id === compactedThroughMessageId)
+  return idx === -1 ? messages : messages.slice(idx + 1)
 }
 
 export function compactToolResult(result: ToolResultPayload): string {

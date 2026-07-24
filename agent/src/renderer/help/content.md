@@ -34,6 +34,11 @@ Read-only tools only. Klenny Code will ask clarifying questions, research your c
 | `read_memory` | Load the full content of an auto-memory topic note |
 | `write_memory` | Persist notes for future sessions |
 | `codebase_search` | Semantic search across the codebase (only available if enabled in Settings) |
+| `list_projects` / `read_other_project_file` / `grep_other_project` / `glob_other_project` / `read_other_project_memory` | Read-only access to *other* projects you've previously opened |
+| `gmail_list_messages` / `gmail_get_message` / `gmail_send_message` | Read (and, if enabled, send) email via your connected Gmail account |
+| `discord_post_message` | Post to a Discord channel or DM via your connected bot |
+| `scheduler_create_task` / `scheduler_update_task` / `scheduler_delete_task` | Manage recurring background tasks |
+| `open_settings_panel` | Jump you to a relevant Settings section (e.g. to connect an integration) |
 
 ## Approval workflow
 
@@ -47,6 +52,30 @@ Toggle this in **Settings**.
 - **Project**: `KLENNY.md` in your project root (shared via git).
 - **Global**: `~/.klenny/KLENNY.md` (personal, all projects).
 - **Auto-memory**: Klenny Code can write topic files (stored outside your project, in Klenny Code's app data directory) and index them in `MEMORY.md`.
+
+## Cross-project reference (read-only)
+
+Klenny Code keeps track of every project you've previously opened. While working in your current project, the agent can read files and memory notes from those *other* projects — e.g. "port the shell-selection feature from my other project into this one" — using a small set of read-only tools. It can never write or edit anything outside the project you currently have open.
+
+## Personal Assistant
+
+Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
+
+- **Assistant tab** — click **Open Assistant** in the sidebar to open a fresh chat tab with web search, cross-project reference, memory, Gmail, Discord, and scheduler tools, but no file/shell access (no coding project needed). Every click makes a brand-new tab; closing one discards it for good — Assistant tabs don't persist or show up in History.
+- **Gmail** — connect your own Google Cloud OAuth client in **Settings → Integrations** to let the agent read, and (once you opt in) send, email.
+- **Discord** — connect a bot application (never a personal account) so the agent can post updates and respond to DMs/mentions/`!klenny` commands, including reviewing a known project read-only when asked.
+- **Scheduler** — define recurring tasks ("every morning at 8am, summarize my inbox") that run unattended as background subagents, even while minimized to the system tray. Enable **Minimize to tray** / **Start on login** in Settings to keep the scheduler and Discord bot running. When a run finishes, its answer is delivered as a chat message in the tab that created it (reopened from History if needed, or a brand-new tab if that's gone too), plus a desktop notification if no window is focused.
+- **Automation Permissions** (Settings → Integrations) — per-action allow/block toggles (Gmail read/send, Discord read/post, scheduler on/off) governing what the agent may do unattended. There's no live "ask me" prompt for background actions — set the toggle you're comfortable with ahead of time.
+
+Coding tools (file read/write, shell commands, codebase search) stay scoped to an actual open project — the Assistant tab and its tools are additive, available everywhere, not a replacement.
+
+## History
+
+Closing a chat tab that has messages archives it instead of deleting it. Open the **History** panel from the sidebar to reopen or permanently delete archived chats. (Assistant tabs are the exception — they're ephemeral and never archived.)
+
+## Cost Report
+
+Click **Cost Report** at the bottom of the Models section in Settings to see cumulative token usage and USD cost broken down by model, both for the current project and across every project you've used Klenny Code on. There's a reset button if you want to zero the counters.
 
 ## Skills
 
@@ -83,6 +112,9 @@ A collapsible terminal is docked under the chat view — click the "Terminal" ba
 in Settings → Shell (or the OS default if left on Auto), rooted at your open project folder. The session
 stays alive while you collapse/expand the panel, and only restarts if you switch workspaces, click
 "Restart", or close the app.
+
+Pick which shell to use — Git Bash, PowerShell, cmd, WSL, or your OS default — under **Settings → Shell**.
+This same setting also controls the shell `run_command` uses.
 
 ## Spending cap
 

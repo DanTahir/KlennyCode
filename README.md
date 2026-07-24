@@ -18,6 +18,11 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Memory** — project `KLENNY.md`, global `~/.klenny/KLENNY.md`, and auto-memory notes (Claude Code-style)
 - **Cross-project reference (read-only)** — the agent can read files and memory from *other* projects it has previously opened, so you can ask it to port a feature or convention from one project into the one you're currently working in
 - **Personal Assistant** — an on-demand, ephemeral "Assistant" tab (Gmail, Discord, web search, scheduler, cross-project reference — no coding project required), plus a background scheduler for recurring tasks and a Discord bot for two-way chat/automation — see [Personal Assistant](#personal-assistant) below
+- **History panel** — closed chat tabs (with messages) are archived, not deleted; reopen or permanently delete them from the History panel
+- **Cost Report** — a Settings panel breaking down cumulative token usage and USD cost by model, for the current project and across all projects
+- **Codebase semantic search (beta)** — optional, off-by-default vector index of your workspace so the agent can find relevant code by meaning via a `codebase_search` tool, alongside `grep`/`glob`
+- **Integrated terminal** — a collapsible, real interactive shell session (via `node-pty`) docked under the chat view, rooted at your open project
+- **Selectable shell** — pick which shell `run_command` and the terminal use (e.g. Git Bash, PowerShell, cmd, WSL) in Settings, or leave it on OS-default Auto
 - **No `.gitignore` gymnastics** — plans, auto-memory notes, and the codebase index live in Klenny Code's own app data directory, not in your project
 - **Skills** — Cursor-style `SKILL.md` files, auto-discovered and loaded when relevant
 - **Subagents** — built-in + custom types, parallel execution, separate subagent model setting

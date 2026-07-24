@@ -52,7 +52,7 @@ import { maybeCompact } from './compaction/compactor'
 import { makeDiff } from './tools/diff'
 import { resolveEditMatch } from './tools/edit-match'
 import { resolveReasoningEffort } from './reasoning'
-import { toORMessages } from './messages'
+import { toORMessages, messagesForWire } from './messages'
 import { trackDailySpend, getDailySpend } from './spend'
 import { recordUsage } from './costReport'
 import { isIndexActive, searchCode } from './codeindex/manager'
@@ -338,17 +338,27 @@ async function agentLoop(
     signal,
     promptCachingEnabled: settings.promptCachingEnabled,
     utilityModel: settings.utilityModel,
-    models
+    models,
+    priorSummary: tab.compactionSummary,
+    priorCompactedThroughMessageId: tab.compactedThroughMessageId
   })
-  if (compacted.compacted) {
-    tab.messages = compacted.messages
-    tab.compactedThroughMessageId = compacted.summaryMessageId
+  if (compacted.compacted && compacted.summary && compacted.compactedThroughMessageId) {
+    // `tab.messages` (the UI-facing history) is left completely untouched here — only these two
+    // fields change, and they're consulted below (via `messagesForWire`/`toORMessages`) purely
+    // to shrink what's sent to the model, not what the user sees in the chat.
+    tab.compactionSummary = compacted.summary
+    tab.compactedThroughMessageId = compacted.compactedThroughMessageId
     await sessionStore.updateTab(tab)
-    if (compacted.summaryMessageId) emit({ type: 'compaction', tabId: tab.id, summaryMessageId: compacted.summaryMessageId })
+    emit({
+      type: 'compaction',
+      tabId: tab.id,
+      compactedThroughMessageId: compacted.compactedThroughMessageId,
+      summary: compacted.summary
+    })
   }
 
   const systemPrompt = await buildSystemPrompt(tab.mode, settings.shellId)
-  const orMessages = toORMessages(tab.messages, systemPrompt)
+  const orMessages = toORMessages(messagesForWire(tab.messages, tab.compactedThroughMessageId), systemPrompt, tab.compactionSummary)
 
   // Computed from tab.messages before the new (empty) assistant message is pushed below, so
   // the heuristic only ever looks at genuinely prior turns.

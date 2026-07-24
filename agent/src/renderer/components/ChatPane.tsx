@@ -74,7 +74,8 @@ export function ChatPane() {
         )}
         {tab.compactedThroughMessageId && (
           <div className="text-xs text-klenny-muted border border-klenny-border rounded px-2 py-1">
-            Earlier messages were compacted to save context.
+            Earlier messages are still shown below, but were summarized for the AI to save context — it now sees a
+            summary of them instead of the originals.
           </div>
         )}
         {tabError && (
