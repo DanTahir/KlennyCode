@@ -66,6 +66,34 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'multi_edit',
+        description:
+          'Batch multiple edit_file-style replacements, across one file or several, into a single call that needs only one approval. Prefer this over several separate edit_file calls whenever you already know all the changes you want to make (for example updating the same file in 3 places, or making a coordinated change across multiple files) - it cuts down on repeated round-trips and approval prompts. Edits are validated as one all-or-nothing batch: if any old_string fails to match, nothing is written. Edits are applied in order, so a later edit can target text produced by an earlier edit to the same file. Each edit follows the same rules as edit_file: old_string must match file contents exactly (read_file first, no line-number prefixes), and replace_all replaces every occurrence of the old_string within that edit.',
+        parameters: {
+          type: 'object',
+          properties: {
+            edits: {
+              type: 'array',
+              description: 'One or more edits to apply, each targeting a path (the same file may repeat across entries).',
+              items: {
+                type: 'object',
+                properties: {
+                  path: { type: 'string' },
+                  old_string: { type: 'string' },
+                  new_string: { type: 'string' },
+                  replace_all: { type: 'boolean', description: 'Replace every occurrence within that edit.' }
+                },
+                required: ['path', 'old_string', 'new_string']
+              }
+            }
+          },
+          required: ['edits']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'delete_file',
         description: 'Delete a file.',
         parameters: {
@@ -539,6 +567,7 @@ export function getToolDefinitions(
     'read_file',
     'write_file',
     'edit_file',
+    'multi_edit',
     'delete_file',
     'grep',
     'glob',

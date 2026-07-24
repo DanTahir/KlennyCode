@@ -14,7 +14,13 @@ describe('tool definitions', () => {
     const tools = getToolDefinitions('agent').map((t) => t.function.name)
     expect(tools).toContain('write_file')
     expect(tools).toContain('edit_file')
+    expect(tools).toContain('multi_edit')
     expect(tools).toContain('run_command')
+  })
+
+  test('plan mode excludes multi_edit (batch editing is a mutating tool)', () => {
+    const tools = getToolDefinitions('plan').map((t) => t.function.name)
+    expect(tools).not.toContain('multi_edit')
   })
 
   test('read_memory is available (read-only) in both plan and agent mode', () => {
@@ -70,6 +76,7 @@ describe('tool definitions', () => {
     const tools = getToolDefinitions('agent', undefined, false, false).map((t) => t.function.name)
     expect(tools).not.toContain('write_file')
     expect(tools).not.toContain('edit_file')
+    expect(tools).not.toContain('multi_edit')
     expect(tools).not.toContain('delete_file')
     expect(tools).not.toContain('run_command')
     expect(tools).not.toContain('codebase_search')

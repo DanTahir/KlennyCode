@@ -119,6 +119,7 @@ export type ToolName =
   | 'read_file'
   | 'write_file'
   | 'edit_file'
+  | 'multi_edit'
   | 'delete_file'
   | 'grep'
   | 'glob'
@@ -151,7 +152,7 @@ export type ToolName =
 /** Tools that need a real, open coding-project workspace to make sense (file I/O, shell,
  *  semantic code search). Gated off entirely on Assistant-kind tabs and whenever no workspace
  *  is open — see getToolDefinitions() in agent/tools/definitions.ts. */
-export const CODING_ONLY_TOOLS: ToolName[] = ['write_file', 'edit_file', 'delete_file', 'run_command', 'codebase_search']
+export const CODING_ONLY_TOOLS: ToolName[] = ['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command', 'codebase_search']
 
 /** Tools available everywhere — regular coding-project tabs AND the Assistant tab — because
  *  they don't depend on a workspace at all. */
@@ -202,11 +203,11 @@ export const READ_ONLY_TOOLS: ToolName[] = [
   'read_other_project_memory'
 ]
 
-export const MUTATING_TOOLS: ToolName[] = ['write_file', 'edit_file', 'delete_file', 'run_command', 'write_memory', 'task']
+export const MUTATING_TOOLS: ToolName[] = ['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command', 'write_memory', 'task']
 
 // ---------- Approvals ----------
 
-export type PendingActionKind = 'write_file' | 'edit_file' | 'delete_file' | 'run_command'
+export type PendingActionKind = 'write_file' | 'edit_file' | 'multi_edit' | 'delete_file' | 'run_command'
 
 export interface PendingAction {
   id: string
@@ -214,9 +215,13 @@ export interface PendingAction {
   kind: PendingActionKind
   toolCallId: string
   title: string
-  /** unified diff text, present for write/edit/delete */
+  /** unified diff text, present for write/edit/delete — for multi_edit this is the
+   *  concatenation of every affected file's diff, in the same unified-diff format git
+   *  uses for multi-file patches, so DiffViewer renders it exactly like a single diff. */
   diff?: string
   filePath?: string
+  /** populated instead of filePath for multi_edit — every file the batch touches. */
+  filePaths?: string[]
   command?: string
   cwd?: string
   createdAt: number

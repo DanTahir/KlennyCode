@@ -26,6 +26,9 @@ import {
   readFileTool,
   writeFileTool,
   editFileTool,
+  multiEditFileTool,
+  previewMultiEdit,
+  type MultiEditOp,
   deleteFileTool,
   grepTool,
   globTool,
@@ -658,7 +661,7 @@ async function executeTool(
     }
   }
 
-  if (['write_file', 'edit_file', 'delete_file', 'run_command'].includes(name)) {
+  if (['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command'].includes(name)) {
     if (approvalMode === 'manual') {
       const kind = name as PendingActionKind
       const preview = await previewMutatingTool(name, args)
@@ -707,6 +710,8 @@ async function dispatchTool(
       return editFileTool(
         args as { path: string; old_string: string; new_string: string; replace_all?: boolean }
       )
+    case 'multi_edit':
+      return multiEditFileTool(args as unknown as { edits: MultiEditOp[] })
     case 'delete_file':
       return deleteFileTool(args as { path: string })
     case 'grep':
@@ -842,6 +847,11 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       return `Writing ${str(args.path) ?? 'file'}`
     case 'edit_file':
       return `Editing ${str(args.path) ?? 'file'}`
+    case 'multi_edit': {
+      const edits = Array.isArray(args.edits) ? (args.edits as Array<{ path?: unknown }>) : []
+      const paths = [...new Set(edits.map((e) => (typeof e.path === 'string' ? e.path : '')).filter(Boolean))]
+      return paths.length > 1 ? `Editing ${paths.length} files` : `Editing ${paths[0] ?? 'files'}`
+    }
     case 'delete_file':
       return `Deleting ${str(args.path) ?? 'file'}`
     case 'grep':
@@ -1338,6 +1348,12 @@ async function previewMutatingTool(
     } catch {
       return { title: `Edit ${path}`, extra: { filePath: path } }
     }
+  }
+  if (name === 'multi_edit') {
+    const edits = (Array.isArray(args.edits) ? args.edits : []) as MultiEditOp[]
+    const { paths, diff } = await previewMultiEdit(edits)
+    const title = paths.length === 1 ? `Edit ${paths[0]}` : `Edit ${paths.length} files (${edits.length} edits)`
+    return { title, extra: { filePaths: paths, diff } }
   }
   try {
     const abs = resolveWorkspacePath(path)

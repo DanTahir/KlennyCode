@@ -5,7 +5,7 @@ import fg from 'fast-glob'
 import type { ToolName, ToolResultPayload } from '@shared/types'
 import { getRgPath } from '../../ripgrep'
 import { buildEditNotFoundHelp, countOccurrences, resolveEditMatch } from './edit-match'
-import { detectEol, fromLf, toLf } from './eol'
+import { detectEol, fromLf, toLf, type Eol } from './eol'
 import { makeDiff } from './diff'
 import { assertInWorkspace, getWorkspace } from '../../workspace'
 import { buildShellInvocation, resolveShell } from '../../shells'
@@ -119,6 +119,167 @@ export async function editFileTool(args: {
     ok: true,
     summary: args.replace_all ? `Edited ${args.path} (${count} replacements)` : `Edited ${args.path}`,
     data: { path: args.path, diff: makeDiff(content, next, args.path), replacements: count }
+  }
+}
+
+export interface MultiEditOp {
+  path: string
+  old_string: string
+  new_string: string
+  replace_all?: boolean
+}
+
+interface PlannedFileEdit {
+  path: string
+  abs: string
+  eol: Eol
+  oldContent: string
+  newContent: string
+  editCount: number
+}
+
+interface PlanMultiEditError {
+  ok: false
+  index: number
+  path: string
+  summary: string
+  error: string
+  data?: Record<string, unknown>
+}
+
+/** Shared by multiEditFileTool (real run) and the approval preview (dry run): applies every
+ *  edit in `edits`, in order, against in-memory content grouped by file — so edits targeting
+ *  the same file compose (edit #2's old_string can match text produced by edit #1) exactly like
+ *  calling edit_file repeatedly would, but validated as one all-or-nothing batch before any
+ *  file is written. Returns either the per-file plan (nothing written yet) or the first failure
+ *  encountered, with enough context to report which edit/file it was.
+ */
+async function planMultiEdit(
+  edits: MultiEditOp[],
+  checkStale: boolean
+): Promise<{ ok: true; files: PlannedFileEdit[] } | PlanMultiEditError> {
+  const files = new Map<string, PlannedFileEdit>()
+
+  for (let i = 0; i < edits.length; i++) {
+    const op = edits[i]
+    const abs = resolveWorkspacePath(op.path)
+    if (!assertInWorkspace(abs)) {
+      return { ok: false, index: i, path: op.path, summary: 'Path outside workspace', error: 'sandbox' }
+    }
+
+    let planned = files.get(abs)
+    if (!planned) {
+      let raw: string
+      try {
+        raw = await readFile(abs, 'utf8')
+      } catch {
+        return { ok: false, index: i, path: op.path, summary: `File not found: ${op.path}`, error: 'not_found' }
+      }
+      if (checkStale) {
+        const cached = fileReadCache.get(abs)
+        const st = await stat(abs)
+        if (cached && cached.mtimeMs !== st.mtimeMs) {
+          return {
+            ok: false,
+            index: i,
+            path: op.path,
+            summary: 'File changed on disk since last read',
+            error: 'stale',
+            data: { path: op.path, hint: 'Call read_file again, then retry multi_edit with the exact text shown.' }
+          }
+        }
+      }
+      const eol = detectEol(raw)
+      const content = toLf(raw)
+      planned = { path: op.path, abs, eol, oldContent: content, newContent: content, editCount: 0 }
+      files.set(abs, planned)
+    }
+
+    const match = resolveEditMatch(planned.newContent, op.old_string, op.new_string)
+    if (!match) {
+      return {
+        ok: false,
+        index: i,
+        path: op.path,
+        summary: `old_string not found (edit ${i + 1} of ${edits.length}, ${op.path})`,
+        error: 'not_found',
+        data: { path: op.path, ...buildEditNotFoundHelp(planned.newContent, op.old_string) }
+      }
+    }
+
+    const count = countOccurrences(planned.newContent, match.oldString)
+    if (!op.replace_all && count > 1) {
+      return {
+        ok: false,
+        index: i,
+        path: op.path,
+        summary: `old_string appears ${count} times in edit ${i + 1} of ${edits.length} (${op.path}); use replace_all or provide more context`,
+        error: 'ambiguous',
+        data: { path: op.path, occurrences: count }
+      }
+    }
+
+    planned.newContent = op.replace_all
+      ? planned.newContent.replaceAll(match.oldString, match.newString)
+      : planned.newContent.replace(match.oldString, match.newString)
+    planned.editCount++
+  }
+
+  return { ok: true, files: [...files.values()] }
+}
+
+export async function multiEditFileTool(args: { edits: MultiEditOp[] }): Promise<ToolResultPayload> {
+  const edits = args.edits ?? []
+  if (edits.length === 0) {
+    return { ok: false, summary: 'multi_edit called with no edits', error: 'no_edits' }
+  }
+
+  const plan = await planMultiEdit(edits, true)
+  if (!plan.ok) {
+    return {
+      ok: false,
+      summary: plan.summary,
+      error: plan.error,
+      data: { ...plan.data, path: plan.path, editIndex: plan.index }
+    }
+  }
+
+  // All edits validated in-memory — now write every changed file. Only files whose content
+  // actually changed are touched (a file could theoretically end up unchanged if old_string
+  // === new_string for every edit targeting it).
+  const changed = plan.files.filter((f) => f.newContent !== f.oldContent)
+  const diffs: string[] = []
+  let totalEdits = 0
+  for (const f of changed) {
+    await writeFile(f.abs, fromLf(f.newContent, f.eol), 'utf8')
+    const st = await stat(f.abs)
+    fileReadCache.set(f.abs, { mtimeMs: st.mtimeMs, content: f.newContent })
+    diffs.push(makeDiff(f.oldContent, f.newContent, f.path))
+    totalEdits += f.editCount
+  }
+
+  return {
+    ok: true,
+    summary: `Edited ${changed.length} file${changed.length === 1 ? '' : 's'} (${totalEdits} edit${totalEdits === 1 ? '' : 's'})`,
+    data: {
+      paths: changed.map((f) => f.path),
+      diff: diffs.join('\n'),
+      files: changed.map((f) => ({ path: f.path, diff: makeDiff(f.oldContent, f.newContent, f.path) }))
+    }
+  }
+}
+
+/** Dry-run version of multiEditFileTool used to build the approval-dialog preview — computes
+ *  the same plan and combined diff without touching disk or checking staleness (the user
+ *  hasn't approved anything yet, so we don't want a stale-cache error blocking the preview
+ *  itself; the real staleness check still runs when the tool actually executes post-approval). */
+export async function previewMultiEdit(edits: MultiEditOp[]): Promise<{ paths: string[]; diff?: string }> {
+  const plan = await planMultiEdit(edits, false)
+  if (!plan.ok) return { paths: [...new Set(edits.map((e) => e.path))] }
+  const changed = plan.files.filter((f) => f.newContent !== f.oldContent)
+  return {
+    paths: changed.map((f) => f.path),
+    diff: changed.map((f) => makeDiff(f.oldContent, f.newContent, f.path)).join('\n')
   }
 }
 
