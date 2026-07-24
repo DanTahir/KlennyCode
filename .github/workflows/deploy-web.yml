@@ -1,0 +1,91 @@
+name: Deploy Marketing Site
+
+# Redeploys the klennycode.com marketing site (web/) whenever:
+#  - web/ content changes on main,
+#  - a new Klenny Code release is published (so download links stay current),
+#  - the release build workflow finishes successfully (safety net in case a
+#    release doesn't fire `released: published` immediately), or
+#  - someone triggers it manually.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - '.github/workflows/deploy-web.yml'
+  release:
+    types: [published]
+  workflow_run:
+    workflows: ['Build Klenny Code']
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  id-token: write # required for OIDC AWS auth
+  contents: read
+
+concurrency:
+  group: klennycode-deploy-web
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    # For the workflow_run trigger, only proceed if the upstream build actually succeeded.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Fetch latest release info + build static site
+        run: bun run build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sanity check build output
+        run: test -f out/index.html || (echo "out/index.html missing, aborting before touching S3" && exit 1)
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Sync hashed static assets (long cache)
+        run: |
+          aws s3 sync out "s3://${{ secrets.S3_BUCKET_NAME }}" \
+            --delete \
+            --cache-control "public,max-age=31536000,immutable" \
+            --exclude "*" \
+            --include "_next/static/*"
+
+      - name: Sync images (1 day cache)
+        run: |
+          aws s3 sync out "s3://${{ secrets.S3_BUCKET_NAME }}" \
+            --delete \
+            --cache-control "public,max-age=86400" \
+            --exclude "*" \
+            --include "*.jpg" --include "*.jpeg" --include "*.png" --include "*.svg" --include "*.ico" --include "*.gif"
+
+      - name: Sync everything else (HTML, JSON, etc — short cache)
+        run: |
+          aws s3 sync out "s3://${{ secrets.S3_BUCKET_NAME }}" \
+            --delete \
+            --cache-control "public,max-age=300" \
+            --exclude "_next/static/*" \
+            --exclude "*.jpg" --exclude "*.jpeg" --exclude "*.png" --exclude "*.svg" --exclude "*.ico" --exclude "*.gif"
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }}" \
+            --paths "/*"

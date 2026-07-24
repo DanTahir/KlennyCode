@@ -3,7 +3,7 @@ node_modules/
 .pnp/
 .pnp.js
 
-# Bun
+# Bun (binary lockfile format only — the text bun.lock format IS committed)
 bun.lockb
 
 # Build output / packaged app

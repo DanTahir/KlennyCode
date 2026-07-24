@@ -8,6 +8,8 @@
 
 Built with **Electron + React + TypeScript**, developed with **Bun** as the package manager.
 
+👉 See **[klennycode.com](https://klennycode.com)** for the marketing site, screenshots, and one-click downloads (the `web/` folder in this repo, deployed automatically on release).
+
 ## Features
 
 - **Chat interface** with tabbed sessions (new/close tabs; closing the last opens a fresh one)

@@ -1,0 +1,21 @@
+# dependencies
+node_modules/
+
+# next.js build output
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# generated at build time (fetched fresh every build)
+generated/
+
+# local-only AWS setup scratch files (contain account ID; not needed in repo)
+.deploy/
+
+# misc
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
