@@ -23,6 +23,11 @@ describe('bundled skill seeding', () => {
   beforeAll(async () => {
     tempRoot = await mkdtemp(join(tmpdir(), 'klenny-skills-seed-'))
     fakeHome = tempRoot
+    // seedBundledSkills() only runs once per process (module-level latch) — reset it so this
+    // file's seed attempt isn't a no-op if another test file already triggered it first when the
+    // whole suite runs together.
+    const { __resetSeedStateForTests } = await import('../src/main/agent/skills/manager')
+    __resetSeedStateForTests()
   })
 
   afterAll(async () => {
@@ -40,8 +45,12 @@ describe('bundled skill seeding', () => {
     const raw = await readFile(skillPath, 'utf8')
     expect(raw).toContain('browser-automation')
 
-    // Marker file written so a fresh process wouldn't reseed.
-    await access(join(fakeHome, '.klenny', '.bundled-skills-seeded'))
+    // Versioned seed-state file written so a fresh process wouldn't reseed/downgrade, and future
+    // version bumps have a baseline hash to compare against.
+    const stateRaw = await readFile(join(fakeHome, '.klenny', 'skills-seed-state.json'), 'utf8')
+    const state = JSON.parse(stateRaw)
+    expect(state.skills['browser-automation'].version).toBeGreaterThanOrEqual(1)
+    expect(typeof state.skills['browser-automation'].hash).toBe('string')
   })
 
   test('does not resurrect a bundled skill the user deleted, on a later listSkills() call', async () => {

@@ -64,6 +64,56 @@ describe('isBrowserActionMutating', () => {
   test('unknown actions are treated as non-mutating (fail via the unknown_action branch, not gated as mutating)', () => {
     expect(isBrowserActionMutating('teleport')).toBe(false)
   })
+
+  test('inspect is non-mutating — never queued for approval, unlike evaluate', () => {
+    expect(isBrowserActionMutating('inspect')).toBe(false)
+  })
+})
+
+describe("browser 'inspect' action (read-only JS evaluation)", () => {
+  const baseCtx = { ownerId: 'test-owner-inspect', unattended: false, settings: DEFAULT_BROWSER_AUTOMATION }
+  const unattendedCtx = { ownerId: 'test-owner-inspect-unattended', unattended: true, settings: DEFAULT_BROWSER_AUTOMATION }
+
+  test('requires code', async () => {
+    const result = await browserTool({ action: 'inspect' }, baseCtx)
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('missing_code')
+  })
+
+  test.each([
+    ['fetch(', "fetch('/api/x')"],
+    ['XMLHttpRequest', 'new XMLHttpRequest()'],
+    ['storage mutation', "localStorage.setItem('a', 'b')"],
+    ['document.cookie =', "document.cookie = 'x=1'"],
+    ['click(', "document.querySelector('button').click()"],
+    ['form submit', "document.querySelector('form').submit()"],
+    ['DOM mutation method', "document.body.appendChild(document.createElement('div'))"],
+    ['DOM content assignment', "document.body.innerHTML = '<b>x</b>'"],
+    ['form value assignment', "document.querySelector('input').value = 'x'"],
+    ['eval(', "eval('1+1')"],
+    ['new Function(', "new Function('return 1')()"],
+    ['location navigation', "location.href = 'https://evil.example'"],
+    ['window.open(', "window.open('https://evil.example')"]
+  ])('statically rejects code containing %s before ever touching the page', async (_label, code) => {
+    const result = await browserTool({ action: 'inspect', code }, baseCtx)
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('inspect_denied_pattern')
+  })
+
+  test('evaluate is still hard-blocked for unattended contexts regardless of settings (unchanged)', async () => {
+    const result = await browserTool({ action: 'evaluate', code: 'document.title' }, unattendedCtx)
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('evaluate_forbidden_unattended')
+  })
+})
+
+describe('browser tool definition includes inspect', () => {
+  test('the inspect action is a valid enum value on the browser tool schema', () => {
+    const tools = getToolDefinitions('agent')
+    const browserDef = tools.find((t) => t.function.name === 'browser')
+    const actionEnum = (browserDef?.function.parameters as { properties: { action: { enum: string[] } } }).properties.action.enum
+    expect(actionEnum).toContain('inspect')
+  })
 })
 
 describe('browser wait action (plain fixed-duration sleep)', () => {

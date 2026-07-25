@@ -44,6 +44,45 @@ export function isBrowserActionMutating(action: string): boolean {
   return MUTATING_BROWSER_ACTIONS.has(action)
 }
 
+/** Static, best-effort rejection list for `inspect` (read-only JS evaluation) — checked against
+ *  the raw code string *before* it ever reaches the page, purely so obviously-mutating code fails
+ *  fast with a clear message instead of relying only on the runtime guards in `inspectInPage`.
+ *  Not a security boundary by itself (a determined obfuscator can dodge regexes) — see the
+ *  runtime containment in `inspectInPage` for the actual defense-in-depth layer, and the
+ *  `browser-automation` skill's "Known limitations" section for what neither layer catches. */
+const INSPECT_DENY_PATTERNS: { pattern: RegExp; label: string }[] = [
+  { pattern: /\bfetch\s*\(/, label: 'fetch(' },
+  { pattern: /\bXMLHttpRequest\b/, label: 'XMLHttpRequest' },
+  { pattern: /\bWebSocket\b/, label: 'WebSocket' },
+  { pattern: /\bEventSource\b/, label: 'EventSource' },
+  { pattern: /sendBeacon/, label: 'navigator.sendBeacon' },
+  { pattern: /\.(setItem|removeItem|clear)\s*\(/, label: 'storage mutation (.setItem/.removeItem/.clear)' },
+  { pattern: /document\.cookie\s*=/, label: 'document.cookie =' },
+  { pattern: /\bindexedDB\b/, label: 'indexedDB' },
+  { pattern: /history\.(pushState|replaceState|go|back|forward)\s*\(/, label: 'history navigation' },
+  { pattern: /\blocation\s*(\.\w+\s*=(?!=)|=(?!=)|\.\s*(assign|replace|reload)\s*\()/, label: 'location navigation' },
+  { pattern: /window\.open\s*\(/, label: 'window.open(' },
+  { pattern: /\.postMessage\s*\(/, label: 'postMessage' },
+  {
+    pattern:
+      /\.(appendChild|insertBefore|removeChild|replaceChild|append|prepend|before|after|replaceWith|insertAdjacentHTML|insertAdjacentElement|insertAdjacentText|setAttribute|removeAttribute|toggleAttribute)\s*\(/,
+    label: 'DOM mutation method'
+  },
+  { pattern: /\.innerHTML\s*=|\.outerHTML\s*=|\.textContent\s*=|\.innerText\s*=/, label: 'DOM content assignment' },
+  { pattern: /\.value\s*=(?!=)/, label: 'form value assignment' },
+  { pattern: /\.click\s*\(/, label: '.click(' },
+  { pattern: /\.(submit|requestSubmit)\s*\(/, label: 'form submit' },
+  { pattern: /dispatchEvent\s*\(/, label: 'dispatchEvent' },
+  { pattern: /document\.(write|writeln|execCommand)\s*\(/, label: 'document.write/execCommand' },
+  { pattern: /\bnew\s+(Worker|SharedWorker)\b/, label: 'Worker/SharedWorker' },
+  { pattern: /\beval\s*\(/, label: 'eval(' },
+  { pattern: /\bnew\s+Function\s*\(/, label: 'new Function(' },
+  { pattern: /\.constructor\s*\(/, label: '.constructor(' },
+  { pattern: /\bimport\s*\(/, label: 'dynamic import(' },
+  { pattern: /\bReflect\b|\bProxy\b/, label: 'Reflect/Proxy' },
+  { pattern: /\.style\.(setProperty|removeProperty|cssText)\b/, label: 'inline style mutation' }
+]
+
 export interface BrowserToolContext {
   /** Chat tab id (interactive) or subagent/scheduled-task run id (unattended) — the session
    *  manager's ownerId key, so every distinct run/tab gets its own isolated browser session. */
@@ -159,6 +198,8 @@ export async function browserTool(args: Record<string, unknown>, ctx: BrowserToo
         return await doSubmit(args, ctx, tabLabel)
       case 'evaluate':
         return await doEvaluate(args, ctx, tabLabel)
+      case 'inspect':
+        return await doInspect(args, ctx, tabLabel)
       case 'wait_for':
         return await doWaitFor(args, ctx, tabLabel)
       case 'wait':
@@ -470,6 +511,221 @@ async function doEvaluate(args: Record<string, unknown>, ctx: BrowserToolContext
     return { ok: true, summary: 'Evaluated JavaScript', data: { result } }
   } catch (e) {
     return { ok: false, summary: 'Evaluate failed', error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** Ceiling for `inspect`'s execution, independent of MAX_WAIT_MS — this runs synchronously
+ *  during a tool call rather than something the model is deliberately waiting on, so it gets a
+ *  much shorter leash. Enforced on the Node side via Promise.race since page.evaluate() itself
+ *  has no timeout option — a hung/looping snippet otherwise blocks the page indefinitely. */
+const INSPECT_TIMEOUT_MS = 15_000
+
+/** Runs entirely inside the page (via page.evaluate) — installs best-effort read-only guards,
+ *  executes the model's code through an AsyncFunction so `await` works, then restores every
+ *  patched API before returning. This is defense in depth, not a security boundary: it raises
+ *  the bar against both accidental and injected mutation attempts, but a sufficiently determined
+ *  adversarial page could still find gaps (see the browser-automation skill's "Known
+ *  limitations"). Takes `start` (the current ref counter, so `klenny.ref()` continues the same
+ *  numbering snapshot() uses) and the code string; returns the value, or an error string, plus
+ *  the counter's new value after any klenny.ref() calls. */
+async function inspectInPage(args: {
+  code: string
+  start: number
+}): Promise<{ ok: boolean; result?: unknown; error?: string; nextCounter: number }> {
+  const win = window as unknown as Record<string, unknown>
+  let counter = args.start
+  const restores: (() => void)[] = []
+
+  function block(obj: unknown, key: string, message: string): void {
+    const target = obj as Record<string, unknown>
+    if (!(key in target)) return
+    const original = target[key]
+    try {
+      target[key] = function () {
+        throw new Error(message)
+      }
+      restores.push(() => {
+        target[key] = original
+      })
+    } catch {
+      // Some properties (e.g. non-configurable ones in certain engines) can't be reassigned —
+      // best-effort only, matching this whole layer's defense-in-depth (not guaranteed) nature.
+    }
+  }
+
+  function blockSetter(proto: unknown, key: string, message: string): void {
+    const target = proto as object
+    const desc = Object.getOwnPropertyDescriptor(target, key)
+    if (!desc || !desc.get) return
+    try {
+      Object.defineProperty(target, key, {
+        get: desc.get,
+        set: () => {
+          throw new Error(message)
+        },
+        configurable: true
+      })
+      restores.push(() => {
+        Object.defineProperty(target, key, desc)
+      })
+    } catch {
+      // best-effort
+    }
+  }
+
+  const denyMsg = (what: string) => `inspect is read-only — ${what} is blocked. Use the other browser actions (click/fill/etc.) to change the page instead.`
+
+  // Network
+  block(win, 'fetch', denyMsg('fetch()'))
+  block((win.XMLHttpRequest as { prototype: unknown })?.prototype, 'open', denyMsg('XMLHttpRequest'))
+  block(win, 'WebSocket', denyMsg('WebSocket'))
+  block(win, 'EventSource', denyMsg('EventSource'))
+  const nav = win.navigator as Record<string, unknown> | undefined
+  if (nav) block(nav, 'sendBeacon', denyMsg('navigator.sendBeacon'))
+
+  // Storage
+  const storages = [win.localStorage, win.sessionStorage].filter(Boolean) as Storage[]
+  for (const s of storages) {
+    block(s, 'setItem', denyMsg('storage writes'))
+    block(s, 'removeItem', denyMsg('storage writes'))
+    block(s, 'clear', denyMsg('storage writes'))
+  }
+  block(win, 'indexedDB', denyMsg('indexedDB'))
+  blockSetter((win.Document as { prototype: unknown })?.prototype, 'cookie', denyMsg('document.cookie ='))
+
+  // Navigation
+  const historyProto = (win.History as { prototype: unknown })?.prototype
+  block(historyProto, 'pushState', denyMsg('history navigation'))
+  block(historyProto, 'replaceState', denyMsg('history navigation'))
+  block(historyProto, 'go', denyMsg('history navigation'))
+  block(historyProto, 'back', denyMsg('history navigation'))
+  block(historyProto, 'forward', denyMsg('history navigation'))
+  const locationProto = (win.Location as { prototype: unknown })?.prototype
+  block(locationProto, 'assign', denyMsg('location navigation'))
+  block(locationProto, 'replace', denyMsg('location navigation'))
+  block(locationProto, 'reload', denyMsg('location navigation'))
+  block(win, 'open', denyMsg('window.open'))
+  block(win, 'close', denyMsg('window.close'))
+
+  // DOM mutation
+  const nodeProto = (win.Node as { prototype: unknown })?.prototype
+  for (const m of ['appendChild', 'insertBefore', 'removeChild', 'replaceChild']) block(nodeProto, m, denyMsg('DOM mutation'))
+  const elProto = (win.Element as { prototype: unknown })?.prototype
+  for (const m of [
+    'append',
+    'prepend',
+    'before',
+    'after',
+    'replaceWith',
+    'remove',
+    'setAttribute',
+    'removeAttribute',
+    'toggleAttribute',
+    'insertAdjacentHTML',
+    'insertAdjacentElement',
+    'insertAdjacentText'
+  ])
+    block(elProto, m, denyMsg('DOM mutation'))
+  blockSetter(elProto, 'innerHTML', denyMsg('innerHTML ='))
+  blockSetter(elProto, 'outerHTML', denyMsg('outerHTML ='))
+  blockSetter(nodeProto, 'textContent', denyMsg('textContent ='))
+  const htmlElProto = (win.HTMLElement as { prototype: unknown })?.prototype
+  block(htmlElProto, 'click', denyMsg('.click()'))
+  const formProto = (win.HTMLFormElement as { prototype: unknown })?.prototype
+  block(formProto, 'submit', denyMsg('form.submit()'))
+  block(formProto, 'requestSubmit', denyMsg('form.requestSubmit()'))
+  for (const ctor of ['HTMLInputElement', 'HTMLTextAreaElement', 'HTMLSelectElement']) {
+    const proto = (win[ctor] as { prototype: unknown })?.prototype
+    blockSetter(proto, 'value', denyMsg('.value ='))
+  }
+
+  // Misc escape hatches
+  block(win, 'postMessage', denyMsg('postMessage'))
+  const evtProto = (win.EventTarget as { prototype: unknown })?.prototype
+  block(evtProto, 'dispatchEvent', denyMsg('dispatchEvent'))
+  const docObj = win.document as Record<string, unknown>
+  if (docObj) {
+    block(docObj, 'write', denyMsg('document.write'))
+    block(docObj, 'writeln', denyMsg('document.write'))
+    block(docObj, 'execCommand', denyMsg('document.execCommand'))
+  }
+  block(win, 'Worker', denyMsg('Worker'))
+  block(win, 'SharedWorker', denyMsg('SharedWorker'))
+  block(win, 'eval', denyMsg('eval()'))
+  block(win, 'Function', denyMsg('new Function()'))
+
+  // Bridges a DOM element to a stable ref (tagging it exactly like snapshot() does) so the model
+  // can hand it to click/fill/etc. afterward instead of trying to act on it via more JS.
+  function ref(el: unknown): string | null {
+    if (!(el instanceof Element)) return null
+    const tag = el.getAttribute('data-klenny-ref')
+    if (tag) return tag
+    const id = `e${counter++}`
+    el.setAttribute('data-klenny-ref', id)
+    return id
+  }
+
+  function autoRef(value: unknown): unknown {
+    if (value instanceof Element) return ref(value)
+    if (Array.isArray(value)) return value.map(autoRef)
+    if (value instanceof NodeList || value instanceof HTMLCollection) return Array.from(value).map(autoRef)
+    return value
+  }
+
+  const klenny = { ref }
+
+  try {
+    // AsyncFunction constructor grabbed before `Function` above is patched — patching happens on
+    // `window.Function`, this local reference is unaffected. Lets the model's code use `await`.
+    const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor as new (...a: string[]) => (k: typeof klenny) => Promise<unknown>
+    let run: (k: typeof klenny) => Promise<unknown>
+    try {
+      // Prefer treating the code as a single expression so `document.title` style snippets
+      // (matching how `evaluate` behaves today) don't need an explicit `return`.
+      run = new AsyncFunction('klenny', `return (\n${args.code}\n)`)
+    } catch {
+      run = new AsyncFunction('klenny', args.code)
+    }
+    const result = await run(klenny)
+    return { ok: true, result: autoRef(result), nextCounter: counter }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e), nextCounter: counter }
+  } finally {
+    for (const restore of restores.reverse()) restore()
+  }
+}
+
+async function doInspect(args: Record<string, unknown>, ctx: BrowserToolContext, tabLabel: string): Promise<ToolResultPayload> {
+  const code = typeof args.code === 'string' ? args.code : ''
+  if (!code) return { ok: false, summary: 'inspect requires code', error: 'missing_code' }
+
+  for (const { pattern, label } of INSPECT_DENY_PATTERNS) {
+    if (pattern.test(code)) {
+      return {
+        ok: false,
+        summary: `inspect is read-only and rejected this code because it looks like it tries to mutate the page (${label}). Use click/type/fill/select/etc. — or evaluate, if enabled — for that instead.`,
+        error: 'inspect_denied_pattern'
+      }
+    }
+  }
+
+  const ensured = await ensureSessionAndPage(ctx, tabLabel)
+  if ('ok' in ensured) return ensured
+  const { session, page } = ensured
+  const startCounter = session.refCounters.get(tabLabel) ?? 0
+
+  try {
+    const outcome = await Promise.race([
+      page.evaluate(inspectInPage, { code, start: startCounter }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('inspect timed out (15s) — likely an infinite loop or unresolved await')), INSPECT_TIMEOUT_MS))
+    ])
+    session.refCounters.set(tabLabel, outcome.nextCounter)
+    if (!outcome.ok) {
+      return { ok: false, summary: 'Inspect failed', error: outcome.error ?? 'inspect_failed' }
+    }
+    return { ok: true, summary: 'Inspected page (read-only)', data: { result: outcome.result } }
+  } catch (e) {
+    return { ok: false, summary: 'Inspect failed', error: e instanceof Error ? e.message : String(e) }
   }
 }
 
