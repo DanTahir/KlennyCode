@@ -39,6 +39,7 @@
     "ignore": "^7.0.6",
     "nanoid": "^5.0.9",
     "node-pty": "^1.1.0",
+    "playwright": "^1.62.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.0.3",
@@ -82,7 +83,9 @@
     "asarUnpack": [
       "**/node_modules/@vscode/ripgrep/**",
       "**/node_modules/@vscode/ripgrep-*/**",
-      "**/node_modules/node-pty/**"
+      "**/node_modules/node-pty/**",
+      "**/node_modules/playwright/**",
+      "**/node_modules/playwright-core/**"
     ],
     "publish": {
       "provider": "github",

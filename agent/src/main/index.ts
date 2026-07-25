@@ -8,6 +8,7 @@ import { sessionStore } from './session/store'
 import { approvalManager } from './agent/approval/manager'
 import { stopIndexing } from './agent/codeindex/manager'
 import { disposeAllTerminals } from './terminal'
+import { disposeAllSessions as disposeAllBrowserSessions } from './browser/manager'
 import { createTray, refreshMinimizeToTrayCache, applyAutoStartSetting } from './tray'
 import { scheduledTaskManager } from './scheduler/manager'
 import { runScheduledTask } from './agent/orchestrator'
@@ -56,6 +57,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   void stopIndexing()
   disposeAllTerminals()
+  void disposeAllBrowserSessions()
   scheduledTaskManager.stopTicking()
   void stopDiscordClient()
 })

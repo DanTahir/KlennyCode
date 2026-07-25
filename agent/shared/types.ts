@@ -69,6 +69,10 @@ export interface ToolCallBlock {
   /** populated once the tool finishes */
   status: 'running' | 'success' | 'error' | 'awaiting_approval' | 'rejected'
   result?: ToolResultPayload
+  /** Short human-readable label for a long-running step within a still-`running` tool call
+   *  (e.g. "Downloading Chromium (42 MB)…" for the browser tool's one-time first-run install).
+   *  Cleared implicitly once `result`/a terminal `status` is set. Purely cosmetic. */
+  progressMessage?: string
 }
 
 export type ContentBlock = TextBlock | ThinkingBlock | ImageBlock | ToolCallBlock
@@ -158,11 +162,19 @@ export type ToolName =
   | 'scheduler_list_tasks'
   | 'scheduler_update_task'
   | 'scheduler_delete_task'
+  | 'browser'
 
 /** Tools that need a real, open coding-project workspace to make sense (file I/O, shell,
  *  semantic code search). Gated off entirely on Assistant-kind tabs and whenever no workspace
  *  is open — see getToolDefinitions() in agent/tools/definitions.ts. */
 export const CODING_ONLY_TOOLS: ToolName[] = ['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command', 'codebase_search']
+
+/** The single multiplexed browser-automation tool (action-addressed: open/navigate/snapshot/
+ *  click/etc — see agent/tools/browser.ts). Doesn't fit CODING_ONLY_TOOLS (no file/workspace
+ *  I/O) or ASSISTANT_TOOLS (needs per-tab session/process state, unlike stateless tools such as
+ *  web_search) — gets its own bucket. Agent-mode only (see getToolDefinitions()); available in
+ *  both project and Assistant-tab contexts since browsing doesn't require a workspace. */
+export const BROWSER_TOOLS: ToolName[] = ['browser']
 
 /** Tools available everywhere — regular coding-project tabs AND the Assistant tab — because
  *  they don't depend on a workspace at all. */
@@ -213,11 +225,11 @@ export const READ_ONLY_TOOLS: ToolName[] = [
   'read_other_project_memory'
 ]
 
-export const MUTATING_TOOLS: ToolName[] = ['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command', 'write_memory', 'task']
+export const MUTATING_TOOLS: ToolName[] = ['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command', 'write_memory', 'task', 'browser']
 
 // ---------- Approvals ----------
 
-export type PendingActionKind = 'write_file' | 'edit_file' | 'multi_edit' | 'delete_file' | 'run_command'
+export type PendingActionKind = 'write_file' | 'edit_file' | 'multi_edit' | 'delete_file' | 'run_command' | 'browser_act'
 
 export interface PendingAction {
   id: string
@@ -234,6 +246,10 @@ export interface PendingAction {
   filePaths?: string[]
   command?: string
   cwd?: string
+  /** browser_act only: base64 data URL of a lightweight screenshot thumbnail captured while
+   *  building the preview, if one was taken — never captured on every 'auto'-policy call, only
+   *  when actually building an approval preview for 'ask' policy. */
+  screenshotDataUrl?: string
   createdAt: number
 }
 
@@ -412,6 +428,9 @@ export interface AppSettings {
 
   automationPermissions: AutomationPermissions
 
+  /** Off by default (opt-in) — see BrowserAutomationSettings/DEFAULT_BROWSER_AUTOMATION above. */
+  browserAutomation: BrowserAutomationSettings
+
   /** master toggle for the background scheduler tick loop */
   schedulerEnabled: boolean
   /** minimize-to-tray instead of quitting on window close */
@@ -460,6 +479,60 @@ export const DEFAULT_AUTOMATION_PERMISSIONS: AutomationPermissions = {
   'discord.read': 'auto',
   'discord.post': 'off',
   'scheduler.run': 'auto'
+}
+
+// ---------- Browser automation ----------
+
+/** Separate from AutomationPolicyValue/AutomationPermissions above (which is a flat
+ *  'auto'|'off' map shared by gmail/discord/scheduler) because the user explicitly wants a
+ *  third "ask" state for browser mutation — a live approval queue, not just an unattended-run
+ *  allow/block toggle. 'off': the browser tool's mutating actions always fail. 'ask': mutating
+ *  actions queue via ApprovalManager same as write_file/run_command (subject to the same
+ *  per-tab approvalMode/acceptAll rules). 'auto': mutating actions execute immediately. Applies
+ *  only to *mutating* browser actions — open/close/list_tabs/navigate/snapshot/screenshot are
+ *  always allowed once the policy isn't 'off' (see the browser tool's dispatch handler). */
+export type BrowserAutomationPolicy = 'off' | 'ask' | 'auto'
+
+export interface BrowserAutomationSettings {
+  policy: BrowserAutomationPolicy
+  /** Subagent- and scheduled-task-owned sessions are always headless regardless of this flag —
+   *  it only controls whether *this* toggle is surfaced as already-safe-by-default in the UI.
+   *  Kept as an explicit setting (rather than hardcoding "always headless for unattended") so a
+   *  future version could offer an opt-out for debugging, but v1 always forces true internally
+   *  for subagent/scheduled runs regardless of what this is set to. */
+  headlessForUnattendedRuns: boolean
+  /** Interactive (chat-tab-owned) sessions only. */
+  allowPrivateNetwork: boolean
+  /** Subagent- and scheduler-owned sessions — deliberately a separate, stricter-by-default flag
+   *  so enabling private-network access for interactive use doesn't silently also open it up
+   *  for unattended runs, which are the highest-risk surface for SSRF/LAN-scanning via a
+   *  compromised or prompt-injected page. */
+  allowPrivateNetworkUnattended: boolean
+  /** Arbitrary JS execution (the 'evaluate' action) — independent of `policy`, off by default,
+   *  and never available to subagents regardless of this setting (enforced in the tool handler
+   *  as defense in depth, not just by omission from allowlists). */
+  allowEvaluate: boolean
+  /** Optional: reuse an installed Chrome/Edge/Brave instead of Playwright's bundled Chromium.
+   *  If unset (the default), Playwright's Chromium is used — since the npm package doesn't ship
+   *  browser binaries, the very first browser session in the app's lifetime downloads it lazily
+   *  (one-time, ~150 MB; see src/main/browser/installer.ts), surfacing progress via
+   *  `tool_call_progress`. If set, the path is passed straight to Playwright's launcher with no
+   *  validation ahead of time — an invalid/missing path fails the launch with Playwright's own
+   *  error rather than silently falling back. */
+  browserExecutablePath: string | null
+  /** App-wide cap on concurrent Playwright Browser processes; additional requests fail with a
+   *  clear error rather than queuing (see BrowserSessionManager). */
+  maxConcurrentSessions: number
+}
+
+export const DEFAULT_BROWSER_AUTOMATION: BrowserAutomationSettings = {
+  policy: 'off',
+  headlessForUnattendedRuns: true,
+  allowPrivateNetwork: true,
+  allowPrivateNetworkUnattended: false,
+  allowEvaluate: false,
+  browserExecutablePath: null,
+  maxConcurrentSessions: 3
 }
 
 // ---------- Scheduler ----------
@@ -531,6 +604,9 @@ export type AgentStreamEvent =
   | { type: 'text_delta'; tabId: string; messageId: string; delta: string }
   | { type: 'thinking_delta'; tabId: string; messageId: string; delta: string }
   | { type: 'tool_call_start'; tabId: string; messageId: string; block: ToolCallBlock }
+  /** Cosmetic progress update for a still-running tool call (currently only emitted by the
+   *  browser tool's one-time Chromium download). Never changes `status`. */
+  | { type: 'tool_call_progress'; tabId: string; messageId: string; toolCallId: string; message: string }
   | { type: 'tool_call_result'; tabId: string; messageId: string; toolCallId: string; result: ToolResultPayload; status: ToolCallBlock['status'] }
   | { type: 'user_message'; tabId: string; message: ChatMessage }
   | { type: 'message_start'; tabId: string; message: ChatMessage }

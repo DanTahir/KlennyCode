@@ -19,6 +19,9 @@ export function ToolCallCard({ block }: { block: ToolCallBlock }) {
       <button className="w-full text-left px-2 py-1 hover:bg-klenny-panel" onClick={() => setOpen(!open)}>
         <span className="font-mono text-klenny-accent">{block.toolName}</span>
         <span className="ml-2 text-klenny-muted">{block.status}</span>
+        {block.status === 'running' && block.progressMessage && (
+          <span className="ml-2 text-klenny-muted italic">{block.progressMessage}</span>
+        )}
       </button>
       {open && (
         <div className="p-2 border-t border-klenny-border space-y-1">

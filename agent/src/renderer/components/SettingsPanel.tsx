@@ -993,6 +993,110 @@ export function SettingsPanel() {
               ))}
             </div>
           </section>
+
+          <section className="mb-6 space-y-2">
+            <h3 className="font-medium">Browser automation</h3>
+            <p className="text-xs text-klenny-muted">
+              Lets the agent drive a local Chromium browser (navigate, click, type, read pages) using Playwright. Off
+              by default. Interactive sessions run headed so you can watch; subagent and scheduled-task sessions
+              always run headless. Never enables reaching cloud metadata endpoints, regardless of any setting below.
+            </p>
+            <div className="space-y-3 border border-klenny-border rounded p-3">
+              <label className="flex items-center gap-2 text-sm">
+                <span className="w-24 text-klenny-muted">Policy</span>
+                <select
+                  className="px-2 py-1 bg-klenny-bg border border-klenny-border rounded text-sm"
+                  value={settings.browserAutomation.policy}
+                  onChange={(e) =>
+                    void patch({
+                      browserAutomation: { ...settings.browserAutomation, policy: e.target.value as typeof settings.browserAutomation.policy }
+                    })
+                  }
+                >
+                  <option value="off">Off — browser tool always fails</option>
+                  <option value="ask">Ask — approve each click/type/etc, with a screenshot preview</option>
+                  <option value="auto">Auto — mutating actions execute immediately</option>
+                </select>
+              </label>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={settings.browserAutomation.allowPrivateNetwork}
+                  onChange={(e) =>
+                    void patch({
+                      browserAutomation: { ...settings.browserAutomation, allowPrivateNetwork: e.target.checked }
+                    })
+                  }
+                />
+                Allow private network access (interactive sessions — needed for local dev servers)
+              </label>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={settings.browserAutomation.allowPrivateNetworkUnattended}
+                  onChange={(e) =>
+                    void patch({
+                      browserAutomation: { ...settings.browserAutomation, allowPrivateNetworkUnattended: e.target.checked }
+                    })
+                  }
+                />
+                Allow private network access for subagent/scheduled-task sessions (stricter — off by default)
+              </label>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={settings.browserAutomation.allowEvaluate}
+                  onChange={(e) =>
+                    void patch({
+                      browserAutomation: { ...settings.browserAutomation, allowEvaluate: e.target.checked }
+                    })
+                  }
+                />
+                <span>
+                  Allow JavaScript evaluation in the page{' '}
+                  <span className="text-yellow-500" title="Runs arbitrary agent-generated JS in the page context. Never available to subagents regardless of this setting.">
+                    ⚠️
+                  </span>
+                </span>
+              </label>
+
+              <label className="flex items-center gap-2 text-sm">
+                <span className="w-40 text-klenny-muted">Browser executable path</span>
+                <input
+                  className="flex-1 px-2 py-1 bg-klenny-bg border border-klenny-border rounded text-sm"
+                  placeholder="Leave blank to use Playwright's bundled Chromium"
+                  value={settings.browserAutomation.browserExecutablePath ?? ''}
+                  onChange={(e) =>
+                    void patch({
+                      browserAutomation: { ...settings.browserAutomation, browserExecutablePath: e.target.value || null }
+                    })
+                  }
+                />
+              </label>
+
+              <label className="flex items-center gap-2 text-sm">
+                <span className="w-40 text-klenny-muted">Max concurrent sessions</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={10}
+                  className="w-20 px-2 py-1 bg-klenny-bg border border-klenny-border rounded text-sm"
+                  value={settings.browserAutomation.maxConcurrentSessions}
+                  onChange={(e) =>
+                    void patch({
+                      browserAutomation: {
+                        ...settings.browserAutomation,
+                        maxConcurrentSessions: Math.min(10, Math.max(1, Number(e.target.value) || 1))
+                      }
+                    })
+                  }
+                />
+              </label>
+            </div>
+          </section>
         </div>
 
         <div ref={backgroundRef} data-section-id="background" className="mb-8 border-t border-klenny-border pt-6">

@@ -15,6 +15,7 @@ import type {
   ToolName,
   ToolResultPayload
 } from '@shared/types'
+import { DEFAULT_BROWSER_AUTOMATION } from '@shared/types'
 import { getApiKey, loadSettings } from '../settings'
 import { getWorkspace, setWorkspace } from '../workspace'
 import { listKnownProjects } from '../projectsRegistry'
@@ -38,6 +39,8 @@ import {
   fetchUrlTool,
   resolveWorkspacePath
 } from './tools/index'
+import { browserTool, isBrowserActionMutating, buildBrowserApprovalPreview } from './tools/browser'
+import { disposeSession as disposeBrowserSession } from '../browser/manager'
 import {
   listProjectsTool,
   readOtherProjectFileTool,
@@ -155,6 +158,10 @@ export function clearTabState(tabId: string): void {
   abortControllers.delete(tabId)
   endedTurns.delete(tabId)
   activeRuns.delete(tabId)
+
+  // Best-effort — don't let a slow/failed browser teardown block tab close. No-op if this tab
+  // never used the browser tool (disposeSession() checks the session map first).
+  void disposeBrowserSession(tabId).catch(() => {})
 }
 
 function emitToAll(event: AgentStreamEvent): void {
@@ -580,8 +587,10 @@ async function agentLoop(
         signal,
         subagentDepth,
         models,
+        assistantId,
         subagentCtx,
-        settings.shellId
+        settings.shellId,
+        settings.browserAutomation
       )
     )
   )
@@ -638,8 +647,10 @@ async function executeTool(
   signal: AbortSignal,
   subagentDepth: number,
   models: ModelInfo[],
+  assistantMessageId: string,
   subagentCtx?: SubagentContext,
-  shellId?: string | null
+  shellId?: string | null,
+  browserAutomation?: import('@shared/types').BrowserAutomationSettings
 ): Promise<{ payload: ToolResultPayload; status: ToolCallBlock['status'] }> {
   let args: Record<string, unknown> = {}
   try {
@@ -701,8 +712,66 @@ async function executeTool(
     }
   }
 
+  // Browser automation has its own independent gate — separate from the tab's approvalMode —
+  // driven by Settings -> Automation -> Browser automation's policy ('off'/'ask'/'auto'). Owner
+  // id is the tab id for interactive runs; subagents get their own ephemeral tab id (sub_<runId>
+  // / sched_<taskId>_<ts>, see runSubagent/runScheduledTask) so their browser sessions never
+  // collide with the parent tab's.
+  if (name === 'browser') {
+    const policy = browserAutomation?.policy ?? 'off'
+    if (policy === 'off') {
+      return {
+        payload: {
+          ok: false,
+          summary: 'Browser automation is disabled — enable it in Settings \u2192 Automation \u2192 Browser automation.',
+          error: 'browser_disabled'
+        },
+        status: 'error'
+      }
+    }
+    const browserAction = String(args.action ?? '')
+    if (isBrowserActionMutating(browserAction)) {
+      // Subagents have no UI to answer an approval prompt — same reasoning as
+      // effectiveApprovalMode forcing 'auto' for the other mutating tools above, this bypasses
+      // the queue rather than hanging forever. Policy='off' already blocked above regardless.
+      const needsApproval = !subagentCtx && policy === 'ask'
+      if (needsApproval) {
+        const previewCtx = { ownerId: tab.id, unattended: false, settings: browserAutomation! }
+        const preview = await buildBrowserApprovalPreview(args, previewCtx)
+        const action = approvalManager.buildPendingFromTool(tab.id, tc.id, 'browser_act', preview.title, {
+          screenshotDataUrl: preview.screenshotDataUrl
+        })
+        emit({ type: 'pending_action', tabId: tab.id, action })
+        const decision = await approvalManager.waitForDecision(action.id)
+        emit({ type: 'pending_action_resolved', tabId: tab.id, actionId: action.id })
+        if (decision === 'reject') {
+          return { payload: { ok: false, summary: 'User rejected action', error: 'rejected' }, status: 'rejected' }
+        }
+      }
+    }
+  }
+
   try {
-    const payload = await dispatchTool(name, args, tab, apiKey, subagentModel, emit, signal, subagentDepth, models, shellId)
+    // Only the browser tool's one-time Chromium download uses this today — cosmetic progress
+    // for a still-`running` tool call, never affecting status. See `tool_call_progress` in
+    // shared/types.ts.
+    const onToolProgress = (message: string) =>
+      emit({ type: 'tool_call_progress', tabId: tab.id, messageId: assistantMessageId, toolCallId: tc.id, message })
+    const payload = await dispatchTool(
+      name,
+      args,
+      tab,
+      apiKey,
+      subagentModel,
+      emit,
+      signal,
+      subagentDepth,
+      models,
+      shellId,
+      Boolean(subagentCtx),
+      browserAutomation,
+      onToolProgress
+    )
     return { payload, status: payload.ok ? 'success' : 'error' }
   } catch (e) {
     return {
@@ -722,7 +791,10 @@ async function dispatchTool(
   signal: AbortSignal,
   subagentDepth: number,
   models: ModelInfo[],
-  shellId?: string | null
+  shellId?: string | null,
+  unattended = false,
+  browserAutomation?: import('@shared/types').BrowserAutomationSettings,
+  onToolProgress?: (message: string) => void
 ): Promise<ToolResultPayload> {
   switch (name) {
     case 'read_file':
@@ -855,6 +927,13 @@ async function dispatchTool(
       await scheduledTaskManager.delete(String(args.id))
       return { ok: true, summary: 'Scheduled task deleted' }
     }
+    case 'browser':
+      return browserTool(args, {
+        ownerId: tab.id,
+        unattended,
+        settings: browserAutomation ?? DEFAULT_BROWSER_AUTOMATION,
+        onProgress: onToolProgress
+      })
     default:
       return { ok: false, summary: `Unknown tool ${name}`, error: 'unknown' }
   }
@@ -927,6 +1006,11 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       return 'Updating a scheduled task'
     case 'scheduler_delete_task':
       return 'Deleting a scheduled task'
+    case 'browser': {
+      const browserAction = str(args.action) ?? 'browse'
+      const target = str(args.url) ?? (str(args.ref) ? `element ${str(args.ref)}` : undefined)
+      return `Browser: ${browserAction}${target ? ` (${target})` : ''}`
+    }
     default:
       return `Running ${toolName}`
   }
@@ -1042,6 +1126,10 @@ async function runSubagent(
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
     emit({ type: 'turn_end', tabId: subTab.id })
     return { ok: false, summary: run.summary, error: 'subagent_error' }
+  } finally {
+    // Ephemeral per-run session — dispose it whether the subagent finished, errored, or was
+    // aborted, so a subagent that used the browser tool never leaves a Chromium process behind.
+    void disposeBrowserSession(subTab.id).catch(() => {})
   }
 }
 
@@ -1142,6 +1230,7 @@ export async function runScheduledTask(
     summary = e instanceof Error ? e.message : String(e)
   } finally {
     setWorkspace(previousWorkspace)
+    void disposeBrowserSession(subTab.id).catch(() => {})
   }
 
   const summaryPreview = truncateSummary(summary)

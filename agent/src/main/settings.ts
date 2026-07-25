@@ -7,6 +7,7 @@ import {
   DEFAULT_SUBAGENT_MODEL,
   DEFAULT_UTILITY_MODEL,
   DEFAULT_AUTOMATION_PERMISSIONS,
+  DEFAULT_BROWSER_AUTOMATION,
   BRAND_NAME_MAX_LENGTH
 } from '@shared/types'
 import { hasCustomIcon, hasCustomRunningGif } from './branding'
@@ -40,6 +41,7 @@ const DEFAULTS: AppSettings = {
   discordBotTag: null,
   lastDiscordConnectionError: null,
   automationPermissions: DEFAULT_AUTOMATION_PERMISSIONS,
+  browserAutomation: DEFAULT_BROWSER_AUTOMATION,
   schedulerEnabled: true,
   minimizeToTray: true,
   startOnLogin: false,
@@ -76,6 +78,7 @@ export async function loadSettings(): Promise<AppSettings> {
       ...DEFAULTS,
       ...parsed,
       automationPermissions: { ...DEFAULT_AUTOMATION_PERMISSIONS, ...parsed.automationPermissions },
+      browserAutomation: { ...DEFAULT_BROWSER_AUTOMATION, ...parsed.browserAutomation },
       hasApiKey: await hasApiKey(),
       hasPineconeKey: await hasPineconeKey(),
       hasGmailToken: await hasGmailToken(),

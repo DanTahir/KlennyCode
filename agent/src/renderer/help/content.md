@@ -108,6 +108,26 @@ handle X") rather than exact keyword matches, complementing `grep`/`glob` rather
 - Switching embeddings models triggers a full rebuild (old vectors aren't compatible with a new model's vector
   space). "Rebuild index" and "Delete index" are available in Settings if you need to reset things manually.
 
+## Browser automation (beta)
+
+Optional, off by default. When enabled in Settings → Automation, the agent gets a `browser` tool for local,
+Playwright-driven browser control: navigate, click, type, fill forms, take screenshots, and read a structured
+snapshot of the page — useful for testing a web app, checking a live site, or filling in a form for you.
+
+- **Policy** (Off / Ask / Auto) is independent of your tab's approval-mode dropdown — it only governs browser
+  actions. "Ask" shows a screenshot preview before any action that changes page state (click, type, submit, etc.);
+  "Auto" lets the agent act without prompting.
+- **First use downloads Chromium** — Klenny Code doesn't ship a bundled browser; the very first browser session
+  (ever, across the whole app) downloads Chromium once, roughly 150 MB, showing live progress next to the tool
+  call in chat. This needs an internet connection and a minute or two; every session after that reuses the
+  cached download instantly.
+- **Safety defaults**: runs headless-off (you can watch it) for interactive chats but always headless for
+  subagents/scheduled tasks; raw JavaScript execution (`evaluate`) is off by default and never available to
+  subagents; private-network/localhost access defaults on for interactive use but off for unattended runs; cloud
+  metadata endpoints are always blocked.
+- You can point `browserExecutablePath` in Settings at an already-installed Chrome/Edge/Brave instead of using
+  Playwright's Chromium, skipping the download entirely.
+
 ## Tabs
 
 Use **+** or `Ctrl+T` for a new chat tab. `Ctrl+W` closes the active tab. Closing the last tab opens a fresh one.

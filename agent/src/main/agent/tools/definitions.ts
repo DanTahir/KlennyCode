@@ -540,6 +540,53 @@ export function getToolDefinitions(
           required: ['id']
         }
       }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'browser',
+        description:
+          "Local Playwright-driven browser automation, multiplexed by `action`. Gated by Settings -> Automation -> Browser automation: policy 'off' blocks every action, 'ask' queues mutating actions (click/type/fill/select/press_key/scroll/drag/submit/evaluate) for user approval with a screenshot preview, 'auto' executes them immediately. Read-only actions (open/close/list_tabs/navigate/snapshot/screenshot) never need approval as long as the policy isn't 'off'. Workflow: open a tab, navigate, then snapshot before acting — the snapshot returns an accessibility-tree-like list of interactive elements each tagged with a stable ref like 'e3'; pass that ref (not a CSS selector) to click/type/fill/select/press_key/scroll/drag/submit. Re-snapshot after any navigation or significant DOM change before reusing old refs, since they can go stale. Use screenshot sparingly (it costs real tokens) — prefer snapshot for deciding what to do next, and screenshot mainly to visually confirm a result or read something not well captured as text. evaluate (raw JS in the page) is disabled by default and never available to subagents. For logins, 2FA, CAPTCHAs, or anything requiring a human's judgment, stop and use ask_question rather than trying to power through.",
+        parameters: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: [
+                'open',
+                'close',
+                'list_tabs',
+                'navigate',
+                'snapshot',
+                'screenshot',
+                'click',
+                'type',
+                'fill',
+                'select',
+                'press_key',
+                'scroll',
+                'drag',
+                'submit',
+                'evaluate',
+                'wait_for'
+              ]
+            },
+            tab: { type: 'string', description: 'Agent-chosen label for the browser tab (defaults to "main"). Use distinct labels to work with multiple tabs in the same session.' },
+            url: { type: 'string', description: 'Used by navigate (and optionally open, to navigate immediately after creating the tab).' },
+            ref: { type: 'string', description: 'Element ref from the most recent snapshot (e.g. "e3"). Required by click/type/fill/select/press_key/drag/submit; optional scoping hint for scroll.' },
+            text: { type: 'string', description: 'Used by type/fill (text to enter) and submit (optional text to fill before submitting).' },
+            value: { type: 'string', description: 'Option value/label used by select.' },
+            key: { type: 'string', description: 'Key name used by press_key, e.g. "Enter", "Escape", "Tab".' },
+            dx: { type: 'number', description: 'Horizontal scroll delta in pixels, used by scroll.' },
+            dy: { type: 'number', description: 'Vertical scroll delta in pixels, used by scroll.' },
+            targetRef: { type: 'string', description: 'Destination element ref used by drag.' },
+            code: { type: 'string', description: 'JavaScript to run in the page, used by evaluate. Disabled unless explicitly enabled in Settings.' },
+            selector: { type: 'string', description: 'Optional CSS selector used by wait_for instead of a ref.' },
+            timeout_ms: { type: 'number', description: 'Timeout for wait_for, in milliseconds (default 5000).' }
+          },
+          required: ['action']
+        }
+      }
     }
   ]
 
@@ -594,7 +641,8 @@ export function getToolDefinitions(
     'scheduler_create_task',
     'scheduler_list_tasks',
     'scheduler_update_task',
-    'scheduler_delete_task'
+    'scheduler_delete_task',
+    'browser'
   ])
 
   const allowed = mode === 'plan' ? planAllowed : agentAllowed

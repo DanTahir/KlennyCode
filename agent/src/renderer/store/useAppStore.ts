@@ -230,6 +230,21 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ tabs })
         break
       }
+      case 'tool_call_progress': {
+        const tabs = state.tabs.map((t) => {
+          if (t.id !== e.tabId) return t
+          const messages = t.messages.map((m) => {
+            if (m.id !== e.messageId) return m
+            const blocks = m.blocks.map((b) =>
+              b.type === 'tool_call' && b.id === e.toolCallId ? { ...b, progressMessage: e.message } : b
+            )
+            return { ...m, blocks }
+          })
+          return { ...t, messages }
+        })
+        set({ tabs })
+        break
+      }
       case 'tool_call_result': {
         // Look up the original block before we overwrite it, so we know which tool this was.
         const sourceTab = state.tabs.find((t) => t.id === e.tabId)
