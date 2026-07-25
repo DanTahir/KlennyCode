@@ -64,31 +64,46 @@ export function computeCacheSavings(
  * Shapes an outgoing messages array to add Anthropic/Qwen-style explicit `cache_control`
  * breakpoints: one on the system message (stable, reused every turn) and one on the last
  * content part of the last message (advances forward each turn, per Anthropic's recommended
- * multi-turn caching pattern). No-op (returns the same array) when `enabled` is false.
+ * multi-turn caching pattern). Cache-marking is skipped entirely (no-op) when `enabled` is false.
  *
  * `includeLastMessageBreakpoint` should be false on the very first request of a
  * conversation/subagent run, since there's nothing yet to read back from a cache write.
+ *
+ * `trailingNote`, if given, is appended as a brand-new, uncached content part *after* everything
+ * else in the last message (after any cache_control marker it just received) — see the doc
+ * comment above `appendTrailingNotePart` for why it must live there and nowhere earlier. Applies
+ * regardless of `enabled`: implicit-cache providers (OpenAI, Gemini, ...) benefit from the same
+ * "keep dynamic content at the very tail" placement even without explicit cache_control.
  */
 export function applyCacheControl(
   messages: ChatMessage[],
   enabled: boolean,
-  includeLastMessageBreakpoint: boolean
+  includeLastMessageBreakpoint: boolean,
+  trailingNote?: string
 ): ChatMessage[] {
-  if (!enabled || messages.length === 0) return messages
+  if (messages.length === 0) return messages
+  if (!enabled && !trailingNote) return messages
 
   const out = messages.map((m) => ({ ...m }))
 
-  const systemIdx = out.findIndex((m) => m.role === 'system')
-  if (systemIdx >= 0) {
-    out[systemIdx] = withCacheControlOnLastPart(out[systemIdx])
+  if (enabled) {
+    const systemIdx = out.findIndex((m) => m.role === 'system')
+    if (systemIdx >= 0) {
+      out[systemIdx] = withCacheControlOnLastPart(out[systemIdx])
+    }
+
+    if (includeLastMessageBreakpoint) {
+      const lastIdx = out.length - 1
+      // Avoid double-marking if the system message is also the last message (single-message request)
+      if (lastIdx !== systemIdx) {
+        out[lastIdx] = withCacheControlOnLastPart(out[lastIdx])
+      }
+    }
   }
 
-  if (includeLastMessageBreakpoint) {
+  if (trailingNote) {
     const lastIdx = out.length - 1
-    // Avoid double-marking if the system message is also the last message (single-message request)
-    if (lastIdx !== systemIdx) {
-      out[lastIdx] = withCacheControlOnLastPart(out[lastIdx])
-    }
+    out[lastIdx] = appendTrailingNotePart(out[lastIdx], trailingNote)
   }
 
   return out
@@ -100,6 +115,26 @@ function withCacheControlOnLastPart(message: ChatMessage): ChatMessage {
   const lastIdx = parts.length - 1
   const updatedParts = parts.map((p, i) => (i === lastIdx ? { ...p, cache_control: { type: 'ephemeral' as const } } : p))
   return { ...message, content: updatedParts }
+}
+
+/**
+ * Appends `note` as a brand-new, un-cache-controlled content part at the very end of `message`
+ * (after any cache_control marker already applied above). This must be the LAST thing in the
+ * entire request, structurally after both cache breakpoints — not folded into the system prompt,
+ * and not merged into the existing last-message content — because a `cache_control` breakpoint
+ * caches everything only up to and including the block it's on; content appended *after* that
+ * block rides along uncached without touching the cached hash at all. That's exactly what a
+ * live, per-request-changing value (e.g. current date/time) needs: whichever message is "last"
+ * this turn keeps an identical, byte-for-byte-stable cached prefix (its real content, marked),
+ * and once history grows and this message is no longer last, it's replayed with that exact same
+ * stable content — the note was never part of it. Folding a changing value into the system
+ * prompt, or merging it into the last message's own content instead of appending after the
+ * marker, would instead poison every subsequent breakpoint's hash chain (the actual bug this
+ * fixes — see the "current date/time" regression tests in caching.test.ts).
+ */
+function appendTrailingNotePart(message: ChatMessage, note: string): ChatMessage {
+  const parts = toContentParts(message.content)
+  return { ...message, content: [...parts, { type: 'text', text: note }] }
 }
 
 function toContentParts(content: ChatMessage['content']): ContentPart[] {

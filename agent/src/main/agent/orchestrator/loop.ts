@@ -160,12 +160,7 @@ export async function agentLoop(
   }
 
   const systemPrompt = await buildSystemPrompt(tab.mode, settings.shellId)
-  const orMessages = toORMessages(
-    messagesForWire(tab.messages, tab.compactedThroughMessageId),
-    systemPrompt,
-    tab.compactionSummary,
-    buildCurrentTimeNote()
-  )
+  const orMessages = toORMessages(messagesForWire(tab.messages, tab.compactedThroughMessageId), systemPrompt, tab.compactionSummary)
 
   // Computed from tab.messages before the new (empty) assistant message is pushed below, so
   // the heuristic only ever looks at genuinely prior turns.
@@ -223,7 +218,8 @@ export async function agentLoop(
     providerPreference: settings.providerPreference,
     supportsExplicitCaching,
     includeLastMessageCacheBreakpoint,
-    maxTokens: modelInfo.maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS
+    maxTokens: modelInfo.maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS,
+    currentTimeNote: buildCurrentTimeNote()
   })) {
     if (signal.aborted) break
     if (chunk.type === 'text' && chunk.text) {

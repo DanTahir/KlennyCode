@@ -153,11 +153,17 @@ export async function* streamChatCompletion(opts: {
   /** explicit output token cap, sized generously off the model's own reported max — reduces how
    *  often generations get cut off mid-response/mid-tool-call by provider defaults */
   maxTokens?: number
+  /** live, per-request-changing context (e.g. current date/time) — appended as an uncached
+   *  trailing part after the last message's own (possibly cache-marked) content. Must never be
+   *  folded into the system prompt or merged ahead of the cache_control marker: see
+   *  applyCacheControl's doc comment for why that silently defeats caching entirely. */
+  currentTimeNote?: string
 }): AsyncGenerator<StreamChunk> {
   const messages = applyCacheControl(
     opts.messages,
     Boolean(opts.supportsExplicitCaching),
-    opts.includeLastMessageCacheBreakpoint ?? true
+    opts.includeLastMessageCacheBreakpoint ?? true,
+    opts.currentTimeNote
   )
   const body: Record<string, unknown> = {
     model: opts.model,

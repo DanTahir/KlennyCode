@@ -1,8 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { ModelInfo } from '@shared/types'
 import { isExplicitCacheFamily, modelSupportsCaching, computeCacheSavings, applyCacheControl } from '../src/main/openrouter/caching'
-import type { ChatMessage } from '../src/main/openrouter/client'
-import { toORMessages } from '../src/main/agent/messages'
+import type { ChatMessage, ContentPart } from '../src/main/openrouter/client'
 
 describe('isExplicitCacheFamily', () => {
   test('anthropic models need explicit cache_control', () => {
@@ -141,24 +140,57 @@ describe('applyCacheControl', () => {
     expect(last.content).toBe(messages[3].content)
   })
 
-  // Regression test for the "current date/time" bug: the live timestamp note used to be baked
-  // into the cached system prompt itself, so its content (and thus the cache_control-marked
-  // block) changed on literally every request, never actually hitting the cache. It must now
-  // arrive as its own uncached system message so the real static prefix stays byte-identical
-  // (and therefore cacheable) across calls even as the clock ticks forward.
-  test('a per-request-changing currentTimeNote does not change the cached system block', () => {
-    const wire = [{ id: 'u1', role: 'user' as const, blocks: [{ type: 'text' as const, text: 'hi' }], createdAt: 0 }]
-    const orA = toORMessages(wire, 'STATIC SYSTEM PROMPT', undefined, 'Current date/time: 12:00:00')
-    const orB = toORMessages(wire, 'STATIC SYSTEM PROMPT', undefined, 'Current date/time: 12:00:01')
+  test('trailingNote is appended as a new, uncached part after the last message\'s own (marked) content', () => {
+    const out = applyCacheControl(messages, true, true, 'Current date/time: 12:00:00')
+    const last = out[out.length - 1]
+    expect(Array.isArray(last.content)).toBe(true)
+    const parts = last.content as ContentPart[]
+    expect(parts.length).toBe(2)
+    // The real content keeps the cache_control marker...
+    expect(parts[0]).toEqual({ type: 'text', text: 'How are you?', cache_control: { type: 'ephemeral' } })
+    // ...and the note trails after it, unmarked.
+    expect(parts[1]).toEqual({ type: 'text', text: 'Current date/time: 12:00:00' })
+  })
 
-    const cachedA = applyCacheControl(orA, true, true)
-    const cachedB = applyCacheControl(orB, true, true)
+  test('trailingNote is still appended even when explicit caching is disabled (implicit-cache models still want it at the tail)', () => {
+    const out = applyCacheControl(messages, false, true, 'Current date/time: 12:00:00')
+    const last = out[out.length - 1]
+    const parts = last.content as ContentPart[]
+    expect(parts[parts.length - 1]).toEqual({ type: 'text', text: 'Current date/time: 12:00:00' })
+    // System message must stay untouched (no cache_control) since caching is disabled.
+    expect(out[0].content).toBe(messages[0].content)
+  })
 
-    // The cache-control-marked system block (index 0) must be identical across both requests...
-    expect(cachedA[0]).toEqual(cachedB[0])
-    // ...even though the two requests were built with a different live time note, which is left
-    // as a plain, untouched (uncached) system message rather than being folded into index 0.
-    expect(orA[1].content).not.toBe(orB[1].content)
-    expect(cachedA[1]).toEqual(orA[1])
+  // Regression test for the real "current date/time" bug: a live, per-request-changing value
+  // was being placed BEFORE the growing conversation (either folded into the system prompt, or
+  // even just as a separate early system message ahead of the messages array). Since a
+  // cache_control breakpoint's hash covers the *entire* prefix up to and including it, anything
+  // dynamic sitting earlier in that prefix poisons every breakpoint that follows — so only the
+  // system block ever cached, and the growing history never did. The fix appends the note strictly
+  // AFTER the last message's own cache_control marker, so it never becomes part of any cached
+  // prefix. This test simulates two consecutive turns (same history, new trailing message, only
+  // the live note differs) and asserts everything up to the newest message — including the
+  // *previous* turn's cache breakpoint — stays byte-for-byte identical.
+  test('a per-request-changing trailingNote never alters the growing, cacheable conversation prefix across turns', () => {
+    const turn2Messages: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi there!' },
+      { role: 'user', content: 'How are you?' }
+    ]
+
+    const outA = applyCacheControl(turn2Messages, true, true, 'Current date/time: 12:00:00')
+    const outB = applyCacheControl(turn2Messages, true, true, 'Current date/time: 12:05:00')
+
+    // Everything up through the second-to-last message (i.e. what turn 3 would replay as
+    // untouched history) is completely unaffected by the live note.
+    expect(outA.slice(0, -1)).toEqual(outB.slice(0, -1))
+
+    // Even on the shared last message, the actual cache-marked content is identical between the
+    // two requests — only the trailing, uncached note differs.
+    const partsA = outA[outA.length - 1].content as ContentPart[]
+    const partsB = outB[outB.length - 1].content as ContentPart[]
+    expect(partsA[0]).toEqual(partsB[0])
+    expect(partsA[1]).not.toEqual(partsB[1])
   })
 })
