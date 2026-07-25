@@ -1,0 +1,333 @@
+import { readFile, writeFile, unlink, stat, mkdir } from 'node:fs/promises'
+import { dirname, resolve, isAbsolute } from 'node:path'
+import type { ToolResultPayload } from '@shared/types'
+import { buildEditNotFoundHelp, countOccurrences, resolveEditMatch } from './edit-match'
+import { detectEol, fromLf, toLf, type Eol } from './eol'
+import { makeDiff } from './diff'
+import { assertInWorkspace, getWorkspace } from '../../workspace'
+
+// `content` in this cache is always normalized to LF, regardless of the file's on-disk
+// EOL style or the machine's `core.autocrlf` setting — see ./eol.ts. This keeps matching,
+// line numbering, and diffing consistent no matter how the file (or model output) is
+// line-ended; the original EOL style is restored when writing back to disk.
+const fileReadCache = new Map<string, { mtimeMs: number; content: string }>()
+
+export function resolveWorkspacePath(relOrAbs: string): string {
+  if (typeof relOrAbs !== 'string' || relOrAbs.length === 0) {
+    // Guards against a malformed tool call (e.g. a batch edit missing/nulling `path`) crashing
+    // with a raw TypeError from node:path — throw a clean, catchable Error instead so callers
+    // (multi_edit's preview + real run in particular) can turn it into a normal tool error
+    // rather than an unhandled exception that kills the whole agent turn.
+    throw new Error(`Invalid path: expected a non-empty string, got ${JSON.stringify(relOrAbs)}`)
+  }
+  const ws = getWorkspace()
+  if (!ws) throw new Error('No workspace open.')
+  return isAbsolute(relOrAbs) ? resolve(relOrAbs) : resolve(ws, relOrAbs)
+}
+
+export async function readFileTool(args: { path: string; offset?: number; limit?: number }): Promise<ToolResultPayload> {
+  const abs = resolveWorkspacePath(args.path)
+  if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  const raw = await readFile(abs, 'utf8')
+  const content = toLf(raw)
+  const st = await stat(abs)
+  fileReadCache.set(abs, { mtimeMs: st.mtimeMs, content })
+  const lines = content.split('\n')
+  const offset = Math.max(1, args.offset ?? 1)
+  const limit = args.limit ?? lines.length
+  const slice = lines.slice(offset - 1, offset - 1 + limit)
+  const numbered = slice.map((l, i) => `${offset + i}|${l}`).join('\n')
+  return { ok: true, summary: `Read ${args.path} (${slice.length} lines)`, data: { path: args.path, content: numbered } }
+}
+
+export async function writeFileTool(args: { path: string; content: string }): Promise<ToolResultPayload> {
+  const abs = resolveWorkspacePath(args.path)
+  if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  let oldRaw = ''
+  let hadExisting = false
+  try {
+    oldRaw = await readFile(abs, 'utf8')
+    hadExisting = true
+  } catch {
+    // new file
+  }
+  // Preserve the existing file's EOL convention (default to LF for new files) so we don't
+  // rewrite an entire CRLF file to LF (or vice versa) just because the model's content
+  // string happens to use a different style. Model output is normalized to LF first.
+  const eol = hadExisting ? detectEol(oldRaw) : '\n'
+  const normalized = toLf(args.content)
+  const finalContent = fromLf(normalized, eol)
+  await mkdir(dirname(abs), { recursive: true })
+  await writeFile(abs, finalContent, 'utf8')
+  const st = await stat(abs)
+  fileReadCache.set(abs, { mtimeMs: st.mtimeMs, content: normalized })
+  return {
+    ok: true,
+    summary: `Wrote ${args.path}`,
+    data: { path: args.path, diff: makeDiff(toLf(oldRaw), normalized, args.path) }
+  }
+}
+
+export async function editFileTool(args: {
+  path: string
+  old_string: string
+  new_string: string
+  replace_all?: boolean
+}): Promise<ToolResultPayload> {
+  const abs = resolveWorkspacePath(args.path)
+  if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  const raw = await readFile(abs, 'utf8')
+  const eol = detectEol(raw)
+  const content = toLf(raw)
+  const cached = fileReadCache.get(abs)
+  const st = await stat(abs)
+  if (cached && cached.mtimeMs !== st.mtimeMs) {
+    return {
+      ok: false,
+      summary: 'File changed on disk since last read',
+      error: 'stale',
+      data: { path: args.path, hint: 'Call read_file again, then retry edit_file with the exact text shown.' }
+    }
+  }
+
+  const match = resolveEditMatch(content, args.old_string, args.new_string)
+  if (!match) {
+    return {
+      ok: false,
+      summary: 'old_string not found',
+      error: 'not_found',
+      data: { path: args.path, ...buildEditNotFoundHelp(content, args.old_string) }
+    }
+  }
+
+  const count = countOccurrences(content, match.oldString)
+  if (!args.replace_all && count > 1) {
+    return {
+      ok: false,
+      summary: `old_string appears ${count} times; use replace_all or provide more context`,
+      error: 'ambiguous',
+      data: { path: args.path, occurrences: count }
+    }
+  }
+  const next = args.replace_all
+    ? content.replaceAll(match.oldString, match.newString)
+    : content.replace(match.oldString, match.newString)
+  // Write back using the file's original EOL style so we don't churn the whole file's
+  // line endings on a small edit (which would happen if we always wrote LF-only, and
+  // would produce a noisy diff/unwanted git changes when core.autocrlf converts on checkout).
+  await writeFile(abs, fromLf(next, eol), 'utf8')
+  const st2 = await stat(abs)
+  fileReadCache.set(abs, { mtimeMs: st2.mtimeMs, content: next })
+  return {
+    ok: true,
+    summary: args.replace_all ? `Edited ${args.path} (${count} replacements)` : `Edited ${args.path}`,
+    data: { path: args.path, diff: makeDiff(content, next, args.path), replacements: count }
+  }
+}
+
+export interface MultiEditOp {
+  path: string
+  old_string: string
+  new_string: string
+  replace_all?: boolean
+}
+
+interface PlannedFileEdit {
+  path: string
+  abs: string
+  eol: Eol
+  oldContent: string
+  newContent: string
+  editCount: number
+}
+
+interface PlanMultiEditError {
+  ok: false
+  index: number
+  path: string
+  summary: string
+  error: string
+  data?: Record<string, unknown>
+}
+
+/** Shared by multiEditFileTool (real run) and the approval preview (dry run): applies every
+ *  edit in `edits`, in order, against in-memory content grouped by file — so edits targeting
+ *  the same file compose (edit #2's old_string can match text produced by edit #1) exactly like
+ *  calling edit_file repeatedly would, but validated as one all-or-nothing batch before any
+ *  file is written. Returns either the per-file plan (nothing written yet) or the first failure
+ *  encountered, with enough context to report which edit/file it was.
+ */
+async function planMultiEdit(
+  edits: MultiEditOp[],
+  checkStale: boolean
+): Promise<{ ok: true; files: PlannedFileEdit[] } | PlanMultiEditError> {
+  const files = new Map<string, PlannedFileEdit>()
+
+  for (let i = 0; i < edits.length; i++) {
+    const op = edits[i]
+    // Defensive validation: a malformed batch entry (missing/wrong-typed field — seen from
+    // models that occasionally drop `path` on a repeated edit to the same file, or send
+    // `edits` double-encoded as a JSON string) must not crash the whole tool call. Report it
+    // as a normal not-ok result the model can see and correct, instead of letting
+    // resolveWorkspacePath/String methods throw a raw, uncaught TypeError further down.
+    if (
+      !op ||
+      typeof op !== 'object' ||
+      typeof op.path !== 'string' ||
+      op.path.length === 0 ||
+      typeof op.old_string !== 'string' ||
+      typeof op.new_string !== 'string'
+    ) {
+      return {
+        ok: false,
+        index: i,
+        path: typeof op?.path === 'string' ? op.path : '',
+        summary: `Malformed edit at index ${i}: each entry needs string "path", "old_string", and "new_string" fields`,
+        error: 'invalid_edit'
+      }
+    }
+
+    const abs = resolveWorkspacePath(op.path)
+    if (!assertInWorkspace(abs)) {
+      return { ok: false, index: i, path: op.path, summary: 'Path outside workspace', error: 'sandbox' }
+    }
+
+    let planned = files.get(abs)
+    if (!planned) {
+      let raw: string
+      try {
+        raw = await readFile(abs, 'utf8')
+      } catch {
+        return { ok: false, index: i, path: op.path, summary: `File not found: ${op.path}`, error: 'not_found' }
+      }
+      if (checkStale) {
+        const cached = fileReadCache.get(abs)
+        const st = await stat(abs)
+        if (cached && cached.mtimeMs !== st.mtimeMs) {
+          return {
+            ok: false,
+            index: i,
+            path: op.path,
+            summary: 'File changed on disk since last read',
+            error: 'stale',
+            data: { path: op.path, hint: 'Call read_file again, then retry multi_edit with the exact text shown.' }
+          }
+        }
+      }
+      const eol = detectEol(raw)
+      const content = toLf(raw)
+      planned = { path: op.path, abs, eol, oldContent: content, newContent: content, editCount: 0 }
+      files.set(abs, planned)
+    }
+
+    const match = resolveEditMatch(planned.newContent, op.old_string, op.new_string)
+    if (!match) {
+      return {
+        ok: false,
+        index: i,
+        path: op.path,
+        summary: `old_string not found (edit ${i + 1} of ${edits.length}, ${op.path})`,
+        error: 'not_found',
+        data: { path: op.path, ...buildEditNotFoundHelp(planned.newContent, op.old_string) }
+      }
+    }
+
+    const count = countOccurrences(planned.newContent, match.oldString)
+    if (!op.replace_all && count > 1) {
+      return {
+        ok: false,
+        index: i,
+        path: op.path,
+        summary: `old_string appears ${count} times in edit ${i + 1} of ${edits.length} (${op.path}); use replace_all or provide more context`,
+        error: 'ambiguous',
+        data: { path: op.path, occurrences: count }
+      }
+    }
+
+    planned.newContent = op.replace_all
+      ? planned.newContent.replaceAll(match.oldString, match.newString)
+      : planned.newContent.replace(match.oldString, match.newString)
+    planned.editCount++
+  }
+
+  return { ok: true, files: [...files.values()] }
+}
+
+export async function multiEditFileTool(args: { edits: MultiEditOp[] }): Promise<ToolResultPayload> {
+  // `edits` should always be an array per the tool schema, but guard against a non-array value
+  // (e.g. a model double-encoding it as a JSON string) rather than silently iterating over the
+  // wrong thing — that previously led to malformed "edits" (string chars, not edit objects)
+  // crashing deep inside planMultiEdit with an uncaught TypeError.
+  const edits = Array.isArray(args.edits) ? args.edits : []
+  if (edits.length === 0) {
+    return { ok: false, summary: 'multi_edit called with no edits', error: 'no_edits' }
+  }
+
+  const plan = await planMultiEdit(edits, true)
+  if (!plan.ok) {
+    return {
+      ok: false,
+      summary: plan.summary,
+      error: plan.error,
+      data: { ...plan.data, path: plan.path, editIndex: plan.index }
+    }
+  }
+
+  // All edits validated in-memory — now write every changed file. Only files whose content
+  // actually changed are touched (a file could theoretically end up unchanged if old_string
+  // === new_string for every edit targeting it).
+  const changed = plan.files.filter((f) => f.newContent !== f.oldContent)
+  const diffs: string[] = []
+  let totalEdits = 0
+  for (const f of changed) {
+    await writeFile(f.abs, fromLf(f.newContent, f.eol), 'utf8')
+    const st = await stat(f.abs)
+    fileReadCache.set(f.abs, { mtimeMs: st.mtimeMs, content: f.newContent })
+    diffs.push(makeDiff(f.oldContent, f.newContent, f.path))
+    totalEdits += f.editCount
+  }
+
+  return {
+    ok: true,
+    summary: `Edited ${changed.length} file${changed.length === 1 ? '' : 's'} (${totalEdits} edit${totalEdits === 1 ? '' : 's'})`,
+    data: {
+      paths: changed.map((f) => f.path),
+      diff: diffs.join('\n'),
+      files: changed.map((f) => ({ path: f.path, diff: makeDiff(f.oldContent, f.newContent, f.path) }))
+    }
+  }
+}
+
+/** Dry-run version of multiEditFileTool used to build the approval-dialog preview — computes
+ *  the same plan and combined diff without touching disk or checking staleness (the user
+ *  hasn't approved anything yet, so we don't want a stale-cache error blocking the preview
+ *  itself; the real staleness check still runs when the tool actually executes post-approval). */
+export async function previewMultiEdit(edits: MultiEditOp[]): Promise<{ paths: string[]; diff?: string }> {
+  const plan = await planMultiEdit(edits, false)
+  if (!plan.ok) {
+    return { paths: [...new Set(edits.map((e) => (typeof e?.path === 'string' ? e.path : '')).filter(Boolean))] }
+  }
+  const changed = plan.files.filter((f) => f.newContent !== f.oldContent)
+  return {
+    paths: changed.map((f) => f.path),
+    diff: changed.map((f) => makeDiff(f.oldContent, f.newContent, f.path)).join('\n')
+  }
+}
+
+export async function deleteFileTool(args: { path: string }): Promise<ToolResultPayload> {
+  const abs = resolveWorkspacePath(args.path)
+  if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  let oldContent = ''
+  try {
+    oldContent = toLf(await readFile(abs, 'utf8'))
+  } catch {
+    return { ok: false, summary: 'File not found', error: 'not_found' }
+  }
+  await unlink(abs)
+  fileReadCache.delete(abs)
+  return {
+    ok: true,
+    summary: `Deleted ${args.path}`,
+    data: { path: args.path, diff: makeDiff(oldContent, '', args.path) }
+  }
+}

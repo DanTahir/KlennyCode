@@ -1,72 +1,75 @@
+// The core, mutually-recursive heart of the orchestrator: agentLoop() streams a model turn and
+// executes any tool calls it makes; one of those tools (`task`) is runSubagent(), which spawns
+// an isolated sub-conversation that itself calls agentLoop() again. executeTool()/dispatchTool()
+// sit in between, gating approval and routing each tool call to its implementation.
+//
+// These four functions (agentLoop, executeTool, dispatchTool, runSubagent) are kept in one file
+// deliberately: agentLoop -> executeTool -> dispatchTool -> (task tool) -> runSubagent ->
+// agentLoop is a genuine recursive cycle inherent to how subagents work, not an artifact of file
+// layout. Splitting them across separate files would create a real circular-import graph across
+// module boundaries, which is worse than one large, clearly-scoped file. If you're adding a new
+// tool handler, prefer adding a case to dispatchTool's switch rather than growing agentLoop or
+// executeTool themselves.
 import { BrowserWindow, Notification } from 'electron'
 import { nanoid } from 'nanoid'
 import type {
   AgentStreamEvent,
   ApprovalMode,
+  BrowserAutomationSettings,
   ChatMessage,
   ContentBlock,
   ModelInfo,
   PendingActionKind,
   PendingQuestion,
-  QuestionAnswer,
+  ScheduledTask,
   SubagentRun,
   TabSession,
   ToolCallBlock,
-  ToolName,
   ToolResultPayload
 } from '@shared/types'
 import { DEFAULT_BROWSER_AUTOMATION } from '@shared/types'
-import { getApiKey, loadSettings } from '../settings'
-import { getWorkspace, setWorkspace } from '../workspace'
-import { listKnownProjects } from '../projectsRegistry'
-import { resolveShell } from '../shells'
-import { sessionStore, appendMessageToWorkspaceTab } from '../session/store'
-import { streamChatCompletion, fetchModels, type ToolCall } from '../openrouter/client'
-import { modelSupportsCaching, computeCacheSavings } from '../openrouter/caching'
-import { getToolDefinitions } from './tools/definitions'
+import { loadSettings } from '../../settings'
+import { getWorkspace } from '../../workspace'
+import { sessionStore } from '../../session/store'
+import { streamChatCompletion, fetchModels, type ToolCall } from '../../openrouter/client'
+import { modelSupportsCaching, computeCacheSavings } from '../../openrouter/caching'
+import { getToolDefinitions } from '../tools/definitions'
 import {
   readFileTool,
   writeFileTool,
   editFileTool,
   multiEditFileTool,
-  previewMultiEdit,
   type MultiEditOp,
   deleteFileTool,
   grepTool,
   globTool,
   runCommandTool,
   webSearchTool,
-  fetchUrlTool,
-  resolveWorkspacePath
-} from './tools/index'
-import { browserTool, isBrowserActionMutating, buildBrowserApprovalPreview } from './tools/browser'
-import { disposeSession as disposeBrowserSession } from '../browser/manager'
+  fetchUrlTool
+} from '../tools/index'
+import { browserTool, isBrowserActionMutating, buildBrowserApprovalPreview } from '../tools/browser'
+import { disposeSession as disposeBrowserSession } from '../../browser/manager'
 import {
   listProjectsTool,
   readOtherProjectFileTool,
   grepOtherProjectTool,
   globOtherProjectTool,
   readOtherProjectMemoryTool
-} from './tools/otherProjects'
-import { readFile } from 'node:fs/promises'
-import { toLf } from './tools/eol'
-import { loadProjectMemory, loadGlobalMemory, loadAutoMemoryIndex, writeMemory, readMemoryTopic } from './memory/manager'
-import { listSkills, readSkill, skillsCatalogPrompt } from './skills/manager'
-import { listSubagentTypes, getSubagentType, subagentsCatalog } from './subagents/manager'
-import { savePlan, buildAgentModePrompt, buildPlanModePrompt } from './plan/manager'
-import { readSoul } from './soul/manager'
-import { approvalManager } from './approval/manager'
-import { maybeCompact } from './compaction/compactor'
-import { makeDiff } from './tools/diff'
-import { resolveEditMatch } from './tools/edit-match'
-import { resolveReasoningEffort } from './reasoning'
-import { toORMessages, messagesForWire } from './messages'
-import { trackDailySpend, getDailySpend } from './spend'
-import { recordUsage } from './costReport'
-import { isIndexActive, searchCode } from './codeindex/manager'
-import { gmailListMessagesTool, gmailGetMessageTool, gmailSendMessageTool } from '../integrations/gmail'
-import { discordPostMessageTool } from '../integrations/discord'
-import { scheduledTaskManager } from '../scheduler/manager'
+} from '../tools/otherProjects'
+import { writeMemory, readMemoryTopic } from '../memory/manager'
+import { listSkills, readSkill } from '../skills/manager'
+import { getSubagentType } from '../subagents/manager'
+import { savePlan } from '../plan/manager'
+import { approvalManager } from '../approval/manager'
+import { maybeCompact } from '../compaction/compactor'
+import { resolveReasoningEffort } from '../reasoning'
+import { toORMessages, messagesForWire } from '../messages'
+import { trackDailySpend } from '../spend'
+import { recordUsage } from '../costReport'
+import { isIndexActive, searchCode } from '../codeindex/manager'
+import { gmailListMessagesTool, gmailGetMessageTool, gmailSendMessageTool } from '../../integrations/gmail'
+import { discordPostMessageTool } from '../../integrations/discord'
+import { scheduledTaskManager } from '../../scheduler/manager'
 import {
   MAX_SUBAGENT_DEPTH,
   MAX_TRUNCATION_RETRIES,
@@ -76,242 +79,12 @@ import {
   isTruncatedEmpty,
   isTruncatedToolCallJson,
   truncateSummary
-} from './turnControl'
+} from '../turnControl'
+import { buildSystemPrompt } from './system-prompt'
+import { previewMutatingTool } from './approval-previews'
+import { type Emit, type LoopStopReason, type SubagentContext, throwIfAborted, pendingQuestions, questionWaiters } from './state'
 
-type Emit = (event: AgentStreamEvent) => void
-
-/** Why a single call to agentLoop stopped recursing. Used by callers (runSubagent, tests) to
- *  distinguish a genuinely finished task from one that stopped early for some other reason —
- *  every one of these (besides 'natural') used to be an indistinguishable silent `return`. */
-type LoopStopReason =
-  | 'natural'
-  | 'aborted'
-  | 'checkpoint'
-  | 'hard_limit'
-  | 'subagent_budget'
-  | 'truncation_failed'
-  | 'error'
-
-const abortControllers = new Map<string, AbortController>()
-const questionWaiters = new Map<string, (answers: QuestionAnswer[]) => void>()
-const pendingQuestions = new Map<string, PendingQuestion>()
-const endedTurns = new Set<string>()
-/** Tracks the in-flight startAgentLoop promise per tab so a new turn (runUserTurn/continueTurn)
- *  can wait for any previous turn on the same tab to fully unwind before touching tab.messages
- *  or starting its own loop — otherwise two agentLoop invocations for the same tab could run
- *  concurrently (e.g. user sends a second message before the first turn's abort is even wired
- *  up), both mutating tab.messages and both calling the model API at the same time. */
-const activeRuns = new Map<string, Promise<void>>()
-
-function endTurn(tabId: string, emit: Emit = emitToAll): void {
-  if (endedTurns.has(tabId)) return
-  endedTurns.add(tabId)
-  emit({ type: 'turn_end', tabId })
-}
-
-function throwIfAborted(signal: AbortSignal): void {
-  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
-}
-
-export function resolveQuestion(questionId: string, answers: QuestionAnswer[]): void {
-  const waiter = questionWaiters.get(questionId)
-  if (waiter) {
-    waiter(answers)
-    questionWaiters.delete(questionId)
-  }
-  pendingQuestions.delete(questionId)
-}
-
-export function stopGeneration(tabId: string): void {
-  abortControllers.get(tabId)?.abort()
-
-  for (const [questionId, question] of pendingQuestions) {
-    if (question.tabId !== tabId) continue
-    resolveQuestion(questionId, [])
-    emitToAll({ type: 'pending_question_resolved', tabId, questionId })
-  }
-
-  for (const action of approvalManager.getPending(tabId)) {
-    emitToAll({ type: 'pending_action_resolved', tabId, actionId: action.id })
-  }
-  approvalManager.cancelForTab(tabId)
-
-  endTurn(tabId)
-}
-
-/** Must be called once a tab is permanently gone (closed) so none of the module-level
- *  per-tab bookkeeping below outlives it. Without this, a tab that's closed while a turn is
- *  in flight (or while a question is pending) leaves its abort controller / ended-turn /
- *  active-run entries in these maps forever, since nothing else ever removes them for a tabId
- *  that no longer exists in the session store — a slow, permanent memory leak in long-running
- *  sessions with many opened/closed tabs. Safe to call for any tabId, including ones with no
- *  in-flight activity.
- *
- *  stopGeneration() already resolves/removes any pending questions and approvals for this tab
- *  as part of aborting it, so this only needs to clean up what stopGeneration itself doesn't:
- *  the abort-controller, ended-turn, and active-run bookkeeping. */
-export function clearTabState(tabId: string): void {
-  // Abort first so any in-flight agentLoop/streaming for this tab stops touching the (now
-  // gone) tab object and its own cleanup in startAgentLoop's finally block gets a chance to run.
-  stopGeneration(tabId)
-
-  abortControllers.delete(tabId)
-  endedTurns.delete(tabId)
-  activeRuns.delete(tabId)
-
-  // Best-effort — don't let a slow/failed browser teardown block tab close. No-op if this tab
-  // never used the browser tool (disposeSession() checks the session map first).
-  void disposeBrowserSession(tabId).catch(() => {})
-}
-
-function emitToAll(event: AgentStreamEvent): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send('agent:stream', event)
-  }
-}
-
-/** Shared wrapper around agentLoop for both a brand-new user turn and a resumed (post-pause)
- *  turn — centralizes abort-controller bookkeeping and error/turn_end handling so runUserTurn
- *  and continueTurn can't drift out of sync with each other. */
-async function startAgentLoop(
-  tab: TabSession,
-  apiKey: string,
-  subagentModel: string,
-  emit: Emit,
-  ac: AbortController
-): Promise<void> {
-  const signal = ac.signal
-  // Only 'natural' (finished normally), 'truncation_failed', and 'error' are genuine end-of-turn
-  // states — 'aborted' means a newer turn preempted this one, and 'checkpoint'/'hard_limit' just
-  // pause the turn waiting for the user to click "Continue", so none of those warrant a
-  // "task finished" notification.
-  let stopReason: LoopStopReason | 'thrown' = 'thrown'
-  try {
-    stopReason = await agentLoop(tab, apiKey, subagentModel, emit, signal)
-  } catch (e) {
-    if (signal.aborted) {
-      stopReason = 'aborted'
-    } else {
-      stopReason = 'thrown'
-      emit({
-        type: 'error',
-        tabId: tab.id,
-        message: e instanceof Error ? e.message : String(e)
-      })
-    }
-  } finally {
-    endTurn(tab.id, emit)
-    const isRealCompletion = stopReason === 'natural' || stopReason === 'error' || stopReason === 'truncation_failed' || stopReason === 'thrown'
-    if (isRealCompletion && !BrowserWindow.getFocusedWindow()) {
-      new Notification({ title: 'Klenny Code task finished', body: tab.title }).show()
-    }
-    // Only clear the bookkeeping if we're still the "current" controller for this tab — a
-    // newer call may have already preempted us (see launchAgentLoop) and installed its own
-    // controller, in which case clearing here would wrongly wipe its state out from under it.
-    if (abortControllers.get(tab.id) === ac) {
-      abortControllers.delete(tab.id)
-      endedTurns.delete(tab.id)
-    }
-  }
-}
-
-/** Entry point every new/resumed turn on a tab must go through. If a previous turn on this tab
- *  is still running, aborts it immediately and waits for it to fully unwind (so it stops
- *  mutating tab.messages / calling the model) before running `beforeStart` (append the new user
- *  message, etc.) and starting the new loop — this is what prevents two agentLoop invocations for
- *  the same tab from ever running concurrently, even if the caller fires a new turn before the
- *  previous one's `message_start` event has round-tripped to the renderer.
- *
- *  Because this is re-entrant (a third call can preempt the second while it's still waiting on
- *  the first), `beforeStart` always runs — every message the user actually sent gets recorded, in
- *  order — but the loop itself is skipped if a *newer* call has since taken over (no point
- *  starting a generation immediately superseded by another already-queued message). */
-async function launchAgentLoop(
-  tab: TabSession,
-  apiKey: string,
-  subagentModel: string,
-  emit: Emit,
-  beforeStart?: () => Promise<void> | void
-): Promise<void> {
-  const previousRun = activeRuns.get(tab.id)
-  abortControllers.get(tab.id)?.abort()
-
-  const ac = new AbortController()
-  abortControllers.set(tab.id, ac)
-  endedTurns.delete(tab.id)
-
-  const run = (async () => {
-    if (previousRun) await previousRun.catch(() => undefined)
-    await beforeStart?.()
-    // If another call has since replaced our controller while we were waiting, bail out
-    // without starting a (redundant, immediately-superseded) generation.
-    if (abortControllers.get(tab.id) !== ac) return
-    await startAgentLoop(tab, apiKey, subagentModel, emit, ac)
-  })()
-  activeRuns.set(tab.id, run)
-  try {
-    await run
-  } finally {
-    if (activeRuns.get(tab.id) === run) activeRuns.delete(tab.id)
-  }
-}
-
-export async function runUserTurn(tabId: string, userText: string, images?: string[]): Promise<void> {
-  const tab = sessionStore.getTab(tabId)
-  if (!tab) return
-
-  const apiKey = await getApiKey()
-  if (!apiKey) {
-    emitToAll({ type: 'error', tabId, message: 'OpenRouter API key not set.' })
-    return
-  }
-
-  const settings = await loadSettings()
-  checkSpendCap(tab, settings.spendingCapUsd, settings.spendingCapPeriod)
-
-  await launchAgentLoop(tab, apiKey, settings.subagentModel, emitToAll, async () => {
-    const userBlocks: ContentBlock[] = [{ type: 'text', text: userText }]
-    if (images?.length) {
-      for (const img of images) userBlocks.push({ type: 'image', dataUrl: img })
-    }
-    const userMsg: ChatMessage = { id: nanoid(), role: 'user', blocks: userBlocks, createdAt: Date.now() }
-    tab.messages.push(userMsg)
-    const titleChanged = tab.title === 'New chat'
-    if (titleChanged) tab.title = userText.slice(0, 40)
-    await sessionStore.updateTab(tab)
-    emitToAll({ type: 'user_message', tabId, message: userMsg })
-    // The 'user_message' event above only carries the new message, not the tab itself, so a
-    // freshly-renamed tab title never reaches the renderer's tab list until some other event
-    // happens to refresh it. Broadcast the updated tab so the title change shows up immediately.
-    if (titleChanged) emitToAll({ type: 'tab_upserted', tab })
-  })
-}
-
-/** Resumes a turn that emitted `turn_paused` (checkpoint step count reached, or the hard safety
- *  ceiling was hit) — continues agentLoop from the existing message state with a fresh step
- *  budget. No new user-message bubble is created. */
-export async function continueTurn(tabId: string): Promise<void> {
-  const tab = sessionStore.getTab(tabId)
-  if (!tab) return
-
-  const apiKey = await getApiKey()
-  if (!apiKey) {
-    emitToAll({ type: 'error', tabId, message: 'OpenRouter API key not set.' })
-    return
-  }
-
-  const settings = await loadSettings()
-  checkSpendCap(tab, settings.spendingCapUsd, settings.spendingCapPeriod)
-
-  await launchAgentLoop(tab, apiKey, settings.subagentModel, emitToAll)
-}
-
-interface SubagentContext {
-  /** tool restriction for this subagent type ('all' = no restriction beyond mode defaults) */
-  allowedTools: ToolName[] | 'all'
-}
-
-async function agentLoop(
+export async function agentLoop(
   tab: TabSession,
   apiKey: string,
   subagentModel: string,
@@ -650,7 +423,7 @@ async function executeTool(
   assistantMessageId: string,
   subagentCtx?: SubagentContext,
   shellId?: string | null,
-  browserAutomation?: import('@shared/types').BrowserAutomationSettings
+  browserAutomation?: BrowserAutomationSettings
 ): Promise<{ payload: ToolResultPayload; status: ToolCallBlock['status'] }> {
   let args: Record<string, unknown> = {}
   try {
@@ -684,7 +457,7 @@ async function executeTool(
     }
     pendingQuestions.set(pq.id, pq)
     emit({ type: 'pending_question', tabId: tab.id, question: pq })
-    const answers = await new Promise<QuestionAnswer[]>((resolve) => questionWaiters.set(pq.id, resolve))
+    const answers = await new Promise<import('@shared/types').QuestionAnswer[]>((resolve) => questionWaiters.set(pq.id, resolve))
     emit({ type: 'pending_question_resolved', tabId: tab.id, questionId: pq.id })
     return {
       payload: { ok: true, summary: 'User answered questions', data: { answers } },
@@ -793,7 +566,7 @@ async function dispatchTool(
   models: ModelInfo[],
   shellId?: string | null,
   unattended = false,
-  browserAutomation?: import('@shared/types').BrowserAutomationSettings,
+  browserAutomation?: BrowserAutomationSettings,
   onToolProgress?: (message: string) => void
 ): Promise<ToolResultPayload> {
   switch (name) {
@@ -1016,7 +789,7 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
   }
 }
 
-async function runSubagent(
+export async function runSubagent(
   parentTab: TabSession,
   apiKey: string,
   defaultSubModel: string,
@@ -1131,370 +904,4 @@ async function runSubagent(
     // aborted, so a subagent that used the browser tool never leaves a Chromium process behind.
     void disposeBrowserSession(subTab.id).catch(() => {})
   }
-}
-
-/** Runs one scheduled task (Phase 4 of the Personal Assistant Platform plan) as a fully
- *  unattended subagent — no parent tab, no live UI to stream to. Registered with
- *  scheduledTaskManager.setRunner() at app startup (see main/index.ts) to avoid a circular
- *  import between this module and scheduler/manager.ts.
- *
- *  Scheduled-task runs never get scheduler_create_task/update/delete in their tool allowlist —
- *  a scheduled task cannot create, edit, or delete other scheduled tasks (no metaprogramming;
- *  see the plan's runaway-cost mitigation). If `task.targetWorkspace` is set, the global
- *  workspace is temporarily switched to it for the duration of the run and restored afterward —
- *  a known limitation: if the user is actively working in a different project tab while a
- *  scheduled task fires, coding-tool calls in *that* live tab could transiently resolve against
- *  the scheduled task's workspace until it finishes. Acceptable for v1; a future version could
- *  give every tab its own workspace instead of one global one. */
-export async function runScheduledTask(
-  task: import('@shared/types').ScheduledTask,
-  isFinalRun: boolean
-): Promise<{ status: 'success' | 'error'; summaryPreview: string }> {
-  const apiKey = await getApiKey()
-  if (!apiKey) return { status: 'error', summaryPreview: 'OpenRouter API key not set.' }
-
-  const settings = await loadSettings()
-  if (settings.automationPermissions['scheduler.run'] !== 'auto') {
-    return { status: 'error', summaryPreview: 'Scheduler is disabled by Automation Permissions (scheduler.run).' }
-  }
-
-  const previousWorkspace = getWorkspace()
-  if (task.targetWorkspace) setWorkspace(task.targetWorkspace)
-
-  const subTab: TabSession = {
-    id: `sched_${task.id}_${Date.now()}`,
-    title: `Scheduled: ${task.name}`,
-    mode: 'agent',
-    model: settings.subagentModel,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    // No targetWorkspace => force the assistant tool-only allowlist regardless of whatever
-    // project happens to be the ambient global workspace right now (see getWorkspace() gating
-    // in the tools: getToolDefinitions(...) call above).
-    kind: task.targetWorkspace ? 'project' : 'assistant',
-    messages: [
-      {
-        id: nanoid(),
-        role: 'user',
-        blocks: [{ type: 'text', text: task.prompt }],
-        createdAt: Date.now()
-      }
-    ],
-    totalCostUsd: 0,
-    totalSavingsUsd: 0
-  }
-
-  const subagentCtx: SubagentContext = {
-    allowedTools: [
-      'read_file',
-      'grep',
-      'glob',
-      'run_command',
-      'web_search',
-      'fetch_url',
-      'read_memory',
-      'write_memory',
-      'list_projects',
-      'read_other_project_file',
-      'grep_other_project',
-      'glob_other_project',
-      'read_other_project_memory',
-      'gmail_list_messages',
-      'gmail_get_message',
-      'gmail_send_message',
-      'discord_post_message',
-      'codebase_search'
-      // Deliberately excluded: write_file/edit_file/delete_file (still permitted via
-      // ApprovalManager bypass same as any subagent, but not the point of most scheduled
-      // tasks — can be revisited if a real use case needs it), scheduler_* (no
-      // metaprogramming), open_settings_panel (no renderer to navigate), task (no nested
-      // subagents, same as all subagent contexts).
-    ]
-  }
-
-  const controller = new AbortController()
-  let status: 'success' | 'error'
-  let summary: string
-  try {
-    const reason = await agentLoop(subTab, apiKey, settings.subagentModel, emitToAll, controller.signal, 1, subagentCtx)
-    summary =
-      subTab.messages
-        .filter((m) => m.role === 'assistant')
-        .flatMap((m) => m.blocks)
-        .filter((b) => b.type === 'text')
-        .map((b) => (b as { text: string }).text)
-        .join('\n') || 'Scheduled task completed with no text output.'
-    status = reason === 'error' || reason === 'truncation_failed' ? 'error' : 'success'
-  } catch (e) {
-    status = 'error'
-    summary = e instanceof Error ? e.message : String(e)
-  } finally {
-    setWorkspace(previousWorkspace)
-    void disposeBrowserSession(subTab.id).catch(() => {})
-  }
-
-  const summaryPreview = truncateSummary(summary)
-  try {
-    await deliverScheduledTaskResult(task, status, summaryPreview, isFinalRun)
-  } catch (e) {
-    console.error('Failed to deliver scheduled task result to its tab:', e)
-  }
-  return { status, summaryPreview }
-}
-
-/** Reports a finished scheduled task's result back into a chat tab, per the following
- *  preference order:
- *   1. The tab that created it (`task.creatorTabId`), if it's still open right now.
- *   2. That same tab restored from History, if it was closed but not deleted from history.
- *   3. A brand-new tab — an Assistant tab if the task has no `targetWorkspace`, otherwise a
- *      project tab in `targetWorkspace`.
- *  Only ever mutates the SessionStore singleton (and emits a live `tab_upserted` event) when the
- *  destination workspace matches whatever workspace the UI currently has loaded — a task firing
- *  for a workspace the user doesn't have open right now is instead patched directly into that
- *  workspace's session/history files on disk (see appendMessageToWorkspaceTab), with no live
- *  event, so it's simply there next time that workspace is opened. Assistant-tab destinations are
- *  always live (Assistant tabs only ever exist in memory, workspace-independent). */
-async function deliverScheduledTaskResult(
-  task: import('@shared/types').ScheduledTask,
-  status: 'success' | 'error',
-  summaryPreview: string,
-  isFinalRun: boolean
-): Promise<void> {
-  const header = status === 'success' ? '✅ **Scheduled task finished:**' : '⚠️ **Scheduled task failed:**'
-  const finalRunNote = isFinalRun
-    ? `\n\n_This was the task's final scheduled run (${task.runCount + 1}/${task.maxRuns}) — it has been removed from the scheduler._`
-    : ''
-  const message: ChatMessage = {
-    id: nanoid(),
-    role: 'assistant',
-    blocks: [{ type: 'text', text: `${header} *${task.name}*\n\n${summaryPreview}${finalRunNote}` }],
-    createdAt: Date.now()
-  }
-
-  // Fallback destination if the creator tab (and its history entry) can no longer be found.
-  const wantsAssistantFallback = !task.targetWorkspace
-  const fallbackTitle = `Scheduled: ${task.name}`
-
-  const creatorIsAssistant = task.creatorTabKind
-    ? task.creatorTabKind === 'assistant'
-    : wantsAssistantFallback
-
-  if (creatorIsAssistant) {
-    // Assistant tabs only ever exist in memory, so the live SessionStore is the only place to
-    // look — if the creator tab is gone, it's gone for good (no history for Assistant tabs).
-    let tab = task.creatorTabId ? sessionStore.getTab(task.creatorTabId) : undefined
-    if (!tab || tab.kind !== 'assistant') {
-      tab = sessionStore.createAssistantTab()
-      tab.title = fallbackTitle
-    }
-    tab.messages.push(message)
-    await sessionStore.updateTab(tab)
-    emitToAll({ type: 'tab_upserted', tab })
-    notifyIfUnfocused(task)
-    return
-  }
-
-  const destinationWorkspace = task.targetWorkspace ?? task.creatorWorkspace
-  if (!destinationWorkspace) {
-    // No workspace to anchor a project tab to (shouldn't normally happen once creatorWorkspace
-    // is populated going forward) — fall back to a fresh Assistant tab so the result isn't lost.
-    const tab = sessionStore.createAssistantTab()
-    tab.title = fallbackTitle
-    tab.messages.push(message)
-    await sessionStore.updateTab(tab)
-    emitToAll({ type: 'tab_upserted', tab })
-    notifyIfUnfocused(task)
-    return
-  }
-
-  if (sessionStore.getWorkspace() === destinationWorkspace) {
-    // The destination workspace is exactly what the UI has loaded right now — safe to use the
-    // live SessionStore so any open window reflects the update immediately.
-    let tab = task.creatorTabId ? sessionStore.getTab(task.creatorTabId) : undefined
-    if (tab) {
-      tab.messages.push(message)
-      await sessionStore.updateTab(tab)
-      emitToAll({ type: 'tab_upserted', tab })
-      notifyIfUnfocused(task)
-      return
-    }
-
-    if (task.creatorTabId && sessionStore.getHistory().some((t) => t.id === task.creatorTabId)) {
-      const reopened = await sessionStore.reopenHistoryEntry(task.creatorTabId)
-      if (reopened) {
-        reopened.messages.push(message)
-        await sessionStore.updateTab(reopened)
-        emitToAll({ type: 'history_entry_removed', tabId: task.creatorTabId })
-        emitToAll({ type: 'tab_upserted', tab: reopened })
-        notifyIfUnfocused(task)
-        return
-      }
-    }
-
-    const created = await sessionStore.createTab()
-    created.title = fallbackTitle
-    created.messages.push(message)
-    await sessionStore.updateTab(created)
-    emitToAll({ type: 'tab_upserted', tab: created })
-    notifyIfUnfocused(task)
-    return
-  }
-
-  // Destination workspace isn't the one currently open in the UI — patch it on disk without
-  // touching the live SessionStore or emitting any events (nothing to refresh right now; the
-  // change will simply be there next time that workspace is opened).
-  await appendMessageToWorkspaceTab(destinationWorkspace, task.creatorTabId ?? null, message, fallbackTitle)
-  notifyIfUnfocused(task)
-}
-
-function notifyIfUnfocused(task: import('@shared/types').ScheduledTask): void {
-  if (!BrowserWindow.getFocusedWindow()) {
-    new Notification({ title: 'Klenny Code scheduled task finished', body: task.name }).show()
-  }
-}
-
-/** Runs an inbound Discord command (see discordBridge.ts) as a fully unattended subagent and
- *  returns the reply text to post back to Discord. Same tool allowlist rationale as
- *  runScheduledTask (no scheduler_x tools, no open_settings_panel, no nested task calls), plus
- *  `discord_post_message` so the subagent could proactively post to a different channel if
- *  asked, though its primary reply is always the returned string (posted by the Discord
- *  message-handler itself). */
-export async function runDiscordSubagent(subTab: TabSession, apiKey: string, subagentModel: string): Promise<string> {
-  const subagentCtx: SubagentContext = {
-    allowedTools: [
-      'web_search',
-      'fetch_url',
-      'read_memory',
-      'write_memory',
-      'list_projects',
-      'read_other_project_file',
-      'grep_other_project',
-      'glob_other_project',
-      'read_other_project_memory',
-      'gmail_list_messages',
-      'gmail_get_message',
-      'gmail_send_message',
-      'discord_post_message'
-    ]
-  }
-  const controller = new AbortController()
-  try {
-    const reason = await agentLoop(subTab, apiKey, subagentModel, emitToAll, controller.signal, 1, subagentCtx)
-    const summary =
-      subTab.messages
-        .filter((m) => m.role === 'assistant')
-        .flatMap((m) => m.blocks)
-        .filter((b) => b.type === 'text')
-        .map((b) => (b as { text: string }).text)
-        .join('\n') || "Sorry, I didn't have anything to say."
-    if (reason === 'error' || reason === 'truncation_failed') {
-      return `Sorry, something went wrong while handling that: ${summary}`
-    }
-    return summary
-  } catch (e) {
-    return `Sorry, something went wrong: ${e instanceof Error ? e.message : String(e)}`
-  }
-}
-
-async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string | null): Promise<string> {
-  const ws = getWorkspace()
-  const [projMem, globalMem, autoMem, skills, subagents, otherProjects, soul] = await Promise.all([
-    loadProjectMemory(),
-    loadGlobalMemory(),
-    loadAutoMemoryIndex(),
-    listSkills(),
-    listSubagentTypes(),
-    listKnownProjects(),
-    readSoul()
-  ])
-
-  const shell = resolveShell(shellId)
-
-  const parts = [
-    mode === 'plan' ? buildPlanModePrompt(soul) : buildAgentModePrompt(soul),
-    ws ? `Workspace: ${ws}` : 'No workspace open.',
-    `run_command executes via ${shell.name} — write commands using that shell's syntax (quoting, path separators, env vars, chaining operators).`,
-    projMem && `Project memory:\n${projMem}`,
-    globalMem && `Global memory:\n${globalMem}`,
-    autoMem && `Auto-memory index:\n${autoMem}`,
-    otherProjects.length > 0 &&
-      `Other known projects (read-only — use read_other_project_file/grep_other_project/glob_other_project/read_other_project_memory to reference or port things from these; never write to them):\n${otherProjects.map((p) => `- ${p}`).join('\n')}`,
-    skillsCatalogPrompt(skills),
-    `Subagents:\n${subagentsCatalog(subagents)}`
-  ].filter(Boolean)
-
-  return parts.join('\n\n')
-}
-
-async function previewMutatingTool(
-  name: string,
-  args: Record<string, unknown>
-): Promise<{ title: string; extra: Partial<import('@shared/types').PendingAction> }> {
-  if (name === 'run_command') {
-    return {
-      title: `Run command: ${args.command}`,
-      extra: { command: String(args.command), cwd: args.cwd ? String(args.cwd) : undefined }
-    }
-  }
-  const path = String(args.path ?? '')
-  if (name === 'write_file') {
-    let oldContent = ''
-    try {
-      const abs = resolveWorkspacePath(path)
-      oldContent = toLf(await readFile(abs, 'utf8'))
-    } catch {
-      // new file — diff against empty content
-    }
-    return { title: `Write ${path}`, extra: { filePath: path, diff: makeDiff(oldContent, String(args.content), path) } }
-  }
-  if (name === 'edit_file') {
-    try {
-      const abs = resolveWorkspacePath(path)
-      const content = toLf(await readFile(abs, 'utf8'))
-      const match = resolveEditMatch(content, String(args.old_string), String(args.new_string))
-      if (!match) return { title: `Edit ${path}`, extra: { filePath: path } }
-      const updated = args.replace_all
-        ? content.replaceAll(match.oldString, match.newString)
-        : content.replace(match.oldString, match.newString)
-      return { title: `Edit ${path}`, extra: { filePath: path, diff: makeDiff(content, updated, path) } }
-    } catch {
-      return { title: `Edit ${path}`, extra: { filePath: path } }
-    }
-  }
-  if (name === 'multi_edit') {
-    const edits = (Array.isArray(args.edits) ? args.edits : []) as MultiEditOp[]
-    // previewMultiEdit/planMultiEdit validate each edit and reject malformed paths cleanly, but
-    // guard here too (matching the edit_file/write_file branches above) so any unexpected
-    // failure degrades to a plain preview instead of crashing the whole tool call and leaving
-    // its tool_call block stuck at "running" forever — see "multi_edit tool broken" fix.
-    try {
-      const { paths, diff } = await previewMultiEdit(edits)
-      const title = paths.length === 1 ? `Edit ${paths[0]}` : `Edit ${paths.length} files (${edits.length} edits)`
-      return { title, extra: { filePaths: paths, diff } }
-    } catch {
-      const paths = [...new Set(edits.map((e) => (typeof e?.path === 'string' ? e.path : '')).filter(Boolean))]
-      const title = paths.length === 1 ? `Edit ${paths[0]}` : `Edit ${paths.length || edits.length} files (${edits.length} edits)`
-      return { title, extra: { filePaths: paths } }
-    }
-  }
-  try {
-    const abs = resolveWorkspacePath(path)
-    const oldContent = toLf(await readFile(abs, 'utf8'))
-    return { title: `Delete ${path}`, extra: { filePath: path, diff: makeDiff(oldContent, '', path) } }
-  } catch {
-    return { title: `Delete ${path}`, extra: { filePath: path } }
-  }
-}
-
-function checkSpendCap(tab: TabSession, cap: number | null, period: 'session' | 'daily'): void {
-  if (!cap) return
-  const spend = period === 'daily' ? getDailySpend() : tab.totalCostUsd
-  if (spend >= cap) {
-    emitToAll({ type: 'spend_blocked', tabId: tab.id })
-    throw new Error('Spending cap exceeded')
-  }
-}
-
-export function getPendingQuestions(): PendingQuestion[] {
-  return [...pendingQuestions.values()]
 }

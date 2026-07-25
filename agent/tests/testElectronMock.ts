@@ -40,6 +40,9 @@ mock.module('electron', () => ({
   dialog: {
     showOpenDialog: async () => ({ canceled: true, filePaths: [] })
   },
+  shell: {
+    openExternal: async () => {}
+  },
   safeStorage: {
     isEncryptionAvailable: () => false,
     encryptString: (s: string) => Buffer.from(s),
@@ -47,5 +50,17 @@ mock.module('electron', () => ({
   },
   nativeImage: {
     createFromPath: (path: string) => makeFakeImage(!path)
+  },
+  // No windows ever exist in the test runner, so orchestrator code that broadcasts events via
+  // BrowserWindow.getAllWindows() or checks BrowserWindow.getFocusedWindow() to decide whether to
+  // fire a desktop Notification just sees an empty list / no focused window — never actually
+  // sending anything, which is the right behavior for module-loading/barrel-completeness tests.
+  BrowserWindow: {
+    getAllWindows: () => [],
+    getFocusedWindow: () => null
+  },
+  Notification: class {
+    constructor(_opts: { title: string; body: string }) {}
+    show() {}
   }
 }))
