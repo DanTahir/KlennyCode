@@ -187,6 +187,12 @@ export default function HomePage() {
             report so you always know exactly what you&apos;re spending, on what.
           </FeatureCard>
 
+          <FeatureCard icon="🌐" title="Browser automation, built in">
+            A real local browser Klenny can drive itself — click, type, fill forms, and navigate
+            live sites via snapshots, with mutating actions gated behind your approval settings.
+            Perfect for testing a UI or wrangling a site with no API.
+          </FeatureCard>
+
           <FeatureCard icon="🐾" title="Free & open source, always">
             MIT licensed, fully open on GitHub, no subscriptions or hidden fees. You only ever pay
             OpenRouter directly for model usage — at whatever rate you choose.
