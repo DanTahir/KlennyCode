@@ -16,8 +16,20 @@ const {
   getCustomRunningGifDataUrl,
   setCustomRunningGif,
   clearCustomRunningGif,
-  resolveActiveIconPath
+  resolveActiveIconPath,
+  centerCropToSquare
 } = await import('../src/main/branding')
+
+// Fake NativeImage for centerCropToSquare unit tests — independent of testElectronMock's fixed
+// 256x256 fake so we can exercise real width/height/crop-rect math.
+function fakeImage(width: number, height: number, empty = false) {
+  return {
+    isEmpty: () => empty,
+    getSize: () => ({ width, height }),
+    crop: (rect: { x: number; y: number; width: number; height: number }) =>
+      fakeImage(rect.width, rect.height)
+  }
+}
 
 const tempDirs: string[] = []
 
@@ -80,6 +92,28 @@ describe('branding — custom icon', () => {
     await clearCustomIcon()
     expect(await hasCustomIcon()).toBe(false)
     expect(await getCustomIconDataUrl()).toBeNull()
+  })
+
+  test('centerCropToSquare leaves square images untouched', () => {
+    const square = fakeImage(200, 200)
+    expect(centerCropToSquare(square as any).getSize()).toEqual({ width: 200, height: 200 })
+  })
+
+  test('centerCropToSquare leaves empty images untouched', () => {
+    const empty = fakeImage(0, 0, true)
+    expect(centerCropToSquare(empty as any)).toBe(empty as any)
+  })
+
+  test('centerCropToSquare crops a wide image down to a centered square', () => {
+    const wide = fakeImage(400, 200)
+    const cropped = centerCropToSquare(wide as any)
+    expect(cropped.getSize()).toEqual({ width: 200, height: 200 })
+  })
+
+  test('centerCropToSquare crops a tall image down to a centered square', () => {
+    const tall = fakeImage(200, 500)
+    const cropped = centerCropToSquare(tall as any)
+    expect(cropped.getSize()).toEqual({ width: 200, height: 200 })
   })
 
   test('resolveActiveIconPath returns the custom path when set, default bundled path otherwise', async () => {

@@ -87,7 +87,7 @@ export function Sidebar() {
             </button>
           ))}
         <button
-          className="w-full text-xs px-3 py-2 rounded-md border border-klenny-border text-klenny-muted hover:text-klenny-accent hover:border-klenny-accent"
+          className="w-full text-xs px-3 py-2 rounded-md bg-klenny-accent text-black font-medium hover:bg-klenny-accent2"
           title="Open a new Assistant tab (Gmail, Discord, scheduler, web search — no coding project needed)"
           onClick={() => void openAssistantTab()}
         >

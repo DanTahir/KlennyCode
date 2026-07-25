@@ -3,9 +3,9 @@
  * Assistant Platform plan). Lets the scheduler and Discord gateway keep running when the main
  * window is closed, without fully quitting the app.
  */
-import { app, BrowserWindow, Menu, Tray, nativeImage } from 'electron'
+import { app, BrowserWindow, Menu, Tray } from 'electron'
 import { loadSettings } from './settings'
-import { resolveActiveIconPath } from './branding'
+import { resolveActiveIconPath, loadSquareIcon } from './branding'
 import { DEFAULT_BRAND_NAME } from '@shared/types'
 
 let tray: Tray | null = null
@@ -19,7 +19,7 @@ export function isAppQuitting(): boolean {
 
 export async function createTray(getMainWindow: () => BrowserWindow | null): Promise<void> {
   if (tray) return
-  const image = nativeImage.createFromPath(await resolveActiveIconPath())
+  const image = loadSquareIcon(await resolveActiveIconPath())
   tray = new Tray(image.isEmpty() ? image : image.resize({ width: 16, height: 16 }))
   const settings = await loadSettings().catch(() => null)
   tray.setToolTip(settings?.brandName || DEFAULT_BRAND_NAME)
@@ -64,7 +64,7 @@ export function destroyTray(): void {
  *  brand name in Settings → Appearance. No-op if the tray hasn't been created yet. */
 export async function refreshTrayIcon(): Promise<void> {
   if (!tray) return
-  const image = nativeImage.createFromPath(await resolveActiveIconPath())
+  const image = loadSquareIcon(await resolveActiveIconPath())
   tray.setImage(image.isEmpty() ? image : image.resize({ width: 16, height: 16 }))
   const settings = await loadSettings().catch(() => null)
   tray.setToolTip(settings?.brandName || DEFAULT_BRAND_NAME)

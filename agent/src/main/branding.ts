@@ -6,7 +6,7 @@
  * while the actual bytes live as plain files under the app's userData directory so they never
  * bloat settings.json or round-trip through JSON as base64.
  */
-import { app } from 'electron'
+import { app, nativeImage, type NativeImage } from 'electron'
 import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -150,4 +150,25 @@ export async function resolveActiveIconPath(): Promise<string> {
   const custom = await customIconPath()
   if (custom) return custom
   return join(__dirname, '../../build/icons/icon.png')
+}
+
+/** Center-crops a non-square NativeImage down to a square (the smaller of width/height),
+ *  so window/taskbar/dock/tray icons are never stretched, squished, or letterboxed with
+ *  blank space when the source image isn't already square — matches how OSes expect a
+ *  square icon and mirrors what most icon generators do. Square images pass through
+ *  untouched. Empty images pass through untouched (caller already checks isEmpty()). */
+export function centerCropToSquare(image: NativeImage): NativeImage {
+  if (image.isEmpty()) return image
+  const { width, height } = image.getSize()
+  if (width === height) return image
+  const size = Math.min(width, height)
+  const x = Math.floor((width - size) / 2)
+  const y = Math.floor((height - size) / 2)
+  return image.crop({ x, y, width: size, height: size })
+}
+
+/** Loads the icon at `path` and center-crops it to a square (see centerCropToSquare) —
+ *  the one place window/taskbar/dock/tray icon loading should go through. */
+export function loadSquareIcon(path: string): NativeImage {
+  return centerCropToSquare(nativeImage.createFromPath(path))
 }

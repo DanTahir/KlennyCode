@@ -18,6 +18,20 @@ export const electronMockState = {
   isPackaged: false
 }
 
+// Minimal fake NativeImage: real dimensions don't matter for the tests that touch this (they
+// only check isEmpty()/path plumbing, not actual pixel data), so every image reports the same
+// square size — that also keeps centerCropToSquare() a no-op in tests, which is fine since its
+// cropping logic is covered directly against this same fake in branding.test.ts.
+function makeFakeImage(empty: boolean) {
+  const img = {
+    isEmpty: () => empty,
+    getSize: () => ({ width: 256, height: 256 }),
+    resize: (_opts: { width: number; height: number }) => img,
+    crop: (_rect: { x: number; y: number; width: number; height: number }) => img
+  }
+  return img
+}
+
 mock.module('electron', () => ({
   app: {
     getPath: () => electronMockState.userDataDir,
@@ -30,5 +44,8 @@ mock.module('electron', () => ({
     isEncryptionAvailable: () => false,
     encryptString: (s: string) => Buffer.from(s),
     decryptString: (b: Buffer) => b.toString('utf8')
+  },
+  nativeImage: {
+    createFromPath: (path: string) => makeFakeImage(!path)
   }
 }))

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, Menu, nativeImage } from 'electron'
+import { app, BrowserWindow, ipcMain, shell, Menu } from 'electron'
 import { join } from 'node:path'
 import { checkForUpdates, installUpdate, isUpdateSupported } from './updater'
 import { IPC } from '@shared/ipc'
@@ -31,7 +31,8 @@ import {
   getCustomRunningGifDataUrl,
   setCustomRunningGif as saveCustomRunningGif,
   clearCustomRunningGif,
-  resolveActiveIconPath
+  resolveActiveIconPath,
+  loadSquareIcon
 } from './branding'
 
 function broadcast(event: AgentStreamEvent): void {
@@ -57,7 +58,7 @@ function broadcastTerminalExit(id: string, exitCode: number): void {
  *  called at startup and whenever the user changes either in Settings → Appearance. */
 async function applyBrandingToAllWindows(): Promise<void> {
   const [iconPath, settings] = await Promise.all([resolveActiveIconPath(), loadSettings()])
-  const image = nativeImage.createFromPath(iconPath)
+  const image = loadSquareIcon(iconPath)
   const title = `${settings.brandName || DEFAULT_BRAND_NAME} ${app.getVersion()}`
   for (const win of BrowserWindow.getAllWindows()) {
     if (!image.isEmpty()) win.setIcon(image)
