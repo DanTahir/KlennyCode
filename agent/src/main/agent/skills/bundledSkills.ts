@@ -49,8 +49,19 @@ comparing two pages side by side. \`list_tabs\` shows what's currently open.
 \`click\`, \`type\`, \`fill\`, \`select\`, \`press_key\`, \`scroll\`, \`drag\`, \`submit\`, and \`evaluate\` are
 "mutating" — depending on the user's Browser automation policy, they may pause for approval
 (with a screenshot preview) before running. This is expected and not an error; just wait for the
-result. \`open\`, \`close\`, \`list_tabs\`, \`navigate\`, \`snapshot\`, \`screenshot\`, and \`wait_for\` never
-need approval (as long as the feature isn't fully disabled).
+result. \`open\`, \`close\`, \`list_tabs\`, \`navigate\`, \`snapshot\`, \`screenshot\`, \`wait_for\`, and
+\`wait\` never need approval (as long as the feature isn't fully disabled).
+
+## Pausing for something to finish on the page
+
+Two different actions cover "wait" needs — pick the one that fits:
+- \`wait_for\` — polls for a condition (a \`ref\` or \`selector\` becoming visible, or falls back to
+  the page's load state) and returns as soon as it's met. Prefer this whenever there's something
+  concrete to poll for.
+- \`wait\` — a plain fixed-duration sleep (\`duration_ms\`, default 5000, capped at 300000/5
+  minutes), e.g. \`browser({ action: 'wait', duration_ms: 120000 })\` to pause ~2 minutes. Use this
+  only when there's nothing to poll for — e.g. a server-side job/render/export with no visible
+  DOM change — since it always waits the full duration instead of returning early.
 
 \`evaluate\` (running raw JavaScript in the page) is off by default and never available at all
 inside a subagent — if it fails with \`evaluate_disabled\`, tell the user they'd need to enable

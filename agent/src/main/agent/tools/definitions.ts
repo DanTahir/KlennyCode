@@ -546,7 +546,7 @@ export function getToolDefinitions(
       function: {
         name: 'browser',
         description:
-          "Local Playwright-driven browser automation, multiplexed by `action`. Gated by Settings -> Automation -> Browser automation: policy 'off' blocks every action, 'ask' queues mutating actions (click/type/fill/select/press_key/scroll/drag/submit/evaluate) for user approval with a screenshot preview, 'auto' executes them immediately. Read-only actions (open/close/list_tabs/navigate/snapshot/screenshot) never need approval as long as the policy isn't 'off'. Workflow: open a tab, navigate, then snapshot before acting — the snapshot returns an accessibility-tree-like list of interactive elements each tagged with a stable ref like 'e3'; pass that ref (not a CSS selector) to click/type/fill/select/press_key/scroll/drag/submit. Re-snapshot after any navigation or significant DOM change before reusing old refs, since they can go stale. Use screenshot sparingly (it costs real tokens) — prefer snapshot for deciding what to do next, and screenshot mainly to visually confirm a result or read something not well captured as text. evaluate (raw JS in the page) is disabled by default and never available to subagents. For logins, 2FA, or anything requiring a human's judgment, stop and use ask_question rather than trying to power through. If a CAPTCHA appears in an interactive session (the browser window is visible to the user), don't fail — use ask_question to have the user solve it in the visible window, then re-snapshot and continue; in a headless subagent/scheduled run there's no one to solve it, so report it as a blocking failure instead.",
+          "Local Playwright-driven browser automation, multiplexed by `action`. Gated by Settings -> Automation -> Browser automation: policy 'off' blocks every action, 'ask' queues mutating actions (click/type/fill/select/press_key/scroll/drag/submit/evaluate) for user approval with a screenshot preview, 'auto' executes them immediately. Read-only actions (open/close/list_tabs/navigate/snapshot/screenshot/wait_for/wait) never need approval as long as the policy isn't 'off'. Workflow: open a tab, navigate, then snapshot before acting — the snapshot returns an accessibility-tree-like list of interactive elements each tagged with a stable ref like 'e3'; pass that ref (not a CSS selector) to click/type/fill/select/press_key/scroll/drag/submit. Re-snapshot after any navigation or significant DOM change before reusing old refs, since they can go stale. Use screenshot sparingly (it costs real tokens) — prefer snapshot for deciding what to do next, and screenshot mainly to visually confirm a result or read something not well captured as text. To pause while something runs on the page: prefer `wait_for` (polls for a ref/selector to appear, or falls back to waiting for the page's load state) since it returns as soon as its condition is met; use the plain `wait` action (fixed-duration sleep, e.g. duration_ms: 120000 for two minutes, capped at 5 minutes) only when there's nothing concrete to poll for, such as a server-side job with no visible DOM change. evaluate (raw JS in the page) is disabled by default and never available to subagents. For logins, 2FA, or anything requiring a human's judgment, stop and use ask_question rather than trying to power through. If a CAPTCHA appears in an interactive session (the browser window is visible to the user), don't fail — use ask_question to have the user solve it in the visible window, then re-snapshot and continue; in a headless subagent/scheduled run there's no one to solve it, so report it as a blocking failure instead.",
         parameters: {
           type: 'object',
           properties: {
@@ -568,7 +568,8 @@ export function getToolDefinitions(
                 'drag',
                 'submit',
                 'evaluate',
-                'wait_for'
+                'wait_for',
+                'wait'
               ]
             },
             tab: { type: 'string', description: 'Agent-chosen label for the browser tab (defaults to "main"). Use distinct labels to work with multiple tabs in the same session.' },
@@ -582,7 +583,8 @@ export function getToolDefinitions(
             targetRef: { type: 'string', description: 'Destination element ref used by drag.' },
             code: { type: 'string', description: 'JavaScript to run in the page, used by evaluate. Disabled unless explicitly enabled in Settings.' },
             selector: { type: 'string', description: 'Optional CSS selector used by wait_for instead of a ref.' },
-            timeout_ms: { type: 'number', description: 'Timeout for wait_for, in milliseconds (default 5000).' }
+            timeout_ms: { type: 'number', description: 'Timeout for wait_for, in milliseconds (default 5000, capped at 300000/5 minutes).' },
+            duration_ms: { type: 'number', description: 'Fixed pause duration for the `wait` action, in milliseconds (default 5000, capped at 300000/5 minutes). Use this to pause for something running server-side with no DOM change to poll for, e.g. duration_ms: 120000 to wait two minutes.' }
           },
           required: ['action']
         }

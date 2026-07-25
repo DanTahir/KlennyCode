@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { evaluateNavigation } from '../src/main/browser/network-policy'
-import { isBrowserActionMutating, MUTATING_BROWSER_ACTIONS } from '../src/main/agent/tools/browser'
+import { isBrowserActionMutating, MUTATING_BROWSER_ACTIONS, browserTool } from '../src/main/agent/tools/browser'
 import { DEFAULT_BROWSER_AUTOMATION, MUTATING_TOOLS } from '@shared/types'
 import { getToolDefinitions } from '../src/main/agent/tools/definitions'
 
@@ -55,14 +55,44 @@ describe('isBrowserActionMutating', () => {
     expect(MUTATING_BROWSER_ACTIONS.size).toBe(9)
   })
 
-  test('classifies open/close/list_tabs/navigate/snapshot/screenshot/wait_for as non-mutating (always allowed unless policy=off)', () => {
-    for (const action of ['open', 'close', 'list_tabs', 'navigate', 'snapshot', 'screenshot', 'wait_for']) {
+  test('classifies open/close/list_tabs/navigate/snapshot/screenshot/wait_for/wait as non-mutating (always allowed unless policy=off)', () => {
+    for (const action of ['open', 'close', 'list_tabs', 'navigate', 'snapshot', 'screenshot', 'wait_for', 'wait']) {
       expect(isBrowserActionMutating(action)).toBe(false)
     }
   })
 
   test('unknown actions are treated as non-mutating (fail via the unknown_action branch, not gated as mutating)', () => {
     expect(isBrowserActionMutating('teleport')).toBe(false)
+  })
+})
+
+describe('browser wait action (plain fixed-duration sleep)', () => {
+  const baseCtx = { ownerId: 'test-owner', unattended: false, settings: DEFAULT_BROWSER_AUTOMATION }
+
+  test('waits for roughly the requested duration and reports success', async () => {
+    const start = Date.now()
+    const result = await browserTool({ action: 'wait', duration_ms: 30 }, baseCtx)
+    expect(result.ok).toBe(true)
+    expect(Date.now() - start).toBeGreaterThanOrEqual(25)
+  })
+
+  test('is cancellable via ctx.signal instead of blocking for the full duration', async () => {
+    const controller = new AbortController()
+    const start = Date.now()
+    const promise = browserTool({ action: 'wait', duration_ms: 60_000 }, { ...baseCtx, signal: controller.signal })
+    controller.abort()
+    const result = await promise
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('aborted')
+    expect(Date.now() - start).toBeLessThan(5000)
+  })
+
+  test('returns immediately if already aborted before the call', async () => {
+    const controller = new AbortController()
+    controller.abort()
+    const result = await browserTool({ action: 'wait', duration_ms: 60_000 }, { ...baseCtx, signal: controller.signal })
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('aborted')
   })
 })
 

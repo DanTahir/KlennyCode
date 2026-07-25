@@ -55,7 +55,15 @@ export interface BrowserToolContext {
   /** Surfaces one-time Chromium-download progress (first browser session ever, see
    *  browser/installer.ts) back to the caller, e.g. to reflect it in the UI. */
   onProgress?: (message: string) => void
+  /** Turn/run abort signal, used by the `wait` action so a long pause can be cut short
+   *  immediately if the user stops the run, instead of blocking until its full duration. */
+  signal?: AbortSignal
 }
+
+/** Hard ceiling for the `wait` action's duration_ms, so a bad/huge value from the model can't
+ *  block a turn indefinitely. Generous enough for "wait a couple of minutes for a page to
+ *  finish something" while still bounded. */
+const MAX_WAIT_MS = 5 * 60_000
 
 const REF_PATTERN = /^e\d+$/
 
@@ -153,6 +161,8 @@ export async function browserTool(args: Record<string, unknown>, ctx: BrowserToo
         return await doEvaluate(args, ctx, tabLabel)
       case 'wait_for':
         return await doWaitFor(args, ctx, tabLabel)
+      case 'wait':
+        return await doWait(args, ctx)
       default:
         return { ok: false, summary: `Unknown browser action "${action}"`, error: 'unknown_action' }
     }
@@ -464,7 +474,8 @@ async function doEvaluate(args: Record<string, unknown>, ctx: BrowserToolContext
 }
 
 async function doWaitFor(args: Record<string, unknown>, ctx: BrowserToolContext, tabLabel: string): Promise<ToolResultPayload> {
-  const timeout = typeof args.timeout_ms === 'number' && args.timeout_ms > 0 ? args.timeout_ms : 5000
+  const requested = typeof args.timeout_ms === 'number' && args.timeout_ms > 0 ? args.timeout_ms : 5000
+  const timeout = Math.min(requested, MAX_WAIT_MS)
   const hasRef = args.ref !== undefined
   if (hasRef && !isValidRef(args.ref)) return { ok: false, summary: 'Invalid ref', error: 'invalid_ref' }
   const selector = typeof args.selector === 'string' && args.selector ? args.selector : undefined
@@ -479,6 +490,33 @@ async function doWaitFor(args: Record<string, unknown>, ctx: BrowserToolContext,
   } catch (e) {
     return { ok: false, summary: 'Wait timed out', error: e instanceof Error ? e.message : String(e) }
   }
+}
+
+/** Plain sleep — unlike `wait_for` (which polls for a selector/ref/load-state and returns as soon
+ *  as its condition is met), `wait` just pauses for a fixed duration. Useful when something is
+ *  processing server-side with no visible DOM change to poll for (e.g. "wait a couple of minutes
+ *  for this render/export job to finish") and there's nothing better to wait on. Doesn't require
+ *  an open session/page since it doesn't touch the page at all. Cancellable via ctx.signal so
+ *  stopping the run doesn't leave it blocking for the full duration. */
+async function doWait(args: Record<string, unknown>, ctx: BrowserToolContext): Promise<ToolResultPayload> {
+  const requested = typeof args.duration_ms === 'number' && args.duration_ms > 0 ? args.duration_ms : 5000
+  const duration = Math.min(requested, MAX_WAIT_MS)
+  if (ctx.signal?.aborted) return { ok: false, summary: 'Wait cancelled', error: 'aborted' }
+
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      ctx.signal?.removeEventListener('abort', onAbort)
+      resolve()
+    }, duration)
+    const onAbort = () => {
+      clearTimeout(timer)
+      resolve()
+    }
+    ctx.signal?.addEventListener('abort', onAbort, { once: true })
+  })
+
+  if (ctx.signal?.aborted) return { ok: false, summary: 'Wait cancelled', error: 'aborted' }
+  return { ok: true, summary: `Waited ${Math.round(duration / 1000)}s` }
 }
 
 /** Builds the human-readable title + best-effort screenshot preview for a browser_act approval

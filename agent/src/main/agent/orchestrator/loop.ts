@@ -705,7 +705,8 @@ async function dispatchTool(
         ownerId: tab.id,
         unattended,
         settings: browserAutomation ?? DEFAULT_BROWSER_AUTOMATION,
-        onProgress: onToolProgress
+        onProgress: onToolProgress,
+        signal
       })
     default:
       return { ok: false, summary: `Unknown tool ${name}`, error: 'unknown' }
