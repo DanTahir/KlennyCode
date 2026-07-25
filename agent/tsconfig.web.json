@@ -12,10 +12,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "types": ["vite/client"],
-    "baseUrl": ".",
     "paths": {
-      "@shared/*": ["shared/*"],
-      "@renderer/*": ["src/renderer/*"]
+      "@shared/*": ["./shared/*"],
+      "@renderer/*": ["./src/renderer/*"]
     }
   },
   "include": ["src/renderer/**/*", "shared/**/*"]

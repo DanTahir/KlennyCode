@@ -2,12 +2,30 @@ import type { ModelInfo } from '@shared/types'
 import type { ChatMessage, ContentPart } from './client'
 
 /**
+ * Alibaba-hosted models that support explicit `cache_control` breakpoints, per OpenRouter's
+ * prompt-caching docs. This is a specific allowlist, NOT every `qwen/`-prefixed model — most
+ * Qwen models on OpenRouter are hosted by other providers (Fireworks, DeepInfra, Together, ...)
+ * that don't understand `cache_control` at all, and even Alibaba's own "snapshot" endpoints
+ * (e.g. qwen3.5-plus-02-15, qwen3.5-flash-02-23) are explicitly excluded. Sending the marker to
+ * an unsupported endpoint doesn't get you caching — it just risks odd routing/rejection — so we
+ * only mark models actually confirmed to support it.
+ */
+const ALIBABA_EXPLICIT_CACHE_MODEL_IDS = new Set([
+  'deepseek/deepseek-v3.2',
+  'qwen/qwen3-max',
+  'qwen/qwen-plus',
+  'qwen/qwen3.6-plus',
+  'qwen/qwen3-coder-plus',
+  'qwen/qwen3-coder-flash'
+])
+
+/**
  * Model families that require us to inject `cache_control` markers ourselves to get
  * prompt caching. Everyone else with cache pricing (OpenAI, Grok, Moonshot, Groq,
  * Gemini 2.5+, native DeepSeek) caches implicitly/automatically server-side.
  */
 export function isExplicitCacheFamily(modelId: string): boolean {
-  return modelId.startsWith('anthropic/') || modelId.startsWith('qwen/') || modelId === 'deepseek/deepseek-v3.2'
+  return modelId.startsWith('anthropic/') || ALIBABA_EXPLICIT_CACHE_MODEL_IDS.has(modelId)
 }
 
 /** Whether this model has any caching support at all (read pricing present). */

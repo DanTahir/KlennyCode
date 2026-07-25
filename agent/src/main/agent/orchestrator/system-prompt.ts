@@ -10,6 +10,22 @@ import { listSubagentTypes, subagentsCatalog } from '../subagents/manager'
 import { buildAgentModePrompt, buildPlanModePrompt } from '../plan/manager'
 import { readSoul } from '../soul/manager'
 
+/**
+ * The one genuinely per-request-dynamic piece of context the model needs (for computing relative
+ * delays/times, e.g. scheduler_create_task's cron `schedule`). Deliberately kept OUT of
+ * buildSystemPrompt's return value — it changes on every single call (down to the second), and
+ * the whole system message is sent/cached as one prefix. Folding it into that string would mean
+ * the "static" system prompt is never actually identical twice, so explicit-cache models
+ * (Anthropic, Qwen, ...) would never get a cache hit on it. Callers must send this as its own,
+ * uncached system message instead (see toORMessages' `currentTimeNote` param) so the big, truly
+ * static prefix (persona, memory, skills/subagent catalogs) can still cache normally.
+ */
+export function buildCurrentTimeNote(): string {
+  const now = new Date()
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  return `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
+}
+
 export async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string | null): Promise<string> {
   const ws = getWorkspace()
   const [projMem, globalMem, autoMem, skills, subagents, otherProjects, soul] = await Promise.all([
@@ -24,13 +40,8 @@ export async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string
 
   const shell = resolveShell(shellId)
 
-  const now = new Date()
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const currentTimeNote = `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
-
   const parts = [
     mode === 'plan' ? buildPlanModePrompt(soul) : buildAgentModePrompt(soul),
-    currentTimeNote,
     ws ? `Workspace: ${ws}` : 'No workspace open.',
     `run_command executes via ${shell.name} — write commands using that shell's syntax (quoting, path separators, env vars, chaining operators).`,
     projMem && `Project memory:\n${projMem}`,

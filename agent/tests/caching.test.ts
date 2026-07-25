@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { ModelInfo } from '@shared/types'
 import { isExplicitCacheFamily, modelSupportsCaching, computeCacheSavings, applyCacheControl } from '../src/main/openrouter/caching'
 import type { ChatMessage } from '../src/main/openrouter/client'
+import { toORMessages } from '../src/main/agent/messages'
 
 describe('isExplicitCacheFamily', () => {
   test('anthropic models need explicit cache_control', () => {
@@ -17,6 +18,14 @@ describe('isExplicitCacheFamily', () => {
     expect(isExplicitCacheFamily('openai/gpt-5.5')).toBe(false)
     expect(isExplicitCacheFamily('google/gemini-3-pro')).toBe(false)
     expect(isExplicitCacheFamily('x-ai/grok-4.5')).toBe(false)
+  })
+  test('non-allowlisted / snapshot Qwen endpoints do not support explicit caching', () => {
+    // Per OpenRouter's docs, only a specific set of Alibaba-hosted Qwen models support explicit
+    // cache_control — many qwen/* ids are hosted by other providers, and Alibaba's own snapshot
+    // endpoints are explicitly excluded even though the base model does support it.
+    expect(isExplicitCacheFamily('qwen/qwen3.5-plus-02-15')).toBe(false)
+    expect(isExplicitCacheFamily('qwen/qwen3.5-flash-02-23')).toBe(false)
+    expect(isExplicitCacheFamily('qwen/qwen3-embedding-8b')).toBe(false)
   })
 })
 
@@ -130,5 +139,26 @@ describe('applyCacheControl', () => {
 
     const last = out[out.length - 1]
     expect(last.content).toBe(messages[3].content)
+  })
+
+  // Regression test for the "current date/time" bug: the live timestamp note used to be baked
+  // into the cached system prompt itself, so its content (and thus the cache_control-marked
+  // block) changed on literally every request, never actually hitting the cache. It must now
+  // arrive as its own uncached system message so the real static prefix stays byte-identical
+  // (and therefore cacheable) across calls even as the clock ticks forward.
+  test('a per-request-changing currentTimeNote does not change the cached system block', () => {
+    const wire = [{ id: 'u1', role: 'user' as const, blocks: [{ type: 'text' as const, text: 'hi' }], createdAt: 0 }]
+    const orA = toORMessages(wire, 'STATIC SYSTEM PROMPT', undefined, 'Current date/time: 12:00:00')
+    const orB = toORMessages(wire, 'STATIC SYSTEM PROMPT', undefined, 'Current date/time: 12:00:01')
+
+    const cachedA = applyCacheControl(orA, true, true)
+    const cachedB = applyCacheControl(orB, true, true)
+
+    // The cache-control-marked system block (index 0) must be identical across both requests...
+    expect(cachedA[0]).toEqual(cachedB[0])
+    // ...even though the two requests were built with a different live time note, which is left
+    // as a plain, untouched (uncached) system message rather than being folded into index 0.
+    expect(orA[1].content).not.toBe(orB[1].content)
+    expect(cachedA[1]).toEqual(orA[1])
   })
 })

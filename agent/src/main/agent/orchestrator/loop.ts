@@ -80,7 +80,7 @@ import {
   isTruncatedToolCallJson,
   truncateSummary
 } from '../turnControl'
-import { buildSystemPrompt } from './system-prompt'
+import { buildSystemPrompt, buildCurrentTimeNote } from './system-prompt'
 import { previewMutatingTool } from './approval-previews'
 import { type Emit, type LoopStopReason, type SubagentContext, throwIfAborted, pendingQuestions, questionWaiters } from './state'
 
@@ -160,7 +160,12 @@ export async function agentLoop(
   }
 
   const systemPrompt = await buildSystemPrompt(tab.mode, settings.shellId)
-  const orMessages = toORMessages(messagesForWire(tab.messages, tab.compactedThroughMessageId), systemPrompt, tab.compactionSummary)
+  const orMessages = toORMessages(
+    messagesForWire(tab.messages, tab.compactedThroughMessageId),
+    systemPrompt,
+    tab.compactionSummary,
+    buildCurrentTimeNote()
+  )
 
   // Computed from tab.messages before the new (empty) assistant message is pushed below, so
   // the heuristic only ever looks at genuinely prior turns.

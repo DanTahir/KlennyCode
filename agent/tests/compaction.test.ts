@@ -188,4 +188,30 @@ describe('messagesForWire + toORMessages (history untouched, summary injected on
     const or = toORMessages(messages, 'SYSTEM PROMPT')
     expect(or.filter((m) => m.role === 'system').length).toBe(1)
   })
+
+  // Regression test: the live "current date/time" note used to be baked directly into
+  // systemPrompt itself, which changes every request (down to the second) and silently defeated
+  // prompt caching for the entire system prompt on every explicit-cache model (Anthropic, Qwen).
+  // It must be sent as its own separate, later system message instead.
+  test('toORMessages sends currentTimeNote as its own system message, not merged into systemPrompt', () => {
+    const messages = buildMessages(1)
+    const or = toORMessages(messages, 'SYSTEM PROMPT', undefined, 'Current date/time: NOW')
+    expect(or[0]).toEqual({ role: 'system', content: 'SYSTEM PROMPT' })
+    expect(or[1]).toEqual({ role: 'system', content: 'Current date/time: NOW' })
+  })
+
+  test('toORMessages orders currentTimeNote before the compaction summary', () => {
+    const messages = buildMessages(1)
+    const or = toORMessages(messages, 'SYSTEM PROMPT', 'earlier stuff happened', 'Current date/time: NOW')
+    expect(or[0]).toEqual({ role: 'system', content: 'SYSTEM PROMPT' })
+    expect(or[1]).toEqual({ role: 'system', content: 'Current date/time: NOW' })
+    expect(or[2].role).toBe('system')
+    expect(String(or[2].content)).toContain('earlier stuff happened')
+  })
+
+  test('toORMessages omits the currentTimeNote system message when none is given', () => {
+    const messages = buildMessages(1)
+    const or = toORMessages(messages, 'SYSTEM PROMPT')
+    expect(or.filter((m) => m.role === 'system').length).toBe(1)
+  })
 })

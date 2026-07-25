@@ -8,9 +8,23 @@ import type { ChatMessage as ORMessage } from '../openrouter/client'
  * `messages` here should already be the slice actually meant for the wire (i.e. with any
  * compacted-away prefix removed by the caller) — see `messagesForWire` — while `compactionSummary`,
  * if given, is injected as its own system message standing in for that removed prefix.
+ *
+ * `currentTimeNote`, if given, is sent as its own trailing system message rather than being
+ * folded into `systemPrompt`. It changes on every call (it's a live timestamp), and
+ * applyCacheControl only ever marks the *first* system message as the cache breakpoint — keeping
+ * it separate means it rides along uncached each turn without invalidating the cached, genuinely
+ * static prefix (persona, memory, skills/subagent catalogs) that `systemPrompt` carries.
  */
-export function toORMessages(messages: ChatMessage[], systemPrompt: string, compactionSummary?: string): ORMessage[] {
+export function toORMessages(
+  messages: ChatMessage[],
+  systemPrompt: string,
+  compactionSummary?: string,
+  currentTimeNote?: string
+): ORMessage[] {
   const out: ORMessage[] = [{ role: 'system', content: systemPrompt }]
+  if (currentTimeNote) {
+    out.push({ role: 'system', content: currentTimeNote })
+  }
   if (compactionSummary) {
     out.push({ role: 'system', content: `Summary of earlier conversation (older messages were omitted to save context):\n\n${compactionSummary}` })
   }
