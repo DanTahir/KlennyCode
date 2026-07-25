@@ -101,6 +101,22 @@ export default function App() {
     }
   }, [])
 
+  // Keep the model list current without requiring a manual Settings visit: OpenRouter adds new
+  // models (and retires old ones) over time, so periodically re-fetch (bypassing the short-lived
+  // main-process cache) and also refresh whenever the window regains focus.
+  useEffect(() => {
+    const refreshModels = () => {
+      if (!window.klenny) return
+      void window.klenny.listModels(true).then(setModels).catch(() => {})
+    }
+    const intervalId = setInterval(refreshModels, 30 * 60_000)
+    window.addEventListener('focus', refreshModels)
+    return () => {
+      clearInterval(intervalId)
+      window.removeEventListener('focus', refreshModels)
+    }
+  }, [])
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 't') {

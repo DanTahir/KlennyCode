@@ -569,8 +569,8 @@ export type AgentStreamEvent =
     }
 
 export const CURATED_MODEL_IDS = [
+  'anthropic/claude-opus-5',
   'anthropic/claude-sonnet-5',
-  'anthropic/claude-opus-4.8',
   'openai/gpt-5.5',
   'google/gemini-3-pro'
 ]

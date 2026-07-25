@@ -4,7 +4,7 @@
   <img src="Klenny.jpg" alt="Klenny Code" width="160" />
 </p>
 
-**Klenny Code** is a desktop coding agent for Windows, macOS, and Linux. Give it an [OpenRouter](https://openrouter.ai) API key and use frontier models — Claude Sonnet 5, Claude Opus 4.8, the latest OpenAI and Google models, and hundreds more.
+**Klenny Code** is a desktop coding agent for Windows, macOS, and Linux. Give it an [OpenRouter](https://openrouter.ai) API key and use frontier models — Claude Opus 5, Claude Sonnet 5, the latest OpenAI and Google models, and hundreds more.
 
 Built with **Electron + React + TypeScript**, developed with **Bun** as the package manager.
 
