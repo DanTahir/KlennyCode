@@ -117,10 +117,10 @@ export default function HomePage() {
             <span className="ml-3 text-xs text-corgi-cream/40">Klenny Code</span>
           </div>
           <Image
-            src="/Screenshot1.png"
+            src="/Screenshot2.png"
             alt="Klenny Code desktop app showing a chat with the AI coding agent"
-            width={1572}
-            height={944}
+            width={1580}
+            height={1012}
             className="w-full"
           />
         </div>
