@@ -62,10 +62,24 @@ actions instead of insisting on it.
 Stop and use \`ask_question\` rather than trying to power through:
 - Login forms, especially anything asking for a password you don't have.
 - 2FA / OTP prompts, magic-link flows, or anything requiring a code sent to the user.
-- CAPTCHAs or other explicit bot-detection challenges.
 - Payment/checkout flows involving real money.
 - Anything where a wrong guess (submitting the wrong form, deleting something) would be
   destructive and hard to undo.
+
+## CAPTCHAs: interactive sessions vs. unattended runs
+
+Interactive chat-tab sessions run the browser headed (a real, visible window) specifically so the
+user can watch and intervene. Subagents and scheduled tasks always run headless — there is no
+window for a human to see or click into, so a CAPTCHA there is a genuine dead end.
+
+- **Interactive session (headed, a real user is present in the chat):** don't declare failure and
+  don't try to defeat/bypass the challenge. Use \`ask_question\` to tell the user a CAPTCHA
+  appeared and ask them to solve it in the now-visible browser window, then confirm when done.
+  Once they confirm, take a fresh \`snapshot\` (refs from before the challenge are stale) and
+  continue the task from there.
+- **Subagent or scheduled task (headless, unattended):** there's no one to solve it — report the
+  CAPTCHA as a blocking failure in your summary rather than waiting on a question that can never
+  be answered.
 
 ## Known limitations
 
