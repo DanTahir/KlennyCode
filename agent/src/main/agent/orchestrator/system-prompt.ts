@@ -24,8 +24,13 @@ export async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string
 
   const shell = resolveShell(shellId)
 
+  const now = new Date()
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
+  const currentTimeNote = `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
+
   const parts = [
     mode === 'plan' ? buildPlanModePrompt(soul) : buildAgentModePrompt(soul),
+    currentTimeNote,
     ws ? `Workspace: ${ws}` : 'No workspace open.',
     `run_command executes via ${shell.name} — write commands using that shell's syntax (quoting, path separators, env vars, chaining operators).`,
     projMem && `Project memory:\n${projMem}`,
