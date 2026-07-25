@@ -162,13 +162,32 @@ async function deliverScheduledTaskResult(
     : wantsAssistantFallback
 
   if (creatorIsAssistant) {
-    // Assistant tabs only ever exist in memory, so the live SessionStore is the only place to
-    // look — if the creator tab is gone, it's gone for good (no history for Assistant tabs).
+    // Assistant tabs are workspace-independent and persisted in their own fixed file (see
+    // SessionStore.assistantTabsFile) — check the live tab first, then Assistant History (it
+    // may have been closed since the task was created), before falling back to a fresh tab.
     let tab = task.creatorTabId ? sessionStore.getTab(task.creatorTabId) : undefined
-    if (!tab || tab.kind !== 'assistant') {
-      tab = sessionStore.createAssistantTab()
-      tab.title = fallbackTitle
+    if (tab && tab.kind === 'assistant') {
+      tab.messages.push(message)
+      await sessionStore.updateTab(tab)
+      emitToAll({ type: 'tab_upserted', tab })
+      notifyIfUnfocused(task)
+      return
     }
+
+    if (task.creatorTabId && sessionStore.getAssistantHistory().some((t) => t.id === task.creatorTabId)) {
+      const reopened = await sessionStore.reopenAssistantHistoryEntry(task.creatorTabId)
+      if (reopened) {
+        reopened.messages.push(message)
+        await sessionStore.updateTab(reopened)
+        emitToAll({ type: 'history_entry_removed', tabId: task.creatorTabId })
+        emitToAll({ type: 'tab_upserted', tab: reopened })
+        notifyIfUnfocused(task)
+        return
+      }
+    }
+
+    tab = await sessionStore.createAssistantTab()
+    tab.title = fallbackTitle
     tab.messages.push(message)
     await sessionStore.updateTab(tab)
     emitToAll({ type: 'tab_upserted', tab })
@@ -180,7 +199,7 @@ async function deliverScheduledTaskResult(
   if (!destinationWorkspace) {
     // No workspace to anchor a project tab to (shouldn't normally happen once creatorWorkspace
     // is populated going forward) — fall back to a fresh Assistant tab so the result isn't lost.
-    const tab = sessionStore.createAssistantTab()
+    const tab = await sessionStore.createAssistantTab()
     tab.title = fallbackTitle
     tab.messages.push(message)
     await sessionStore.updateTab(tab)

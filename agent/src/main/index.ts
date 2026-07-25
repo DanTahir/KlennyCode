@@ -22,6 +22,10 @@ app.whenReady().then(async () => {
   registerIpcHandlers()
 
   const settings = await loadSettings()
+  // Assistant tabs are workspace-independent and persist across restarts — load them before any
+  // workspace-scoped session load, and even if no workspace is ever opened (see
+  // SessionStore.loadAssistantTabs doc comment).
+  await sessionStore.loadAssistantTabs()
   if (settings.lastWorkspace && existsSync(settings.lastWorkspace)) {
     setWorkspace(settings.lastWorkspace)
     await sessionStore.load(settings.lastWorkspace)

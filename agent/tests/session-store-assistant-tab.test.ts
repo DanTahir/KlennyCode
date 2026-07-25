@@ -26,11 +26,19 @@ function slugFor(workspace: string): string {
   return Buffer.from(workspace).toString('base64url')
 }
 
-describe('SessionStore ephemeral Assistant tabs', () => {
+function assistantTabsFile(): string {
+  return join(electronMockState.userDataDir, 'sessions', 'assistant-tabs.json')
+}
+
+function assistantHistoryFile(): string {
+  return join(electronMockState.userDataDir, 'sessions', 'assistant-tabs.history.json')
+}
+
+describe('SessionStore Assistant tabs (workspace-independent, persisted)', () => {
   test('createAssistantTab() adds an in-memory tab with kind "assistant"', async () => {
     const store = new SessionStore()
     await store.load('/fake/workspace/a')
-    const tab = store.createAssistantTab()
+    const tab = await store.createAssistantTab()
     expect(tab.kind).toBe('assistant')
     expect(store.getTabs().some((t) => t.id === tab.id)).toBe(true)
   })
@@ -42,7 +50,7 @@ describe('SessionStore ephemeral Assistant tabs', () => {
     // createTab() persists (forcing the session file to exist); createAssistantTab() must not
     // add itself to that file.
     await store.createTab()
-    store.createAssistantTab()
+    await store.createAssistantTab()
 
     const sessionFile = join(electronMockState.userDataDir, 'sessions', `${slugFor(workspace)}.json`)
     const raw = await readFile(sessionFile, 'utf8')
@@ -50,10 +58,20 @@ describe('SessionStore ephemeral Assistant tabs', () => {
     expect(persisted.every((t) => t.kind !== 'assistant')).toBe(true)
   })
 
-  test('closing an Assistant tab does not archive it to History, even with messages', async () => {
+  test('createAssistantTab() persists the tab to the fixed assistant-tabs file', async () => {
     const store = new SessionStore()
     await store.load('/fake/workspace/a')
-    const tab = store.createAssistantTab()
+    const tab = await store.createAssistantTab()
+
+    const raw = await readFile(assistantTabsFile(), 'utf8')
+    const persisted = JSON.parse(raw) as Array<{ id: string; kind?: string }>
+    expect(persisted.find((t) => t.id === tab.id)?.kind).toBe('assistant')
+  })
+
+  test('closing an Assistant tab with messages archives it to Assistant History, not the per-workspace History', async () => {
+    const store = new SessionStore()
+    await store.load('/fake/workspace/a')
+    const tab = await store.createAssistantTab()
     tab.messages.push({
       id: 'm1',
       role: 'user',
@@ -63,6 +81,15 @@ describe('SessionStore ephemeral Assistant tabs', () => {
 
     await store.closeTab(tab.id)
     expect(store.getHistory().find((h) => h.id === tab.id)).toBeUndefined()
+    expect(store.getAssistantHistory().find((h) => h.id === tab.id)).toBeDefined()
+  })
+
+  test('closing an Assistant tab with no messages archives nothing', async () => {
+    const store = new SessionStore()
+    await store.load('/fake/workspace/a')
+    const tab = await store.createAssistantTab()
+    await store.closeTab(tab.id)
+    expect(store.getAssistantHistory().find((h) => h.id === tab.id)).toBeUndefined()
   })
 
   test('closing a normal project tab with messages still archives it to History (regression check)', async () => {
@@ -84,24 +111,99 @@ describe('SessionStore ephemeral Assistant tabs', () => {
   test('switching workspaces (load()) carries live Assistant tabs across instead of losing them', async () => {
     const store = new SessionStore()
     await store.load('/fake/workspace/a')
-    const assistantTab = store.createAssistantTab()
+    const assistantTab = await store.createAssistantTab()
 
     await store.load('/fake/workspace/b')
     expect(store.getTabs().some((t) => t.id === assistantTab.id)).toBe(true)
   })
 
-  test('updateTab() on an Assistant tab does not trigger a disk write', async () => {
+  test('updateTab() on an Assistant tab writes to the assistant-tabs file, not the workspace session file', async () => {
     const store = new SessionStore()
     const workspace = '/fake/workspace/a'
     await store.load(workspace)
     // Force the session file to exist first via a real project tab.
     await store.createTab()
-    const tab = store.createAssistantTab()
+    const tab = await store.createAssistantTab()
     tab.title = 'Updated title'
     await store.updateTab(tab)
 
     const sessionFile = join(electronMockState.userDataDir, 'sessions', `${slugFor(workspace)}.json`)
     const raw = await readFile(sessionFile, 'utf8')
+    const persisted = JSON.parse(raw) as Array<{ id: string }>
+    expect(persisted.find((t) => t.id === tab.id)).toBeUndefined()
+
+    const assistantRaw = await readFile(assistantTabsFile(), 'utf8')
+    const assistantPersisted = JSON.parse(assistantRaw) as Array<{ id: string; title: string }>
+    expect(assistantPersisted.find((t) => t.id === tab.id)?.title).toBe('Updated title')
+  })
+
+  test('loadAssistantTabs() restores persisted Assistant tabs across a fresh SessionStore instance (simulated app restart)', async () => {
+    const store1 = new SessionStore()
+    await store1.load('/fake/workspace/a')
+    const tab = await store1.createAssistantTab()
+    tab.title = 'Reminder chat'
+    await store1.updateTab(tab)
+
+    // Simulate an app restart: brand-new SessionStore instance, load assistant tabs before any
+    // workspace load, exactly like main/index.ts does at startup.
+    const store2 = new SessionStore()
+    await store2.loadAssistantTabs()
+    expect(store2.getTabs().some((t) => t.id === tab.id && t.title === 'Reminder chat')).toBe(true)
+  })
+
+  test('loadAssistantTabs() also restores Assistant History across a restart', async () => {
+    const store1 = new SessionStore()
+    await store1.load('/fake/workspace/a')
+    const tab = await store1.createAssistantTab()
+    tab.messages.push({
+      id: 'm1',
+      role: 'user',
+      blocks: [{ type: 'text', text: 'hello' }],
+      createdAt: Date.now()
+    } as never)
+    await store1.closeTab(tab.id)
+
+    const store2 = new SessionStore()
+    await store2.loadAssistantTabs()
+    expect(store2.getAssistantHistory().find((h) => h.id === tab.id)).toBeDefined()
+  })
+
+  test('reopenAssistantHistoryEntry() restores an archived Assistant tab as a live tab with a fresh id', async () => {
+    const store = new SessionStore()
+    await store.load('/fake/workspace/a')
+    const tab = await store.createAssistantTab()
+    tab.title = 'Old assistant chat'
+    tab.messages.push({
+      id: 'm1',
+      role: 'user',
+      blocks: [{ type: 'text', text: 'hello' }],
+      createdAt: Date.now()
+    } as never)
+    await store.closeTab(tab.id)
+
+    const reopened = await store.reopenAssistantHistoryEntry(tab.id)
+    expect(reopened).not.toBeNull()
+    expect(reopened?.id).not.toBe(tab.id)
+    expect(reopened?.title).toBe('Old assistant chat')
+    expect(store.getAssistantHistory().find((h) => h.id === tab.id)).toBeUndefined()
+  })
+
+  test('deleteAssistantHistoryEntry() removes an archived Assistant tab permanently', async () => {
+    const store = new SessionStore()
+    await store.load('/fake/workspace/a')
+    const tab = await store.createAssistantTab()
+    tab.messages.push({
+      id: 'm1',
+      role: 'user',
+      blocks: [{ type: 'text', text: 'hello' }],
+      createdAt: Date.now()
+    } as never)
+    await store.closeTab(tab.id)
+
+    await store.deleteAssistantHistoryEntry(tab.id)
+    expect(store.getAssistantHistory().find((h) => h.id === tab.id)).toBeUndefined()
+
+    const raw = await readFile(assistantHistoryFile(), 'utf8')
     const persisted = JSON.parse(raw) as Array<{ id: string }>
     expect(persisted.find((t) => t.id === tab.id)).toBeUndefined()
   })

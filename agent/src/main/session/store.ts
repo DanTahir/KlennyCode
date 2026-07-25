@@ -24,9 +24,20 @@ function historyFile(workspace: string): string {
   return join(sessionsDir(), `${slugFor(workspace)}.history.json`)
 }
 
+/** Assistant tabs are workspace-independent (see TabSession.kind doc comment), so their live
+ *  set and archived history live in their own fixed files rather than per-workspace ones. */
+function assistantTabsFile(): string {
+  return join(sessionsDir(), 'assistant-tabs.json')
+}
+
+function assistantHistoryFile(): string {
+  return join(sessionsDir(), 'assistant-tabs.history.json')
+}
+
 export class SessionStore {
   private tabs: TabSession[] = []
   private history: ArchivedTabSession[] = []
+  private assistantHistory: ArchivedTabSession[] = []
   private workspace: string | null = null
 
   /** The workspace currently loaded in memory (i.e. what the UI is showing right now), or null
@@ -37,10 +48,36 @@ export class SessionStore {
     return this.workspace
   }
 
+  /** Loads persisted Assistant tabs + their archived History from their fixed, workspace-
+   *  independent files (see assistantTabsFile/assistantHistoryFile). Must be called once at
+   *  app startup, BEFORE the first load(workspace) call (or even if no workspace is ever
+   *  opened) — load() carries whatever Assistant tabs are already in `this.tabs` across a
+   *  workspace switch, so calling this first is what makes Assistant tabs survive an app
+   *  restart, not just a live workspace switch. Safe to call multiple times (idempotent
+   *  re-read), though in practice it only runs once, at startup. */
+  async loadAssistantTabs(): Promise<void> {
+    await mkdir(sessionsDir(), { recursive: true })
+    try {
+      const raw = await readFile(assistantTabsFile(), 'utf8')
+      const persisted = (JSON.parse(raw) as TabSession[]).map((t) => ({ totalSavingsUsd: 0, ...t }))
+      const existingIds = new Set(this.tabs.map((t) => t.id))
+      for (const t of persisted) if (!existingIds.has(t.id)) this.tabs.push(t)
+    } catch {
+      // No persisted Assistant tabs yet — nothing to load.
+    }
+    try {
+      const raw = await readFile(assistantHistoryFile(), 'utf8')
+      this.assistantHistory = JSON.parse(raw) as ArchivedTabSession[]
+    } catch {
+      this.assistantHistory = []
+    }
+  }
+
   async load(workspace: string): Promise<TabSession[]> {
-    // Ephemeral Assistant tabs are workspace-independent by design (see TabSession.kind doc
-    // comment) — carry any currently-open ones across the switch instead of losing them, since
-    // they were never written to the outgoing workspace's session file to begin with.
+    // Assistant tabs are workspace-independent by design (see TabSession.kind doc comment) —
+    // carry any currently-open ones across the switch instead of losing them, since they were
+    // never written to the outgoing workspace's session file to begin with (they live in their
+    // own fixed file — see assistantTabsFile/persistAssistantTabs).
     const liveAssistantTabs = this.tabs.filter((t) => t.kind === 'assistant')
     this.workspace = workspace
     await mkdir(sessionsDir(), { recursive: true })
@@ -93,27 +130,36 @@ export class SessionStore {
     return tab
   }
 
-  /** Creates a brand-new, ephemeral "Assistant" tab (see TabSession.kind doc comment). Every
-   *  call creates a distinct tab — there is no create-or-focus singleton behavior in v1.
-   *  Assistant tabs live only in memory: they are never written to the per-workspace session
-   *  file (see persist()) and never archived to History on close (see closeTab()), so they
-   *  disappear entirely on close or app quit. */
-  createAssistantTab(): TabSession {
+  /** Creates a brand-new "Assistant" tab (see TabSession.kind doc comment). Every call creates
+   *  a distinct tab — there is no create-or-focus singleton behavior. Assistant tabs are
+   *  workspace-independent: they're never written to a per-workspace session file, but they ARE
+   *  persisted to their own fixed file (see assistantTabsFile) so they survive an app restart,
+   *  and archived to their own Assistant History on close (see closeTab()). */
+  async createAssistantTab(): Promise<TabSession> {
     const tab = { ...this.createEmptyTab(), kind: 'assistant' as const, title: 'Assistant' }
     this.tabs.push(tab)
+    await this.persistAssistantTabs()
     return tab
   }
 
-  /** Closes a tab, archiving it into history (unless it never had any messages, or it's an
-   *  ephemeral Assistant tab — those are excluded from History entirely per the v1 design). */
+  /** Closes a tab, archiving it into the appropriate history (unless it never had any
+   *  messages). Assistant tabs go to the separate, workspace-independent Assistant History
+   *  rather than the per-workspace History. */
   async closeTab(tabId: string): Promise<TabSession[]> {
     const tab = this.tabs.find((t) => t.id === tabId)
     this.tabs = this.tabs.filter((t) => t.id !== tabId)
-    if (tab && tab.kind !== 'assistant' && tab.messages.length > 0) {
-      this.history.unshift({ ...tab, closedAt: Date.now() })
-      if (this.history.length > MAX_HISTORY) this.history.length = MAX_HISTORY
-      await this.persistHistory()
+    if (tab && tab.messages.length > 0) {
+      if (tab.kind === 'assistant') {
+        this.assistantHistory.unshift({ ...tab, closedAt: Date.now() })
+        if (this.assistantHistory.length > MAX_HISTORY) this.assistantHistory.length = MAX_HISTORY
+        await this.persistAssistantHistory()
+      } else {
+        this.history.unshift({ ...tab, closedAt: Date.now() })
+        if (this.history.length > MAX_HISTORY) this.history.length = MAX_HISTORY
+        await this.persistHistory()
+      }
     }
+    if (tab?.kind === 'assistant') await this.persistAssistantTabs()
     if (this.tabs.filter((t) => t.kind !== 'assistant').length === 0) this.tabs.push(this.createEmptyTab())
     await this.persist()
     return this.tabs
@@ -124,7 +170,8 @@ export class SessionStore {
     if (idx >= 0) {
       tab.updatedAt = Date.now()
       this.tabs[idx] = tab
-      if (tab.kind !== 'assistant') await this.persist()
+      if (tab.kind === 'assistant') await this.persistAssistantTabs()
+      else await this.persist()
     }
   }
 
@@ -152,11 +199,35 @@ export class SessionStore {
     return tab
   }
 
+  getAssistantHistory(): ArchivedTabSession[] {
+    return this.assistantHistory
+  }
+
+  /** Removes an archived Assistant tab permanently. */
+  async deleteAssistantHistoryEntry(tabId: string): Promise<ArchivedTabSession[]> {
+    this.assistantHistory = this.assistantHistory.filter((t) => t.id !== tabId)
+    await this.persistAssistantHistory()
+    return this.assistantHistory
+  }
+
+  /** Restores an archived Assistant tab as a new live tab (fresh id, keeps messages/title). */
+  async reopenAssistantHistoryEntry(tabId: string): Promise<TabSession | null> {
+    const archived = this.assistantHistory.find((t) => t.id === tabId)
+    if (!archived) return null
+    const now = Date.now()
+    const { closedAt: _closedAt, ...rest } = archived
+    const tab: TabSession = { ...rest, id: nanoid(), updatedAt: now }
+    this.tabs.push(tab)
+    this.assistantHistory = this.assistantHistory.filter((t) => t.id !== tabId)
+    await Promise.all([this.persistAssistantTabs(), this.persistAssistantHistory()])
+    return tab
+  }
+
   private async persist(): Promise<void> {
     if (!this.workspace) return
     await mkdir(sessionsDir(), { recursive: true })
-    // Assistant-kind tabs are intentionally ephemeral (see TabSession.kind doc comment) — never
-    // written to disk, so they vanish on close/quit rather than surviving a restart.
+    // Assistant-kind tabs live in their own fixed file (persistAssistantTabs), never the
+    // per-workspace session file.
     const persistable = this.tabs.filter((t) => t.kind !== 'assistant')
     await writeFile(sessionFile(this.workspace), JSON.stringify(persistable, null, 2), 'utf8')
   }
@@ -165,6 +236,17 @@ export class SessionStore {
     if (!this.workspace) return
     await mkdir(sessionsDir(), { recursive: true })
     await writeFile(historyFile(this.workspace), JSON.stringify(this.history, null, 2), 'utf8')
+  }
+
+  private async persistAssistantTabs(): Promise<void> {
+    await mkdir(sessionsDir(), { recursive: true })
+    const persistable = this.tabs.filter((t) => t.kind === 'assistant')
+    await writeFile(assistantTabsFile(), JSON.stringify(persistable, null, 2), 'utf8')
+  }
+
+  private async persistAssistantHistory(): Promise<void> {
+    await mkdir(sessionsDir(), { recursive: true })
+    await writeFile(assistantHistoryFile(), JSON.stringify(this.assistantHistory, null, 2), 'utf8')
   }
 }
 

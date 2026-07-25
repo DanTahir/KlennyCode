@@ -47,6 +47,9 @@ interface AppState {
   openPlanTabs: OpenPlanTab[]
   activePlanSlug: string | null
   history: ArchivedTabSession[]
+  /** Closed Assistant tabs — separate, workspace-independent history from `history` above (see
+   *  SessionStore.getAssistantHistory in the main process). */
+  assistantHistory: ArchivedTabSession[]
   skills: SkillSummary[]
   panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history' | 'cost-report'
   /** Set by the agent's open_settings_panel tool (via IPC) to scroll/focus a specific Settings
@@ -86,6 +89,7 @@ interface AppState {
   openPlanTab: (slug: string, originTabId: string | null) => void
   closePlanTab: (slug: string) => void
   setHistory: (h: ArchivedTabSession[]) => void
+  setAssistantHistory: (h: ArchivedTabSession[]) => void
   hideSubagentRun: (id: string) => void
   clearFinishedSubagentRuns: (parentTabId: string) => void
 }
@@ -108,6 +112,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   openPlanTabs: [],
   activePlanSlug: null,
   history: [],
+  assistantHistory: [],
   skills: [],
   panel: 'chat',
   settingsFocusSection: null,
@@ -164,6 +169,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       return { openPlanTabs, activePlanSlug }
     }),
   setHistory: (history) => set({ history }),
+  setAssistantHistory: (assistantHistory) => set({ assistantHistory }),
   hideSubagentRun: (id) =>
     set((s) => ({
       subagentRuns: s.subagentRuns.map((r) => (r.id === id ? { ...r, hidden: true } : r))
@@ -351,7 +357,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         break
       }
       case 'history_entry_removed': {
-        set({ history: state.history.filter((t) => t.id !== e.tabId) })
+        set({
+          history: state.history.filter((t) => t.id !== e.tabId),
+          assistantHistory: state.assistantHistory.filter((t) => t.id !== e.tabId)
+        })
         break
       }
       case 'index_progress': {

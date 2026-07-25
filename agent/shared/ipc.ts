@@ -49,6 +49,10 @@ export const IPC = {
   historyReopen: 'history:reopen',
   historyDelete: 'history:delete',
 
+  assistantHistoryList: 'assistantHistory:list',
+  assistantHistoryReopen: 'assistantHistory:reopen',
+  assistantHistoryDelete: 'assistantHistory:delete',
+
   sendMessage: 'chat:sendMessage',
   stopGeneration: 'chat:stop',
   continueTurn: 'chat:continue',
@@ -153,6 +157,12 @@ export interface KlennyApi {
   listHistory: () => Promise<ArchivedTabSession[]>
   reopenHistory: (tabId: string) => Promise<TabSession | null>
   deleteHistory: (tabId: string) => Promise<ArchivedTabSession[]>
+
+  /** Closed Assistant tabs — a separate, workspace-independent history from listHistory's
+   *  per-workspace project-tab history (see SessionStore.assistantHistoryFile). */
+  listAssistantHistory: () => Promise<ArchivedTabSession[]>
+  reopenAssistantHistory: (tabId: string) => Promise<TabSession | null>
+  deleteAssistantHistory: (tabId: string) => Promise<ArchivedTabSession[]>
 
   sendMessage: (payload: SendMessagePayload) => Promise<void>
   stopGeneration: (tabId: string) => Promise<void>

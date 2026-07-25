@@ -350,10 +350,13 @@ export interface TabSession {
    *  Sent to the model as a system message in place of the real (older) messages. */
   compactionSummary?: string
   /** 'project' (default, omitted on old persisted tabs): a normal workspace-scoped coding tab.
-   *  'assistant': an ephemeral tab opened via the sidebar "Open Assistant" button — has no
-   *  workspace, only assistant tools (Gmail/Discord/scheduler/web/cross-project/memory), is
-   *  never persisted to disk, and is not archived to History on close. See the Personal
-   *  Assistant Platform plan for the full v1 scope decision. */
+   *  'assistant': a tab opened via the sidebar "Open Assistant" button — has no workspace, only
+   *  assistant tools (Gmail/Discord/scheduler/web/cross-project/memory). Workspace-independent:
+   *  persisted to its own fixed file rather than any per-workspace session file, so it survives
+   *  an app restart and a workspace switch alike; when closed (with messages) it's archived to
+   *  the separate "Assistant" section of the History panel rather than the per-workspace one.
+   *  See the Personal Assistant Platform plan for the original v1 scope decision, and the
+   *  Assistant tab persistence/history follow-up for this behavior. */
   kind?: 'project' | 'assistant'
   /** Per-tab override for approval mode, shown in the dropdown next to Send/Stop. undefined
    *  (or 'default' on older persisted tabs) means "use AppSettings.approvalMode". Clicking

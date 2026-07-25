@@ -16,7 +16,10 @@ export function TabBar() {
           }`}
           onClick={() => setActiveTab(tab.id)}
         >
-          <span className="truncate max-w-[140px]">{tab.title}</span>
+          <span className="truncate max-w-[140px]">
+            {tab.kind === 'assistant' ? '🐾 ' : ''}
+            {tab.title}
+          </span>
           <button
             className="text-klenny-muted hover:text-klenny-text"
             onClick={(e) => {

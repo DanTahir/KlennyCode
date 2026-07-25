@@ -20,8 +20,8 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Memory** — project `KLENNY.md`, global `~/.klenny/KLENNY.md`, and auto-memory notes (Claude Code-style)
 - **Personality** — a user-editable `~/.klenny/SOUL.md` describing who the agent is and how it talks, defaulting to a playful corgi persona; edit it from the Memory tab's "Personality" scope, blank it out for a neutral voice, or restore the built-in default with one click — hardcoded guardrails always keep personality from affecting reasoning, plans, or code quality
 - **Cross-project reference (read-only)** — the agent can read files and memory from *other* projects it has previously opened, so you can ask it to port a feature or convention from one project into the one you're currently working in
-- **Personal Assistant** — an on-demand, ephemeral "Assistant" tab (Gmail, Discord, web search, scheduler, cross-project reference — no coding project required), plus a background scheduler for recurring tasks and a Discord bot for two-way chat/automation — see [Personal Assistant](#personal-assistant) below
-- **History panel** — closed chat tabs (with messages) are archived, not deleted; reopen or permanently delete them from the History panel
+- **Personal Assistant** — an on-demand, persistent "🐾 Assistant" tab (Gmail, Discord, web search, scheduler, cross-project reference — no coding project required), plus a background scheduler for recurring tasks and a Discord bot for two-way chat/automation — see [Personal Assistant](#personal-assistant) below
+- **History panel** — closed chat tabs (with messages) are archived, not deleted; reopen or permanently delete them from the History panel, which has separate "Chats" and "🐾 Assistant" sections
 - **Cost Report** — a Settings panel breaking down cumulative token usage and USD cost by model, for the current project and across all projects
 - **Codebase semantic search (beta)** — optional, off-by-default vector index of your workspace so the agent can find relevant code by meaning via a `codebase_search` tool, alongside `grep`/`glob`
 - **Browser automation (beta)** — optional, off-by-default local Playwright-driven browser control (navigate, click, type, snapshot, screenshot, etc.), gated by its own policy (Off/Ask/Auto) in Settings → Automation, independent of file-edit approvals. Chromium isn't bundled with the app; the very first browser session downloads it once (~150 MB), showing progress inline in the tool call
@@ -130,8 +130,11 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
 - **Assistant tab** — click "Open Assistant" in the sidebar (between "Check for update" and
   "Change project") to spin up a new chat tab with web search, cross-project reference, memory,
   Gmail, Discord, and scheduler tools, but no file/shell access (no coding project needed). Every
-  click creates a fresh, independent tab; closing one discards it permanently — there is no
-  persistence or history for Assistant tabs in this version.
+  click creates a fresh, independent tab (no create-or-focus singleton behavior), tagged with a
+  🐾 pawprint in the tab bar and automatically retitled from your first message, just like a
+  regular chat tab. Assistant tabs are workspace-independent: they persist across app restarts,
+  and closing one (once it has messages) archives it to the "🐾 Assistant" section of the History
+  panel instead of discarding it — reopen it from there to keep going.
 - **Gmail** — connect your own Google Cloud OAuth client in Settings → Integrations to let the
   agent read and (once you opt in) send email.
 - **Discord** — connect a bot application (never a personal account) to let the agent post

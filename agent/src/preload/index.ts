@@ -48,6 +48,10 @@ const api: KlennyApi = {
   reopenHistory: (tabId) => ipcRenderer.invoke(IPC.historyReopen, tabId),
   deleteHistory: (tabId) => ipcRenderer.invoke(IPC.historyDelete, tabId),
 
+  listAssistantHistory: () => ipcRenderer.invoke(IPC.assistantHistoryList),
+  reopenAssistantHistory: (tabId) => ipcRenderer.invoke(IPC.assistantHistoryReopen, tabId),
+  deleteAssistantHistory: (tabId) => ipcRenderer.invoke(IPC.assistantHistoryDelete, tabId),
+
   sendMessage: (payload) => ipcRenderer.invoke(IPC.sendMessage, payload),
   stopGeneration: (tabId) => ipcRenderer.invoke(IPC.stopGeneration, tabId),
   continueTurn: (tabId) => ipcRenderer.invoke(IPC.continueTurn, tabId),

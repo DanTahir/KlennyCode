@@ -1,9 +1,10 @@
 import { useCallback } from 'react'
 import { useAppStore } from '../store/useAppStore'
 
-/** Sidebar "Open Assistant" button action — always creates a brand-new, ephemeral Assistant
- *  tab (no create-or-focus singleton behavior in v1; see the Personal Assistant Platform plan).
- *  Closing it later simply discards it, since createAssistantTab() never persists to disk. */
+/** Sidebar "Open Assistant" button action — always creates a brand-new Assistant tab (no
+ *  create-or-focus singleton behavior; see the Personal Assistant Platform plan). Assistant
+ *  tabs persist across app restarts and, once closed (with messages), are archived to the
+ *  "Assistant" section of the History panel rather than being discarded. */
 export function useAssistantTabActions() {
   const { setTabs, setActiveTab, setPanel } = useAppStore()
 
