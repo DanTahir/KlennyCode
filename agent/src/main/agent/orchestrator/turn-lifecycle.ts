@@ -181,9 +181,9 @@ export async function runUserTurn(tabId: string, userText: string, images?: stri
     const userMsg: ChatMessage = { id: nanoid(), role: 'user', blocks: userBlocks, createdAt: Date.now() }
     tab.messages.push(userMsg)
     // Assistant tabs start life titled 'Assistant' (see SessionStore.createAssistantTab)
-    // instead of 'New chat' — rename on the first real user message either way, so Assistant
+    // instead of 'Code chat' — rename on the first real user message either way, so Assistant
     // tabs get a meaningful title too instead of staying generic forever.
-    const isDefaultTitle = tab.title === 'New chat' || tab.title === 'Assistant'
+    const isDefaultTitle = tab.title === 'Code chat' || tab.title === 'Assistant'
     const titleChanged = isDefaultTitle && userText.trim().length > 0
     if (titleChanged) tab.title = userText.trim().slice(0, 40)
     await sessionStore.updateTab(tab)

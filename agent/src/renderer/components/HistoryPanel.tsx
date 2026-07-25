@@ -64,7 +64,7 @@ export function HistoryPanel() {
             className={`px-3 py-1.5 ${section === 'chats' ? 'bg-klenny-accent text-black' : 'hover:bg-klenny-panel2'}`}
             onClick={() => setSection('chats')}
           >
-            Chats
+            💻 Code
           </button>
           <button
             className={`px-3 py-1.5 ${section === 'assistant' ? 'bg-klenny-accent text-black' : 'hover:bg-klenny-panel2'}`}
@@ -77,20 +77,20 @@ export function HistoryPanel() {
       <p className="text-klenny-muted text-sm">
         {isAssistant
           ? 'Assistant tabs are archived here when closed. Reopen one to keep going, or delete it for good.'
-          : 'Chats are archived here when their tab is closed. Reopen one to keep going, or delete it for good.'}
+          : 'Code chats are archived here when their tab is closed. Reopen one to keep going, or delete it for good.'}
       </p>
       {list.length === 0 && (
         <p className="text-klenny-muted text-sm">
           {isAssistant
             ? 'No closed Assistant tabs yet — anything you close will show up here.'
-            : 'No closed chats yet — anything you close will show up here.'}
+            : 'No closed Code chats yet — anything you close will show up here.'}
         </p>
       )}
       {list.map((tab) => (
         <div key={tab.id} className="border border-klenny-border rounded-lg p-4 bg-klenny-panel2">
           <div className="flex items-center justify-between mb-2">
             <h3 className="font-semibold truncate">
-              {isAssistant ? '🐾 ' : ''}
+              {isAssistant ? '🐾 ' : '💻 '}
               {tab.title}
             </h3>
             <span className="text-xs text-klenny-muted shrink-0 ml-3">

@@ -104,7 +104,7 @@ export class SessionStore {
     const now = Date.now()
     return {
       id: nanoid(),
-      title: 'New chat',
+      title: 'Code chat',
       mode: 'agent',
       model: DEFAULT_MAIN_MODEL,
       createdAt: now,
