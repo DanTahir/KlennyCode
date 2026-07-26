@@ -39,9 +39,9 @@ export default function HomePage() {
       </header>
 
       {/* ---------- Hero ---------- */}
-      <section className="mx-auto grid max-w-6xl gap-12 px-6 pb-20 pt-6 lg:grid-cols-2 lg:items-center">
-        {/* Left: copy + CTAs */}
-        <div className="flex flex-col items-start text-left">
+      <section className="mx-auto grid max-w-6xl gap-8 px-6 pb-20 pt-6 lg:grid-cols-2 lg:items-start">
+        {/* Left: copy + CTAs (relative + z-10 so it stays readable in front of the overlapping hero image) */}
+        <div className="relative z-10 flex flex-col items-start text-left">
           <div className="mb-6">
             <OpenSourceBadge />
           </div>
@@ -83,13 +83,13 @@ export default function HomePage() {
         </div>
 
         {/* Right: hero artwork + mascot trio */}
-        <div className="flex flex-col items-center gap-6">
+        <div className="flex flex-col items-center gap-6 lg:items-end">
           <Image
             src="/klennywebhero.png"
             alt="Klenny, the corgi mascot of Klenny Code, surrounded by icons representing coding, terminal, skills, search, scheduling, and browser automation"
             width={1536}
             height={1024}
-            className="w-full max-w-xl drop-shadow-[0_0_60px_rgba(232,134,58,0.25)]"
+            className="w-full max-w-xl drop-shadow-[0_0_60px_rgba(232,134,58,0.25)] lg:mt-14 lg:w-[130%] lg:max-w-none lg:-ml-[18%]"
             priority
           />
           <div className="flex items-end justify-center gap-4 sm:gap-6">
@@ -150,7 +150,7 @@ export default function HomePage() {
           </MiniFeature>
           <MiniFeature icon="🐕" title="Personality, tuned by you" color="orange">
             Klenny ships with a playful corgi personality out of the box — lovable, loyal, and a
-            little sassy. Edit the .txt file to make it uniquely yours.
+            little sassy. Edit the SOUL.md file to make it uniquely yours.
           </MiniFeature>
           <MiniFeature icon="🧩" title="Cross-project lookup" color="green">
             Ask Klenny to reference, search, or port a feature from one of your other projects
