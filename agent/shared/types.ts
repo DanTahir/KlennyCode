@@ -332,6 +332,12 @@ export interface SubagentRun {
   finishedAt?: number
   /** Client-side only: user dismissed this run's card from the Subagents panel after it finished. */
   hidden?: boolean
+  /** Cumulative USD cost of this subagent's own turns, updated live while it runs (mirrors
+   *  TabSession.totalCostUsd for the subagent's own ephemeral sub-tab). */
+  totalCostUsd: number
+  /** Cumulative USD saved via prompt caching on this subagent's own turns (mirrors
+   *  TabSession.totalSavingsUsd). */
+  totalSavingsUsd: number
 }
 
 // ---------- Plan mode ----------

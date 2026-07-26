@@ -3,12 +3,20 @@ import { useAppStore } from '../store/useAppStore'
 
 const SUMMARY_PREVIEW_CHARS = 400
 
+function formatCost(usd: number): string {
+  return '$' + usd.toFixed(4)
+}
+
 export function SubagentPanel() {
   const { subagentRuns, activeTabId, hideSubagentRun, clearFinishedSubagentRuns } = useAppStore()
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  // Tracked across the whole tab regardless of hidden/cleared state, so the running total
+  // doesn't shrink just because the user hid a finished card — it only resets when the tab closes.
   const allRuns = subagentRuns.filter((r) => r.parentTabId === activeTabId)
   const runs = allRuns.filter((r) => !r.hidden)
   const hasFinished = runs.some((r) => r.status !== 'running')
+  const totalCostUsd = allRuns.reduce((sum, r) => sum + r.totalCostUsd, 0)
+  const totalSavingsUsd = allRuns.reduce((sum, r) => sum + r.totalSavingsUsd, 0)
   if (!runs.length) return null
 
   const toggleExpanded = (id: string) => {
@@ -22,7 +30,7 @@ export function SubagentPanel() {
 
   return (
     <aside className="w-72 border-l border-klenny-border bg-klenny-panel p-3 overflow-y-auto">
-      <div className="flex items-center justify-between mb-2">
+      <div className="flex items-center justify-between mb-1">
         <div className="text-sm font-medium">Subagents</div>
         {hasFinished && (
           <button
@@ -32,6 +40,12 @@ export function SubagentPanel() {
           >
             Clear finished
           </button>
+        )}
+      </div>
+      <div className="text-xs text-klenny-muted mb-2">
+        {formatCost(totalCostUsd)} this chat's subagents
+        {totalSavingsUsd > 0 && (
+          <span className="text-green-400"> (saved {formatCost(totalSavingsUsd)} via caching)</span>
         )}
       </div>
       <div className="space-y-2">
@@ -53,6 +67,12 @@ export function SubagentPanel() {
                 <span className="text-klenny-muted italic">{r.activity ?? 'Running...'}</span>
               ) : (
                 r.status
+              )}
+            </div>
+            <div className="mt-1 text-klenny-muted">
+              {formatCost(r.totalCostUsd)}
+              {r.totalSavingsUsd > 0 && (
+                <span className="text-green-400"> (saved {formatCost(r.totalSavingsUsd)})</span>
               )}
             </div>
             {r.summary && (

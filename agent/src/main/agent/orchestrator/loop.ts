@@ -876,7 +876,9 @@ export async function runSubagent(
     description: desc,
     status: 'running',
     activity: 'Thinking...',
-    startedAt: Date.now()
+    startedAt: Date.now(),
+    totalCostUsd: 0,
+    totalSavingsUsd: 0
   }
   emit({ type: 'subagent_update', tabId: parentTab.id, run })
 
@@ -913,6 +915,15 @@ export async function runSubagent(
     events.push(e)
     emit(e)
 
+    // Keep the run's cost totals current (live, not just at the end) so the Subagents panel
+    // can show cost-so-far for a still-running subagent, mirroring the main chat's spend display.
+    let updated = false
+    if (e.type === 'spend_update' && e.tabId === subTab.id) {
+      run.totalCostUsd = e.totalCostUsd
+      run.totalSavingsUsd = e.totalSavingsUsd
+      updated = true
+    }
+
     // Keep the run's "activity" label current so the Subagents panel shows what the
     // subagent is doing right now instead of a static "running" state.
     let activity: string | undefined
@@ -924,6 +935,9 @@ export async function runSubagent(
     }
     if (activity && activity !== run.activity) {
       run.activity = activity
+      updated = true
+    }
+    if (updated) {
       emit({ type: 'subagent_update', tabId: parentTab.id, run })
     }
   }
@@ -948,6 +962,10 @@ export async function runSubagent(
     run.summary = truncateSummary(summary)
     run.activity = undefined
     run.finishedAt = Date.now()
+    // Safety net: sync from subTab directly in case the final usage chunk's spend_update event
+    // hasn't been processed above for whatever reason, so the final cost shown is never stale.
+    run.totalCostUsd = subTab.totalCostUsd
+    run.totalSavingsUsd = subTab.totalSavingsUsd ?? 0
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
     emit({ type: 'turn_end', tabId: subTab.id })
 
@@ -961,6 +979,8 @@ export async function runSubagent(
     run.summary = e instanceof Error ? e.message : String(e)
     run.activity = undefined
     run.finishedAt = Date.now()
+    run.totalCostUsd = subTab.totalCostUsd
+    run.totalSavingsUsd = subTab.totalSavingsUsd ?? 0
     emit({ type: 'subagent_update', tabId: parentTab.id, run })
     emit({ type: 'turn_end', tabId: subTab.id })
     return { ok: false, summary: run.summary, error: 'subagent_error' }

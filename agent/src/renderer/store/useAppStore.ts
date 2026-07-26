@@ -136,10 +136,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   setModels: (models) => set({ models }),
   setShells: (shells) => set({ shells }),
   setTabs: (tabs) =>
-    set((s) => ({
-      tabs,
-      activeTabId: s.activeTabId && tabs.some((t) => t.id === s.activeTabId) ? s.activeTabId : tabs[0]?.id ?? null
-    })),
+    set((s) => {
+      const liveIds = new Set(tabs.map((t) => t.id))
+      // Prune subagentRuns whose parent tab no longer exists (e.g. it was closed) so they don't
+      // accumulate in memory for the lifetime of the app.
+      const subagentRuns = s.subagentRuns.filter((r) => liveIds.has(r.parentTabId))
+      return {
+        tabs,
+        subagentRuns,
+        activeTabId: s.activeTabId && tabs.some((t) => t.id === s.activeTabId) ? s.activeTabId : tabs[0]?.id ?? null
+      }
+    }),
   setActiveTab: (id) => set({ activeTabId: id, activePlanSlug: null }),
   upsertTab: (tab) =>
     set((s) => ({
