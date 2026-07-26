@@ -23,14 +23,14 @@ export const metadata: Metadata = {
     description: DESCRIPTION,
     url: SITE_URL,
     siteName: 'Klenny Code',
-    images: [{ url: '/Screenshot2.png', width: 1580, height: 1012 }],
+    images: [{ url: '/KlennyScreenshot1.png', width: 1577, height: 1011 }],
     type: 'website',
   },
   twitter: {
     card: 'summary_large_image',
     title: 'Klenny Code — The open-source AI coding agent for your desktop',
     description: DESCRIPTION,
-    images: ['/Screenshot2.png'],
+    images: ['/KlennyScreenshot1.png'],
   },
   icons: {
     icon: '/Klenny.jpg',

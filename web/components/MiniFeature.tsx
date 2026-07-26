@@ -14,17 +14,17 @@ const COLOR_CLASSES: Record<Required<Props>['color'], string> = {
   yellow: 'bg-amber-500/15 text-amber-400',
 };
 
-export default function FeatureCard({ icon, title, children, color = 'orange' }: Props) {
+export default function MiniFeature({ icon, title, children, color = 'orange' }: Props) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-6 transition hover:border-corgi-orange/40 hover:bg-white/[0.07]">
+    <div className="flex flex-col items-center gap-2 text-center">
       <div
-        className={`mb-4 flex h-10 w-10 items-center justify-center rounded-lg text-xl ${COLOR_CLASSES[color]}`}
+        className={`flex h-11 w-11 items-center justify-center rounded-full text-lg ${COLOR_CLASSES[color]}`}
         aria-hidden
       >
         {icon}
       </div>
-      <h3 className="mb-2 text-lg font-semibold text-corgi-cream">{title}</h3>
-      <p className="text-sm leading-relaxed text-corgi-cream/70">{children}</p>
+      <h3 className="text-sm font-semibold text-corgi-cream">{title}</h3>
+      <p className="text-xs leading-relaxed text-corgi-cream/60">{children}</p>
     </div>
   );
 }
