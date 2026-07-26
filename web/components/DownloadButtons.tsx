@@ -86,7 +86,9 @@ export default function DownloadButtons({ release, showGithubButton, align = 'ce
             <a
               key={key}
               href={asset.url}
-              className="group flex min-w-[180px] flex-col items-center gap-1 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-sm transition hover:border-corgi-orange/60 hover:bg-white/10"
+              className={`group flex flex-col items-center gap-1 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-sm transition hover:border-corgi-orange/60 hover:bg-white/10 ${
+                align === 'left' ? 'min-w-[140px]' : 'min-w-[180px]'
+              }`}
             >
               <span className="flex items-center gap-2 font-medium text-corgi-cream">
                 <span aria-hidden>{meta.icon}</span>
