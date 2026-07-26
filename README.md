@@ -25,7 +25,7 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Cost Report** — a Settings panel breaking down cumulative token usage and USD cost by model, for the current project and across all projects
 - **Codebase semantic search (beta)** — optional, off-by-default vector index of your workspace so the agent can find relevant code by meaning via a `codebase_search` tool, alongside `grep`/`glob`
 - **Browser automation (beta)** — optional, off-by-default local Playwright-driven browser control (navigate, click, type, snapshot, screenshot, etc.), gated by its own policy (Off/Ask/Auto) in Settings → Automation, independent of file-edit approvals. Chromium isn't bundled with the app; the very first browser session downloads it once (~150 MB), showing progress inline in the tool call
-- **Integrated terminal** — a collapsible, real interactive shell session (via `node-pty`) docked under the chat view, rooted at your open project
+- **Integrated terminal** — a collapsible, real interactive shell session (via `node-pty`) docked under the chat view, rooted at your open project. Its output is persisted to a size-capped, ANSI-stripped log per project (survives app restarts) and readable by the agent via a `read_terminal` tool, so it can see what you ran — including in past sessions — without you pasting it
 - **Selectable shell** — pick which shell `run_command` and the terminal use (e.g. Git Bash, PowerShell, cmd, WSL) in Settings, or leave it on OS-default Auto
 - **No `.gitignore` gymnastics** — plans, auto-memory notes, and the codebase index live in Klenny Code's own app data directory, not in your project
 - **Skills** — Cursor-style `SKILL.md` files, auto-discovered and loaded when relevant

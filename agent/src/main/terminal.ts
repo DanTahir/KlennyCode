@@ -3,6 +3,7 @@ import type { IPty } from 'node-pty'
 import { nanoid } from 'nanoid'
 import type { ShellInfo } from '@shared/types'
 import { resolveShell } from './shells'
+import { appendTerminalLog, appendTerminalLogMarker } from './terminalLog'
 
 /** Extra args used to make a shell start interactively when launched under a PTY (mirrors what a
  *  normal double-click / terminal-app launch of that shell would use). Only posix shells need this
@@ -17,6 +18,9 @@ export interface TerminalSession {
   id: string
   pty: IPty
   shell: ShellInfo
+  /** Workspace root this session was spawned in — used to route its output to the right
+   *  per-project persistent terminal log (see terminalLog.ts) so the agent can read it back. */
+  workspace: string
 }
 
 const sessions = new Map<string, TerminalSession>()
@@ -44,12 +48,17 @@ export function createTerminal(opts: { shellId: string | null | undefined; cwd: 
     env: process.env as Record<string, string>
   })
 
-  const session: TerminalSession = { id, pty: proc, shell }
+  const session: TerminalSession = { id, pty: proc, shell, workspace: opts.cwd }
   sessions.set(id, session)
+  appendTerminalLogMarker(opts.cwd, `Terminal session started (${shell.name}) — ${new Date().toLocaleString()}`)
 
-  proc.onData((data) => onDataCb?.(id, data))
+  proc.onData((data) => {
+    appendTerminalLog(session.workspace, data)
+    onDataCb?.(id, data)
+  })
   proc.onExit(({ exitCode }) => {
     sessions.delete(id)
+    appendTerminalLogMarker(session.workspace, `Terminal session ended (exit ${exitCode ?? 0})`)
     onExitCb?.(id, exitCode ?? 0)
   })
 

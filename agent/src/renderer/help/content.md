@@ -27,6 +27,7 @@ Read-only tools only. Klenny Code will ask clarifying questions, research your c
 | `grep` | Regex search via ripgrep |
 | `glob` | Find files by pattern |
 | `run_command` | Run shell commands (with approval) |
+| `read_terminal` | Read the persistent log of the Terminal panel below, including past sessions |
 | `web_search` / `fetch_url` | Look up docs and references |
 | `ask_question` | Ask you structured multiple-choice questions |
 | `task` | Spawn an isolated subagent |
@@ -139,6 +140,12 @@ A collapsible terminal is docked under the chat view — click the "Terminal" ba
 in Settings → Shell (or the OS default if left on Auto), rooted at your open project folder. The session
 stays alive while you collapse/expand the panel, and only restarts if you switch workspaces, click
 "Restart", or close the app.
+
+Everything printed in the terminal is also saved to a persistent, plain-text log (ANSI colors
+stripped, capped at a few MB with older output auto-trimmed) in Klenny Code's app data directory —
+nothing to gitignore. The agent can read it back with the `read_terminal` tool, including sessions
+from before the app was last closed, so it can see commands and errors you ran without you having
+to paste them.
 
 Pick which shell to use — Git Bash, PowerShell, cmd, WSL, or your OS default — under **Settings → Shell**.
 This same setting also controls the shell `run_command` uses.

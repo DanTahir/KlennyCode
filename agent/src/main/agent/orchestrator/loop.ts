@@ -44,6 +44,7 @@ import {
   grepTool,
   globTool,
   runCommandTool,
+  readTerminalTool,
   webSearchTool,
   fetchUrlTool
 } from '../tools/index'
@@ -617,6 +618,8 @@ async function dispatchTool(
       return globTool(args as { pattern: string; cwd?: string })
     case 'run_command':
       return runCommandTool(args as { command: string; cwd?: string; timeout_ms?: number }, signal, shellId)
+    case 'read_terminal':
+      return readTerminalTool(args as { lines?: number })
     case 'web_search':
       return webSearchTool(args as { query: string })
     case 'fetch_url':
@@ -762,6 +765,8 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       return `Finding files matching "${str(args.pattern) ?? ''}"`
     case 'run_command':
       return `Running: ${str(args.command) ?? 'command'}`
+    case 'read_terminal':
+      return 'Reading terminal log'
     case 'web_search':
       return `Searching the web for "${str(args.query) ?? ''}"`
     case 'fetch_url':

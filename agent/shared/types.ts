@@ -138,6 +138,7 @@ export type ToolName =
   | 'grep'
   | 'glob'
   | 'run_command'
+  | 'read_terminal'
   | 'web_search'
   | 'fetch_url'
   | 'list_skills'
@@ -167,7 +168,7 @@ export type ToolName =
 /** Tools that need a real, open coding-project workspace to make sense (file I/O, shell,
  *  semantic code search). Gated off entirely on Assistant-kind tabs and whenever no workspace
  *  is open — see getToolDefinitions() in agent/tools/definitions.ts. */
-export const CODING_ONLY_TOOLS: ToolName[] = ['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command', 'codebase_search']
+export const CODING_ONLY_TOOLS: ToolName[] = ['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command', 'read_terminal', 'codebase_search']
 
 /** The single multiplexed browser-automation tool (action-addressed: open/navigate/snapshot/
  *  click/etc — see agent/tools/browser.ts). Doesn't fit CODING_ONLY_TOOLS (no file/workspace
@@ -211,6 +212,7 @@ export const READ_ONLY_TOOLS: ToolName[] = [
   'read_file',
   'grep',
   'glob',
+  'read_terminal',
   'web_search',
   'fetch_url',
   'list_skills',

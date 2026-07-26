@@ -18,6 +18,8 @@ export { webSearchTool, fetchUrlTool } from './web'
 
 export { runCommandTool, killBackgroundProcess, runProcess } from './shell'
 
+export { readTerminalTool } from './terminal'
+
 // Re-exported for backward compatibility — canonical definitions now live in @shared/types
 // (dependency-free, safe to import from test code without pulling in Electron).
 export { READ_ONLY_TOOLS, MUTATING_TOOLS } from '@shared/types'

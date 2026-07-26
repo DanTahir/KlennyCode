@@ -154,6 +154,20 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'read_terminal',
+        description:
+          'Read the persistent log of the user\'s interactive terminal panel for this project — plain text, ANSI colors stripped, capped to a reasonable size with older output auto-trimmed. Unlike run_command (which only sees its own output), this shows what the USER has actually typed/run in their terminal, including in past app sessions (marked with "=== Terminal session started/ended ===" lines). Use it to see context for a command the user mentioned or errors they saw, without asking them to paste it.',
+        parameters: {
+          type: 'object',
+          properties: {
+            lines: { type: 'number', description: 'Number of most recent lines to return (default 200, max 5000).' }
+          }
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'web_search',
         description: 'Search the web for documentation or errors. Returns a list of { title, url } results — pass a result\'s url to fetch_url to read its content.',
         parameters: {
@@ -601,6 +615,7 @@ export function getToolDefinitions(
     'read_file',
     'grep',
     'glob',
+    'read_terminal',
     'web_search',
     'fetch_url',
     'list_skills',
@@ -626,6 +641,7 @@ export function getToolDefinitions(
     'grep',
     'glob',
     'run_command',
+    'read_terminal',
     'web_search',
     'fetch_url',
     'list_skills',
