@@ -244,6 +244,47 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'write_skill',
+        description:
+          'Create or overwrite a Cursor-style skill (a SKILL.md file with instructions you can later follow via read_skill). Use "project" scope for skills specific to this codebase (saved under .klenny/skills/ in the project), or "global" scope for skills useful across every project (saved under the global Klenny directory). Overwrites any existing skill with the same name in that scope.',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Short kebab-case skill identifier, e.g. "browser-automation". Used as the directory/file name.' },
+            scope: { type: 'string', enum: ['project', 'global'], description: '"project" requires a workspace to be open.' },
+            description: { type: 'string', description: 'One-line summary shown in the skills catalog — should help a future agent decide when to read this skill.' },
+            body: { type: 'string', description: 'Full skill instructions in Markdown (the SKILL.md body, below the frontmatter).' }
+          },
+          required: ['name', 'scope', 'description', 'body']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'write_subagent',
+        description:
+          'Create or overwrite a custom subagent type (delegatable via the `task` tool). Use "project" scope for subagents specific to this codebase (saved under .klenny/agents/ in the project), or "global" scope for subagents useful across every project. Cannot overwrite the built-in subagent names (general-purpose, explore, plan-checker). Overwrites any existing custom subagent with the same name in that scope.',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Short kebab-case identifier, e.g. "bug-hunter". Used as the file name and the agent_type value passed to `task`.' },
+            scope: { type: 'string', enum: ['project', 'global'], description: '"project" requires a workspace to be open.' },
+            description: { type: 'string', description: 'One-line summary shown in the subagents catalog — should help a future agent decide when to delegate to this type.' },
+            tools: {
+              description: 'Either the literal string "all", or an array of tool names this subagent type is restricted to (e.g. ["read_file", "grep", "glob"]).',
+              anyOf: [{ type: 'string', enum: ['all'] }, { type: 'array', items: { type: 'string' } }]
+            },
+            model: { type: 'string', description: 'Optional OpenRouter model id override for this subagent type; omit to use the default subagent model.' },
+            body: { type: 'string', description: 'Full system-prompt instructions for this subagent type, in Markdown (the file body, below the frontmatter).' }
+          },
+          required: ['name', 'scope', 'description', 'tools', 'body']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'task',
         description:
           "Delegate a self-contained chunk of work to a subagent that runs in its own isolated context window and reports back only a final summary. Use it proactively, before doing the work yourself, when a step is open-ended or likely to take many tool calls — broad codebase exploration, multi-file research, hunting for where something is handled, verifying a hypothesis across many files — so that exploration noise (file reads, grep hits, dead ends) stays out of your own context instead of bloating it. Also use it to fan out independent, parallelizable lookups by issuing multiple task calls in the same turn (e.g. researching several unrelated libraries at once). Do NOT delegate a single small, well-scoped edit or lookup you could finish yourself in 1-2 tool calls — the round-trip isn't worth it there. Pick agent_type from the Subagents catalog in the system prompt. Write `prompt` as a fully self-contained brief: the subagent sees nothing else from this conversation, so include all relevant context, files, and the exact question or outcome you need back.",
@@ -648,6 +689,8 @@ export function getToolDefinitions(
     'read_skill',
     'read_memory',
     'write_memory',
+    'write_skill',
+    'write_subagent',
     'task',
     'ask_question',
     'codebase_search',

@@ -229,10 +229,14 @@ export async function writeSkill(
   description: string,
   body: string
 ): Promise<void> {
-  const base =
-    scope === 'global'
-      ? join(globalKlennyDir(), 'skills', name)
-      : join(getWorkspace() ?? '.', '.klenny', 'skills', name)
+  let base: string
+  if (scope === 'global') {
+    base = join(globalKlennyDir(), 'skills', name)
+  } else {
+    const ws = getWorkspace()
+    if (!ws) throw new Error('No workspace open — cannot write a project-scoped skill')
+    base = join(ws, '.klenny', 'skills', name)
+  }
   await mkdir(base, { recursive: true })
   const frontmatter = `---\nname: ${name}\ndescription: ${description}\n---\n\n`
   await writeFile(join(base, 'SKILL.md'), frontmatter + body.trim() + '\n', 'utf8')

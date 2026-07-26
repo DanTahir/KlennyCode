@@ -94,8 +94,17 @@ export async function writeSubagentType(
   model: string | undefined,
   body: string
 ): Promise<void> {
-  const dir =
-    scope === 'global' ? join(globalKlennyDir(), 'agents') : join(getWorkspace() ?? '.', '.klenny', 'agents')
+  if (BUILT_IN.some((b) => b.name === name)) {
+    throw new Error(`"${name}" is a built-in subagent name and cannot be overwritten`)
+  }
+  let dir: string
+  if (scope === 'global') {
+    dir = join(globalKlennyDir(), 'agents')
+  } else {
+    const ws = getWorkspace()
+    if (!ws) throw new Error('No workspace open — cannot write a project-scoped subagent')
+    dir = join(ws, '.klenny', 'agents')
+  }
   await mkdir(dir, { recursive: true })
   const toolsYaml = tools === 'all' ? 'all' : `[${(tools as string[]).map((t) => `"${t}"`).join(', ')}]`
   const modelLine = model ? `model: ${model}\n` : ''

@@ -58,8 +58,8 @@ import {
   readOtherProjectMemoryTool
 } from '../tools/otherProjects'
 import { writeMemory, readMemoryTopic } from '../memory/manager'
-import { listSkills, readSkill } from '../skills/manager'
-import { getSubagentType } from '../subagents/manager'
+import { listSkills, readSkill, writeSkill } from '../skills/manager'
+import { getSubagentType, writeSubagentType } from '../subagents/manager'
 import { savePlan } from '../plan/manager'
 import { approvalManager } from '../approval/manager'
 import { maybeCompact } from '../compaction/compactor'
@@ -650,6 +650,30 @@ async function dispatchTool(
     case 'write_memory':
       await writeMemory(args.scope as 'project' | 'global', String(args.topic), String(args.content))
       return { ok: true, summary: 'Memory saved' }
+    case 'write_skill': {
+      try {
+        await writeSkill(String(args.name), args.scope as 'project' | 'global', String(args.description), String(args.body))
+        return { ok: true, summary: `Skill "${String(args.name)}" saved (${String(args.scope)})` }
+      } catch (e) {
+        return { ok: false, summary: 'Failed to save skill', error: e instanceof Error ? e.message : String(e) }
+      }
+    }
+    case 'write_subagent': {
+      try {
+        const toolsArg = args.tools === 'all' ? 'all' : (Array.isArray(args.tools) ? (args.tools as string[]) : [])
+        await writeSubagentType(
+          String(args.name),
+          args.scope as 'project' | 'global',
+          String(args.description),
+          toolsArg,
+          args.model ? String(args.model) : undefined,
+          String(args.body)
+        )
+        return { ok: true, summary: `Subagent "${String(args.name)}" saved (${String(args.scope)})` }
+      } catch (e) {
+        return { ok: false, summary: 'Failed to save subagent', error: e instanceof Error ? e.message : String(e) }
+      }
+    }
     case 'list_projects':
       return listProjectsTool()
     case 'read_other_project_file':
@@ -784,6 +808,10 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       return `Reading memory "${str(args.topic) ?? ''}"`
     case 'write_memory':
       return `Writing memory "${str(args.topic) ?? ''}"`
+    case 'write_skill':
+      return `Writing skill "${str(args.name) ?? ''}"`
+    case 'write_subagent':
+      return `Writing subagent "${str(args.name) ?? ''}"`
     case 'ask_question':
       return 'Asking a clarifying question'
     case 'codebase_search':

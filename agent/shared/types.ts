@@ -145,6 +145,8 @@ export type ToolName =
   | 'read_skill'
   | 'read_memory'
   | 'write_memory'
+  | 'write_skill'
+  | 'write_subagent'
   | 'task'
   | 'ask_question'
   | 'save_plan'
@@ -189,6 +191,8 @@ export const ASSISTANT_TOOLS: ToolName[] = [
   'read_other_project_memory',
   'read_memory',
   'write_memory',
+  'write_skill',
+  'write_subagent',
   'open_settings_panel',
   'gmail_list_messages',
   'gmail_get_message',
@@ -227,7 +231,18 @@ export const READ_ONLY_TOOLS: ToolName[] = [
   'read_other_project_memory'
 ]
 
-export const MUTATING_TOOLS: ToolName[] = ['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command', 'write_memory', 'task', 'browser']
+export const MUTATING_TOOLS: ToolName[] = [
+  'write_file',
+  'edit_file',
+  'multi_edit',
+  'delete_file',
+  'run_command',
+  'write_memory',
+  'write_skill',
+  'write_subagent',
+  'task',
+  'browser'
+]
 
 // ---------- Approvals ----------
 
