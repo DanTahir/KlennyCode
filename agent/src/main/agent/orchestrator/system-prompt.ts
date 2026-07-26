@@ -16,9 +16,10 @@ import { readSoul } from '../soul/manager'
  * buildSystemPrompt's return value — it changes on every single call (down to the second), and
  * the whole system message is sent/cached as one prefix. Folding it into that string would mean
  * the "static" system prompt is never actually identical twice, so explicit-cache models
- * (Anthropic, Qwen, ...) would never get a cache hit on it. Callers must send this as its own,
- * uncached system message instead (see toORMessages' `currentTimeNote` param) so the big, truly
- * static prefix (persona, memory, skills/subagent catalogs) can still cache normally.
+ * (Anthropic, Qwen, ...) would never get a cache hit on it. Callers must send this separately,
+ * as an uncached trailing content part appended after the wire messages are built (see
+ * `streamChatCompletion`'s `currentTimeNote` option / `applyCacheControl` in openrouter/caching.ts)
+ * so the big, truly static prefix (persona, memory, skills/subagent catalogs) can still cache normally.
  */
 export function buildCurrentTimeNote(): string {
   const now = new Date()

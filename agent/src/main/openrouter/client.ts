@@ -150,6 +150,9 @@ export async function* streamChatCompletion(opts: {
   supportsExplicitCaching?: boolean
   /** skip the "last message" cache breakpoint on the very first request of a conversation (nothing to read back yet) */
   includeLastMessageCacheBreakpoint?: boolean
+  /** wire-message index of the previous request's "last message" breakpoint for this tab, so it
+   *  gets explicitly re-marked this request too — see applyCacheControl's doc comment */
+  priorCacheBreakpointIdx?: number
   /** explicit output token cap, sized generously off the model's own reported max — reduces how
    *  often generations get cut off mid-response/mid-tool-call by provider defaults */
   maxTokens?: number
@@ -163,8 +166,17 @@ export async function* streamChatCompletion(opts: {
     opts.messages,
     Boolean(opts.supportsExplicitCaching),
     opts.includeLastMessageCacheBreakpoint ?? true,
-    opts.currentTimeNote
+    opts.currentTimeNote,
+    opts.priorCacheBreakpointIdx
   )
+  if (opts.supportsExplicitCaching) {
+    const breakpointIdxs = messages
+      .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
+      .filter((i) => i >= 0)
+    console.log(
+      `[cache] request model=${opts.model} messages=${messages.length} breakpointsAt=${JSON.stringify(breakpointIdxs)} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint}`
+    )
+  }
   const body: Record<string, unknown> = {
     model: opts.model,
     messages,
@@ -296,6 +308,11 @@ export async function* streamChatCompletion(opts: {
             }
 
             if (parsed.usage) {
+              if (opts.supportsExplicitCaching) {
+                console.log(
+                  `[cache] usage model=${opts.model} promptTokens=${parsed.usage.prompt_tokens ?? 0} cachedTokens=${parsed.usage.prompt_tokens_details?.cached_tokens ?? 0} cacheWriteTokens=${parsed.usage.prompt_tokens_details?.cache_write_tokens ?? 0}`
+                )
+              }
               yield {
                 type: 'usage',
                 usage: {

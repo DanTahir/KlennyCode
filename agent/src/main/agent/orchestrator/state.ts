@@ -35,6 +35,16 @@ export const endedTurns = new Set<string>()
  *  concurrently (e.g. user sends a second message before the first turn's abort is even wired
  *  up), both mutating tab.messages and both calling the model API at the same time. */
 export const activeRuns = new Map<string, Promise<void>>()
+/**
+ * Per-tab wire-message index of the "last message" cache breakpoint from the *previous* request
+ * for that tab, so the next request can explicitly re-mark that same position in addition to its
+ * own new last-message breakpoint — see the long comment on `applyCacheControl` in
+ * openrouter/caching.ts for why relying on implicit cross-request lookback alone doesn't get
+ * cache hits through OpenRouter in practice, even though it's Anthropic's documented default
+ * behavior. Cleared whenever compaction shifts message indices (see loop.ts) since a stale index
+ * would then point at different content.
+ */
+export const lastCacheBreakpointIdx = new Map<string, number>()
 
 export function emitToAll(event: AgentStreamEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {

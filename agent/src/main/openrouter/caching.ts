@@ -62,9 +62,22 @@ export function computeCacheSavings(
 
 /**
  * Shapes an outgoing messages array to add Anthropic/Qwen-style explicit `cache_control`
- * breakpoints: one on the system message (stable, reused every turn) and one on the last
- * content part of the last message (advances forward each turn, per Anthropic's recommended
- * multi-turn caching pattern). Cache-marking is skipped entirely (no-op) when `enabled` is false.
+ * breakpoints: one on the system message (stable, reused every turn), one *re-marking* wherever
+ * the previous request's last-message breakpoint landed (`priorBreakpointIdx`), and one on the
+ * new last message (advances forward each turn). Cache-marking is skipped entirely (no-op) when
+ * `enabled` is false.
+ *
+ * Why re-mark the previous position at all: Anthropic's docs describe cache reads as an implicit
+ * backward lookback — mark only the new last message each turn, and the API is documented to
+ * walk backward and find whatever the previous turn wrote, with no need to re-mark it. In
+ * practice, through OpenRouter, that implicit lookback does not find prior non-system
+ * breakpoints — only measured behavior: the system breakpoint (marked identically every request)
+ * gets read hits, but a "last message" breakpoint that moves forward each turn without ever being
+ * re-marked *never* gets picked up on the next request; every turn re-writes the entire
+ * conversation-since-system from scratch (see the regression this fixes, and the `[cache]`
+ * request/usage log lines in client.ts used to capture that evidence). Explicitly re-marking the
+ * exact position written last time turns that into a direct breakpoint hit instead of a hopeful
+ * walk-back, at the cost of one more of the 4 available breakpoint slots (we use 3 of 4 here).
  *
  * `includeLastMessageBreakpoint` should be false on the very first request of a
  * conversation/subagent run, since there's nothing yet to read back from a cache write.
@@ -79,7 +92,8 @@ export function applyCacheControl(
   messages: ChatMessage[],
   enabled: boolean,
   includeLastMessageBreakpoint: boolean,
-  trailingNote?: string
+  trailingNote?: string,
+  priorBreakpointIdx?: number
 ): ChatMessage[] {
   if (messages.length === 0) return messages
   if (!enabled && !trailingNote) return messages
@@ -92,12 +106,23 @@ export function applyCacheControl(
       out[systemIdx] = withCacheControlOnLastPart(out[systemIdx])
     }
 
-    if (includeLastMessageBreakpoint) {
-      const lastIdx = out.length - 1
-      // Avoid double-marking if the system message is also the last message (single-message request)
-      if (lastIdx !== systemIdx) {
-        out[lastIdx] = withCacheControlOnLastPart(out[lastIdx])
-      }
+    const lastIdx = out.length - 1
+    const markedIdxs = new Set<number>(systemIdx >= 0 ? [systemIdx] : [])
+
+    // Re-mark wherever the previous request left its "last message" breakpoint, so this
+    // request has a direct breakpoint hit there instead of relying on cross-request lookback.
+    if (
+      priorBreakpointIdx != null &&
+      priorBreakpointIdx >= 0 &&
+      priorBreakpointIdx < lastIdx &&
+      !markedIdxs.has(priorBreakpointIdx)
+    ) {
+      out[priorBreakpointIdx] = withCacheControlOnLastPart(out[priorBreakpointIdx])
+      markedIdxs.add(priorBreakpointIdx)
+    }
+
+    if (includeLastMessageBreakpoint && !markedIdxs.has(lastIdx)) {
+      out[lastIdx] = withCacheControlOnLastPart(out[lastIdx])
     }
   }
 

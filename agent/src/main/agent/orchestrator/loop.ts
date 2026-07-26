@@ -82,7 +82,15 @@ import {
 } from '../turnControl'
 import { buildSystemPrompt, buildCurrentTimeNote } from './system-prompt'
 import { previewMutatingTool } from './approval-previews'
-import { type Emit, type LoopStopReason, type SubagentContext, throwIfAborted, pendingQuestions, questionWaiters } from './state'
+import {
+  type Emit,
+  type LoopStopReason,
+  type SubagentContext,
+  throwIfAborted,
+  pendingQuestions,
+  questionWaiters,
+  lastCacheBreakpointIdx
+} from './state'
 
 export async function agentLoop(
   tab: TabSession,
@@ -150,6 +158,10 @@ export async function agentLoop(
     // to shrink what's sent to the model, not what the user sees in the chat.
     tab.compactionSummary = compacted.summary
     tab.compactedThroughMessageId = compacted.compactedThroughMessageId
+    // Compaction reshuffles wire-message indices (a different prefix is now dropped/replaced by
+    // the summary), so a previously-tracked breakpoint index would silently point at unrelated
+    // content this turn — drop it rather than re-mark the wrong message.
+    lastCacheBreakpointIdx.delete(tab.id)
     await sessionStore.updateTab(tab)
     emit({
       type: 'compaction',
@@ -194,6 +206,15 @@ export async function agentLoop(
   const includeLastMessageCacheBreakpoint = tab.messages.some((m) => m.id !== assistantId && m.usage)
   const supportsExplicitCaching =
     settings.promptCachingEnabled && modelInfo.supportsExplicitCaching && modelSupportsCaching(modelInfo)
+  const priorCacheBreakpointIdx = lastCacheBreakpointIdx.get(tab.id)
+  // This request's own "last message" breakpoint, so next turn can explicitly re-mark it too —
+  // see applyCacheControl's doc comment for why that beats relying on implicit cross-request
+  // lookback. Recorded now (rather than after the call) since orMessages.length is already
+  // final at this point, and both settings.promptCachingEnabled and modelInfo can change turn to
+  // turn — the value is harmless to keep around even if this particular turn doesn't use it.
+  if (includeLastMessageCacheBreakpoint) {
+    lastCacheBreakpointIdx.set(tab.id, orMessages.length - 1)
+  }
 
   for await (const chunk of streamChatCompletion({
     apiKey,
@@ -218,6 +239,7 @@ export async function agentLoop(
     providerPreference: settings.providerPreference,
     supportsExplicitCaching,
     includeLastMessageCacheBreakpoint,
+    priorCacheBreakpointIdx,
     maxTokens: modelInfo.maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS,
     currentTimeNote: buildCurrentTimeNote()
   })) {

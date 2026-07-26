@@ -193,4 +193,42 @@ describe('applyCacheControl', () => {
     expect(partsA[0]).toEqual(partsB[0])
     expect(partsA[1]).not.toEqual(partsB[1])
   })
+
+  // Regression test for the "cached_tokens never grows past the system prompt" bug: relying on
+  // OpenRouter to find a non-system breakpoint via implicit cross-request lookback never actually
+  // produced a read hit in practice (see the `[cache]` log evidence in client.ts's history), so
+  // every turn re-wrote the entire conversation-since-system from scratch. Explicitly re-marking
+  // the previous turn's breakpoint position fixes this by giving every request a direct hit.
+  test('priorBreakpointIdx re-marks the previous turn\'s breakpoint in addition to the new one', () => {
+    const longer: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi there!' },
+      { role: 'tool', content: 'tool result 1', tool_call_id: 'a' },
+      { role: 'assistant', content: 'Following up' },
+      { role: 'user', content: 'Great, one more thing' }
+    ]
+    // Simulate turn 3: turn 2 marked index 3 (a tool result) as its own "last message" breakpoint.
+    const out = applyCacheControl(longer, true, true, undefined, 3)
+
+    const marked = out
+      .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
+      .filter((i) => i >= 0)
+    // system (0), the carried-forward prior breakpoint (3), and the new last message (5).
+    expect(marked).toEqual([0, 3, 5])
+  })
+
+  test('priorBreakpointIdx is ignored when it points at the system message or the current last message', () => {
+    const out1 = applyCacheControl(messages, true, true, undefined, 0)
+    const marked1 = out1
+      .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
+      .filter((i) => i >= 0)
+    expect(marked1).toEqual([0, messages.length - 1])
+
+    const out2 = applyCacheControl(messages, true, true, undefined, messages.length - 1)
+    const marked2 = out2
+      .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
+      .filter((i) => i >= 0)
+    expect(marked2).toEqual([0, messages.length - 1])
+  })
 })
