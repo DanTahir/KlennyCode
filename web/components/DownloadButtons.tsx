@@ -77,7 +77,16 @@ export default function DownloadButtons({ release, showGithubButton, align = 'ce
         )}
       </div>
 
-      <div className={`flex flex-wrap gap-3 ${justify}`}>
+      {/*
+       * `flex-wrap` decides whether items fit on one line using each item's
+       * unshrunk (max-content) width, not its min-width — so on narrower
+       * containers (e.g. the left-aligned hero column) these cards would
+       * wrap to a second line even though they can shrink to fit. Force a
+       * single line from `sm` up (where there's always enough room for all
+       * three cards at their min-width) and only allow wrapping below that,
+       * for very narrow mobile viewports.
+       */}
+      <div className={`flex flex-wrap sm:flex-nowrap gap-3 ${justify}`}>
         {order.map((key) => {
           const asset = release.platforms[key];
           const meta = PLATFORM_META[key];
