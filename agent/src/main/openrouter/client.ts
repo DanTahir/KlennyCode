@@ -148,10 +148,11 @@ export async function* streamChatCompletion(opts: {
   providerPreference?: ProviderPreference
   /** true when this model family (Anthropic/Qwen/DeepSeek-v3.2) needs explicit cache_control markers */
   supportsExplicitCaching?: boolean
-  /** skip the "last message" cache breakpoint on the very first request of a conversation (nothing to read back yet) */
+  /** skip the advancing cache breakpoint on the very first request of a conversation (nothing to read back yet) */
   includeLastMessageCacheBreakpoint?: boolean
-  /** wire-message index of the previous request's "last message" breakpoint for this tab, so it
-   *  gets explicitly re-marked this request too — see applyCacheControl's doc comment */
+  /** wire-message index of the previous request's advancing breakpoint for this tab (NOT
+   *  necessarily messages.length - 1 — see applyCacheControl's doc comment for why it's one
+   *  earlier whenever currentTimeNote is set), so it gets explicitly re-marked this request too */
   priorCacheBreakpointIdx?: number
   /** explicit output token cap, sized generously off the model's own reported max — reduces how
    *  often generations get cut off mid-response/mid-tool-call by provider defaults */

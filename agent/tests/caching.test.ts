@@ -140,16 +140,24 @@ describe('applyCacheControl', () => {
     expect(last.content).toBe(messages[3].content)
   })
 
-  test('trailingNote is appended as a new, uncached part after the last message\'s own (marked) content', () => {
+  test('when trailingNote is given, the breakpoint moves to the second-to-last message and the true last message is left unmarked, note-only', () => {
     const out = applyCacheControl(messages, true, true, 'Current date/time: 12:00:00')
+
+    // The true last message ("How are you?") gets ONLY the trailing note appended — no
+    // cache_control marker, so its shape (note or no note) can freely change turn to turn without
+    // ever destabilizing a cached breakpoint.
     const last = out[out.length - 1]
     expect(Array.isArray(last.content)).toBe(true)
-    const parts = last.content as ContentPart[]
-    expect(parts.length).toBe(2)
-    // The real content keeps the cache_control marker...
-    expect(parts[0]).toEqual({ type: 'text', text: 'How are you?', cache_control: { type: 'ephemeral' } })
-    // ...and the note trails after it, unmarked.
-    expect(parts[1]).toEqual({ type: 'text', text: 'Current date/time: 12:00:00' })
+    const lastParts = last.content as ContentPart[]
+    expect(lastParts.length).toBe(2)
+    expect(lastParts[0]).toEqual({ type: 'text', text: 'How are you?' })
+    expect(lastParts[1]).toEqual({ type: 'text', text: 'Current date/time: 12:00:00' })
+
+    // The message just before it ("Hi there!") gets the actual cache_control breakpoint instead —
+    // this message's shape never changes across turns since nothing is ever appended to it.
+    const breakpointMsg = out[out.length - 2]
+    const bpParts = breakpointMsg.content as ContentPart[]
+    expect(bpParts[bpParts.length - 1]).toEqual({ type: 'text', text: 'Hi there!', cache_control: { type: 'ephemeral' } })
   })
 
   test('trailingNote is still appended even when explicit caching is disabled (implicit-cache models still want it at the tail)', () => {
@@ -161,16 +169,14 @@ describe('applyCacheControl', () => {
     expect(out[0].content).toBe(messages[0].content)
   })
 
-  // Regression test for the real "current date/time" bug: a live, per-request-changing value
-  // was being placed BEFORE the growing conversation (either folded into the system prompt, or
-  // even just as a separate early system message ahead of the messages array). Since a
-  // cache_control breakpoint's hash covers the *entire* prefix up to and including it, anything
-  // dynamic sitting earlier in that prefix poisons every breakpoint that follows — so only the
-  // system block ever cached, and the growing history never did. The fix appends the note strictly
-  // AFTER the last message's own cache_control marker, so it never becomes part of any cached
-  // prefix. This test simulates two consecutive turns (same history, new trailing message, only
-  // the live note differs) and asserts everything up to the newest message — including the
-  // *previous* turn's cache breakpoint — stays byte-for-byte identical.
+  // Regression test for the real "current date/time" bug, part 1 (mid-prefix poisoning): a live,
+  // per-request-changing value was being placed BEFORE the growing conversation (either folded
+  // into the system prompt, or as a separate early system message ahead of the messages array).
+  // Since a cache_control breakpoint's hash covers the entire prefix up to and including it,
+  // anything dynamic sitting earlier in that prefix poisons every breakpoint that follows. This
+  // test simulates two consecutive turns (same history, new trailing message, only the live note
+  // differs) and asserts everything up to and including the breakpoint message stays byte-for-byte
+  // identical — only the reserved, never-marked, true-last message differs.
   test('a per-request-changing trailingNote never alters the growing, cacheable conversation prefix across turns', () => {
     const turn2Messages: ChatMessage[] = [
       { role: 'system', content: 'You are a helpful assistant.' },
@@ -182,16 +188,45 @@ describe('applyCacheControl', () => {
     const outA = applyCacheControl(turn2Messages, true, true, 'Current date/time: 12:00:00')
     const outB = applyCacheControl(turn2Messages, true, true, 'Current date/time: 12:05:00')
 
-    // Everything up through the second-to-last message (i.e. what turn 3 would replay as
-    // untouched history) is completely unaffected by the live note.
+    // Everything through the breakpoint message (second-to-last, since a trailingNote is given)
+    // is completely unaffected by the live note.
     expect(outA.slice(0, -1)).toEqual(outB.slice(0, -1))
 
-    // Even on the shared last message, the actual cache-marked content is identical between the
-    // two requests — only the trailing, uncached note differs.
+    // Only the reserved true-last message (note-only, never cache-marked) differs between the
+    // two requests.
     const partsA = outA[outA.length - 1].content as ContentPart[]
     const partsB = outB[outB.length - 1].content as ContentPart[]
     expect(partsA[0]).toEqual(partsB[0])
     expect(partsA[1]).not.toEqual(partsB[1])
+  })
+
+  // Regression test for the real "current date/time" bug, part 2 (unstable breakpoint shape): even
+  // after moving the note to the tail of the last message, that SAME message being both the note
+  // carrier AND the cache_control breakpoint meant its shape differed between the turn it was
+  // written (marked content + note) and every later turn it was replayed as history (just the
+  // content, no note, since only the current turn's last message ever gets one) — silently
+  // breaking cache matching for the whole conversation. The fix reserves the true last message
+  // exclusively for the note and always marks the message one before it instead, so the marked
+  // message's shape never changes across turns regardless of whether a note is present this call.
+  test('the breakpoint message is never the same message the trailingNote is appended to, so its shape never changes across turns', () => {
+    const turn2Messages: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi there!' },
+      { role: 'user', content: 'How are you?' }
+    ]
+    const out = applyCacheControl(turn2Messages, true, true, 'Current date/time: 12:00:00')
+
+    // "Hi there!" (index 2, second-to-last) carries the breakpoint...
+    const breakpointParts = out[2].content as ContentPart[]
+    expect(breakpointParts).toEqual([{ type: 'text', text: 'Hi there!', cache_control: { type: 'ephemeral' } }])
+
+    // ...and once this exact message is replayed as history on a later turn (no longer last,
+    // no trailingNote appended to it, freshly rebuilt from storage), re-marking it produces the
+    // exact same shape/content — the breakpoint the model needs to match against.
+    const laterTurnMessages: ChatMessage[] = [...turn2Messages, { role: 'assistant', content: 'Doing well!' }, { role: 'user', content: 'Great' }]
+    const outLater = applyCacheControl(laterTurnMessages, true, true, 'Current date/time: 12:10:00', 2)
+    expect(outLater[2].content).toEqual(breakpointParts)
   })
 
   // Regression test for the "cached_tokens never grows past the system prompt" bug: relying on
@@ -208,7 +243,8 @@ describe('applyCacheControl', () => {
       { role: 'assistant', content: 'Following up' },
       { role: 'user', content: 'Great, one more thing' }
     ]
-    // Simulate turn 3: turn 2 marked index 3 (a tool result) as its own "last message" breakpoint.
+    // No trailingNote here, so the breakpoint sits on the true last message (index 5) — simulate
+    // turn 3, where turn 2 marked index 3 (a tool result) as its own breakpoint.
     const out = applyCacheControl(longer, true, true, undefined, 3)
 
     const marked = out
@@ -230,5 +266,21 @@ describe('applyCacheControl', () => {
       .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
       .filter((i) => i >= 0)
     expect(marked2).toEqual([0, messages.length - 1])
+  })
+
+  test('priorBreakpointIdx is ignored when it points at the reserved trailingNote slot', () => {
+    const turn2Messages: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi there!' },
+      { role: 'user', content: 'How are you?' }
+    ]
+    // Pretend a stale prior breakpoint pointed at the true-last (reserved, note-only) slot.
+    const out = applyCacheControl(turn2Messages, true, true, 'Current date/time: 12:00:00', turn2Messages.length - 1)
+    const marked = out
+      .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
+      .filter((i) => i >= 0)
+    // system (0) and the breakpoint (2) only — the reserved last slot (3) must never get marked.
+    expect(marked).toEqual([0, 2])
   })
 })

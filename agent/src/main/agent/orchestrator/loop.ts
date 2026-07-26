@@ -207,13 +207,16 @@ export async function agentLoop(
   const supportsExplicitCaching =
     settings.promptCachingEnabled && modelInfo.supportsExplicitCaching && modelSupportsCaching(modelInfo)
   const priorCacheBreakpointIdx = lastCacheBreakpointIdx.get(tab.id)
-  // This request's own "last message" breakpoint, so next turn can explicitly re-mark it too —
-  // see applyCacheControl's doc comment for why that beats relying on implicit cross-request
-  // lookback. Recorded now (rather than after the call) since orMessages.length is already
-  // final at this point, and both settings.promptCachingEnabled and modelInfo can change turn to
-  // turn — the value is harmless to keep around even if this particular turn doesn't use it.
+  // This request's own breakpoint, so next turn can explicitly re-mark it too — see
+  // applyCacheControl's doc comment for why that beats relying on implicit cross-request
+  // lookback. `currentTimeNote` (passed below) is always non-empty, so applyCacheControl always
+  // reserves the true last wire message for it and marks the message one before that instead —
+  // this must track the exact same index (orMessages.length - 2, not - 1) or a future turn would
+  // re-mark the wrong message. Recorded now (rather than after the call) since orMessages.length
+  // is already final at this point, and both settings.promptCachingEnabled and modelInfo can
+  // change turn to turn — the value is harmless to keep around even if unused this turn.
   if (includeLastMessageCacheBreakpoint) {
-    lastCacheBreakpointIdx.set(tab.id, orMessages.length - 1)
+    lastCacheBreakpointIdx.set(tab.id, orMessages.length - 2)
   }
 
   for await (const chunk of streamChatCompletion({

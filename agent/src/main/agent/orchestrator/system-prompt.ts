@@ -19,7 +19,10 @@ import { readSoul } from '../soul/manager'
  * (Anthropic, Qwen, ...) would never get a cache hit on it. Callers must send this separately,
  * as an uncached trailing content part appended after the wire messages are built (see
  * `streamChatCompletion`'s `currentTimeNote` option / `applyCacheControl` in openrouter/caching.ts)
- * so the big, truly static prefix (persona, memory, skills/subagent catalogs) can still cache normally.
+ * so the big, truly static prefix (persona, memory, skills/subagent catalogs) can still cache
+ * normally. Also note: whichever message this note gets appended to is deliberately never the
+ * one `applyCacheControl` cache-marks (that mark instead lands one message earlier) — see its
+ * doc comment for why a note-bearing message must never also be a cache breakpoint.
  */
 export function buildCurrentTimeNote(): string {
   const now = new Date()
