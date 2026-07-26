@@ -173,7 +173,12 @@ export async function agentLoop(
   }
 
   const systemPrompt = await buildSystemPrompt(tab.mode, settings.shellId)
-  const orMessages = toORMessages(messagesForWire(tab.messages, tab.compactedThroughMessageId), systemPrompt, tab.compactionSummary)
+  const orMessages = toORMessages(
+    messagesForWire(tab.messages, tab.compactedThroughMessageId),
+    systemPrompt,
+    tab.compactionSummary,
+    compacted.compacted
+  )
 
   // Computed from tab.messages before the new (empty) assistant message is pushed below, so
   // the heuristic only ever looks at genuinely prior turns.

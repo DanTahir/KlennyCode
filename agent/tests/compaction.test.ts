@@ -188,4 +188,21 @@ describe('messagesForWire + toORMessages (history untouched, summary injected on
     const or = toORMessages(messages, 'SYSTEM PROMPT')
     expect(or.filter((m) => m.role === 'system').length).toBe(1)
   })
+
+  test('toORMessages appends a continue-working instruction only when justCompacted is true', () => {
+    const messages = buildMessages(1)
+    const withoutFlag = toORMessages(messages, 'SYSTEM PROMPT', 'earlier stuff happened')
+    expect(String(withoutFlag[1].content)).not.toContain('routine background maintenance')
+
+    const withFlag = toORMessages(messages, 'SYSTEM PROMPT', 'earlier stuff happened', true)
+    expect(String(withFlag[1].content)).toContain('earlier stuff happened')
+    expect(String(withFlag[1].content)).toContain('routine background maintenance')
+    expect(String(withFlag[1].content)).toContain('continue')
+  })
+
+  test('toORMessages does not append the instruction when there is no summary at all, even if justCompacted is true', () => {
+    const messages = buildMessages(1)
+    const or = toORMessages(messages, 'SYSTEM PROMPT', undefined, true)
+    expect(or.filter((m) => m.role === 'system').length).toBe(1)
+  })
 })

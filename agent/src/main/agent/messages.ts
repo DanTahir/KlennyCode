@@ -9,15 +9,34 @@ import type { ChatMessage as ORMessage } from '../openrouter/client'
  * compacted-away prefix removed by the caller) — see `messagesForWire` — while `compactionSummary`,
  * if given, is injected as its own system message standing in for that removed prefix.
  *
+ * `justCompacted` should be true only on the turn where compaction actually just ran (i.e.
+ * `maybeCompact` returned `compacted: true` this request) — NOT on every subsequent turn that
+ * happens to carry a `compactionSummary` forward. When true, an extra instruction is appended
+ * telling the model to briefly tell the user compaction happened and then keep working in the
+ * same turn. Without this, models tend to treat the injected summary system message as a natural
+ * wrap-up point and end the turn with a text-only reply and no tool calls — which the orchestrator
+ * can't distinguish from a genuinely finished task, so the agent silently stops mid-task right
+ * when compaction fires. See "orchestrator/loop.ts" call site and project memory for the bug this
+ * fixes.
+ *
  * Deliberately does NOT take a "current time" note as a parameter: a live, per-request value
  * like that must never be folded into the system prompt or placed ahead of the conversation —
  * doing so poisons every cache breakpoint that comes after it (see applyCacheControl in
  * openrouter/caching.ts, which appends it as an uncached trailing part on the wire instead).
  */
-export function toORMessages(messages: ChatMessage[], systemPrompt: string, compactionSummary?: string): ORMessage[] {
+export function toORMessages(
+  messages: ChatMessage[],
+  systemPrompt: string,
+  compactionSummary?: string,
+  justCompacted?: boolean
+): ORMessage[] {
   const out: ORMessage[] = [{ role: 'system', content: systemPrompt }]
   if (compactionSummary) {
-    out.push({ role: 'system', content: `Summary of earlier conversation (older messages were omitted to save context):\n\n${compactionSummary}` })
+    let summaryMsg = `Summary of earlier conversation (older messages were omitted to save context):\n\n${compactionSummary}`
+    if (justCompacted) {
+      summaryMsg += `\n\nNote: this compaction just happened as part of your current turn, purely to manage context size — it is routine background maintenance, not a stopping point. In your next reply, briefly mention in one short sentence that you compacted/summarized earlier context to save space, then immediately continue the task exactly where you left off, using tool calls as needed. Do not end the turn with just that acknowledgment and no tool calls unless the task was already fully complete before compaction occurred.`
+    }
+    out.push({ role: 'system', content: summaryMsg })
   }
   const sentToolResults = new Set<string>()
   for (const m of messages) {
