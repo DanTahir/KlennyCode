@@ -27,7 +27,7 @@ import type {
   ToolCallBlock,
   ToolResultPayload
 } from '@shared/types'
-import { DEFAULT_BROWSER_AUTOMATION } from '@shared/types'
+import { DEFAULT_BROWSER_AUTOMATION, CODING_ONLY_TOOLS } from '@shared/types'
 import { loadSettings } from '../../settings'
 import { getWorkspace } from '../../workspace'
 import { sessionStore } from '../../session/store'
@@ -465,6 +465,24 @@ async function executeTool(
   }
 
   const name = tc.function.name
+
+  // Defense-in-depth server-side gate, independent of getToolDefinitions() only hiding these
+  // tools from the model on Assistant-kind tabs: getWorkspace() is a process-global singleton
+  // (see workspace.ts), so if the tool ever reaches dispatch anyway — a hallucinated call, stale
+  // conversation history referencing an old tool, a subagent misconfiguration, etc. — it would
+  // otherwise silently execute against whatever project some *other* window has open. Reject
+  // outright rather than relying solely on the tool list never advertising it. See "Coding tools
+  // available inside an Assistant-kind tab" memory.
+  if (tab.kind === 'assistant' && (CODING_ONLY_TOOLS as string[]).includes(name)) {
+    return {
+      payload: {
+        ok: false,
+        summary: `${name} is not available in an Assistant tab (no project workspace).`,
+        error: 'no_workspace'
+      },
+      status: 'error'
+    }
+  }
 
   if (name === 'ask_question') {
     // Subagents run headless — there is no UI to ever answer this, so it would
