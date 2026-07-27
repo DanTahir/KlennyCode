@@ -232,4 +232,68 @@ describe('buildSystemPrompt injects a custom subagent\'s body into its own run',
     const prompt = await buildSystemPrompt('agent', undefined, { allowedTools: 'all', agentType: 'explore' })
     expect(prompt).not.toContain('You are running as the')
   })
+
+  // Regression coverage for the "Assistant tool schema/prompt leak" fix: an Assistant tab never
+  // has read_file/write_file/edit_file/multi_edit/delete_file/grep/glob/run_command/read_terminal/
+  // codebase_search offered in its tool list (see tools.test.ts's hasWorkspace=false coverage),
+  // but the system prompt used to name several of them anyway (AGENT_MODE_PROMPT_BODY's file-
+  // editing instructions, MEMORY_TOOL_NOTE's "never open them with read_file", and an unconditional
+  // "Workspace: ..." / "run_command executes via ..." line built from the ambient getWorkspace()
+  // singleton) — priming the model to attempt calls to tools it was never given schemas for.
+  const CODING_TOOL_NAMES = [
+    'read_file',
+    'write_file',
+    'edit_file',
+    'multi_edit',
+    'delete_file',
+    'run_command',
+    'read_terminal',
+    'codebase_search'
+  ]
+
+  test('an Assistant-tab system prompt never mentions any coding-only tool by name', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent', undefined, undefined, 'assistant')
+    for (const name of CODING_TOOL_NAMES) {
+      expect(prompt).not.toContain(name)
+    }
+  })
+
+  test('an Assistant-tab system prompt omits the Workspace: / run_command shell-syntax lines', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent', undefined, undefined, 'assistant')
+    expect(prompt).not.toContain('Workspace:')
+    expect(prompt).not.toContain('No workspace open.')
+    expect(prompt).not.toContain('run_command executes via')
+  })
+
+  test('a project-tab (kind omitted/default) system prompt still mentions coding tools and the Workspace line', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent')
+    expect(prompt).toContain('read_file')
+    expect(prompt).toContain('run_command executes via')
+    expect(prompt).toMatch(/Workspace:|No workspace open\./)
+  })
+
+  // Regression coverage for the follow-up request: Assistant-tab prompts should read a bit more
+  // playful than Agent/Plan mode, and must instruct the model to speak of its own memory (auto-
+  // memory notes and the cross-window digest) as lived recollection ("I fetched a ball"), never
+  // as an external source being cited ("according to my memory notes...").
+  test("an Assistant-tab system prompt instructs speaking of memory as its own recollection, not as a cited source", async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent', undefined, undefined, 'assistant')
+    expect(prompt).toContain('as your own recollection')
+    expect(prompt).toContain('I fetched a ball')
+    expect(prompt).toContain('according to my memory notes')
+  })
+
+  test('an Assistant-tab system prompt reads slightly more playful than the project-tab one', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const assistantPrompt = await buildSystemPrompt('agent', undefined, undefined, 'assistant')
+    const projectPrompt = await buildSystemPrompt('agent')
+    // The project-tab body opens plainly with "a capable coding agent" and no such framing.
+    expect(assistantPrompt).not.toEqual(projectPrompt)
+    expect(assistantPrompt).toContain('home base between errands')
+    expect(projectPrompt).not.toContain('home base between errands')
+  })
 })

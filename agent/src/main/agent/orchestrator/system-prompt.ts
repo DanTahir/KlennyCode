@@ -39,15 +39,27 @@ export async function buildCurrentTimeNote(assistantTabId?: string): Promise<str
   const timeNote = `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
   if (!assistantTabId) return timeNote
   const digest = await buildAssistantMemoryDigestForTab(assistantTabId)
-  return digest ? `${timeNote}\n\n${digest}` : timeNote
+  // Framed as recollection ("Recently, in your other Assistant windows"), not as a labeled
+  // document/log — see ASSISTANT_MODE_PROMPT_BODY's instruction to talk about this as its own
+  // memory (e.g. "I fetched a ball") rather than citing it ("according to my memory notes...").
+  return digest ? `${timeNote}\n\nRecently, in your other Assistant windows:\n${digest}` : timeNote
 }
 
 export async function buildSystemPrompt(
   mode: 'agent' | 'plan',
   shellId?: string | null,
-  subagentCtx?: SubagentContext
+  subagentCtx?: SubagentContext,
+  /** 'assistant' for the ephemeral Assistant tab (and any subagent spawned from one — see
+   *  loop.ts's kind inheritance). Selects the Assistant-specific persona/instructions body
+   *  (no mention of file/shell tools it doesn't have — see buildAgentModePrompt) and skips the
+   *  Workspace/shell-syntax lines below, which are meaningless without a real project open and
+   *  would otherwise leak the ambient getWorkspace() singleton's project path/shell into an
+   *  Assistant tab that has no workspace of its own. See "Assistant tool schema/prompt leak"
+   *  investigation. */
+  kind: 'project' | 'assistant' = 'project'
 ): Promise<string> {
-  const ws = getWorkspace()
+  const isAssistant = kind === 'assistant'
+  const ws = isAssistant ? null : getWorkspace()
   const [projMem, globalMem, autoMem, skills, subagents, otherProjects, soul] = await Promise.all([
     loadProjectMemory(),
     loadGlobalMemory(),
@@ -61,7 +73,7 @@ export async function buildSystemPrompt(
   const shell = resolveShell(shellId)
 
   const parts = [
-    mode === 'plan' ? buildPlanModePrompt(soul) : buildAgentModePrompt(soul),
+    mode === 'plan' ? buildPlanModePrompt(soul) : buildAgentModePrompt(soul, kind),
     // A custom subagent's own instructions (the write_subagent-authored body) take priority over
     // — and go right after — the generic persona/rules above: this is what actually makes a
     // custom subagent type behave as authored instead of degrading into a plain general-purpose
@@ -69,8 +81,9 @@ export async function buildSystemPrompt(
     // plan-checker) have no body, so this is a no-op for them.
     subagentCtx?.body &&
       `You are running as the "${subagentCtx.agentType}" subagent. These are that subagent type's own operating instructions — follow them as your primary task guidance, in addition to (not instead of) the general rules above:\n\n${subagentCtx.body}`,
-    ws ? `Workspace: ${ws}` : 'No workspace open.',
-    `run_command executes via ${shell.name} — write commands using that shell's syntax (quoting, path separators, env vars, chaining operators).`,
+    !isAssistant && (ws ? `Workspace: ${ws}` : 'No workspace open.'),
+    !isAssistant &&
+      `run_command executes via ${shell.name} — write commands using that shell's syntax (quoting, path separators, env vars, chaining operators).`,
     projMem && `Project memory:\n${projMem}`,
     globalMem && `Global memory:\n${globalMem}`,
     autoMem && `Auto-memory index:\n${autoMem}`,

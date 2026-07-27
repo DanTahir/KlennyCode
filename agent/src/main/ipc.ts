@@ -177,7 +177,13 @@ export function registerIpcHandlers(): void {
   })
   ipcMain.handle(IPC.tabSetMode, async (_e, tabId: string, mode: 'agent' | 'plan') => {
     const tab = sessionStore.getTab(tabId)
-    if (tab) {
+    // Plan mode is meaningless on an Assistant tab: save_plan requires a real workspace
+    // (plansDir() in plan/manager.ts throws without one) and getToolDefinitions()'s planAllowed
+    // set excludes every Gmail/Discord/scheduler/browser tool Assistant tabs actually rely on.
+    // The renderer already hides the Agent/Plan toggle for kind === 'assistant' (see
+    // ModeToggle.tsx), but that's UI-only — guard it here too so a stale/forged IPC call can't
+    // silently strand an Assistant tab in a mode it can't use.
+    if (tab && !(tab.kind === 'assistant' && mode === 'plan')) {
       tab.mode = mode
       await sessionStore.updateTab(tab)
     }

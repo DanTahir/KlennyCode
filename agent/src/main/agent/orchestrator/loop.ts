@@ -173,7 +173,12 @@ export async function agentLoop(
     })
   }
 
-  const systemPrompt = await buildSystemPrompt(tab.mode, settings.shellId, subagentCtx)
+  const systemPrompt = await buildSystemPrompt(
+    tab.mode,
+    settings.shellId,
+    subagentCtx,
+    tab.kind === 'assistant' ? 'assistant' : 'project'
+  )
   const orMessages = toORMessages(
     messagesForWire(tab.messages, tab.compactedThroughMessageId),
     systemPrompt,

@@ -15,6 +15,8 @@ const {
   buildFullAssistantMemoryDigest
 } = await import('../src/main/agent/memory/assistantMemory')
 
+const { buildCurrentTimeNote } = await import('../src/main/agent/orchestrator/system-prompt')
+
 const tempDirs: string[] = []
 
 beforeEach(async () => {
@@ -163,6 +165,37 @@ describe('buildAssistantMemoryDigestForTab', () => {
     await seedPool({ slots: [slotA], rollup: null })
     const digest = await buildAssistantMemoryDigestForTab('tab-a')
     expect(digest).toBe('')
+  })
+})
+
+// Regression coverage for the "make the Assistant tab treat this as its own memory" follow-up:
+// buildCurrentTimeNote() folds the cross-window digest into the time note it returns, and must
+// frame it as recollection ("Recently, in your other Assistant windows") rather than a labeled
+// document, so the model has no cue to cite it as an external source ("according to my memory
+// notes..."). See ASSISTANT_MODE_PROMPT_BODY in plan/manager.ts for the matching instruction on
+// how to talk about this content.
+describe('buildCurrentTimeNote', () => {
+  test('with no assistantTabId, returns only the time note (no digest attempt at all)', async () => {
+    const note = await buildCurrentTimeNote()
+    expect(note).toContain('Current date/time:')
+    expect(note).not.toContain('Recently, in your other Assistant windows')
+  })
+
+  test('with an assistantTabId but an empty/disabled pool, returns just the time note', async () => {
+    const note = await buildCurrentTimeNote('tab-a')
+    expect(note).toContain('Current date/time:')
+    expect(note).not.toContain('Recently, in your other Assistant windows')
+  })
+
+  test('with other tabs present in the pool, frames the digest as recollection, not a labeled document', async () => {
+    await setAssistantMemorySize(10000)
+    await seedPool({ slots: [slotA, slotB], rollup: null })
+    const note = await buildCurrentTimeNote('tab-a')
+    expect(note).toContain('Recently, in your other Assistant windows:')
+    expect(note).toContain('Research task')
+    expect(note).not.toContain('Email triage') // tab-a's own slot stays excluded
+    expect(note).not.toContain('memory notes')
+    expect(note).not.toContain('digest')
   })
 })
 
