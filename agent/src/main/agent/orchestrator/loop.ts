@@ -889,6 +889,15 @@ export async function runSubagent(
     model: typeDef.model ?? defaultSubModel,
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    // Inherit the parent tab's kind so a subagent spawned from an Assistant-kind tab is itself
+    // treated as Assistant-kind for tool gating (getToolDefinitions()'s hasWorkspace check keys
+    // off tab.kind !== 'assistant'). Without this, subTab.kind defaulted to undefined, which
+    // satisfies `!== 'assistant'` and — combined with getWorkspace() being a process-global
+    // singleton that's often truthy because some other window has a project open — let subagents
+    // dispatched from Assistant tabs silently gain full coding-tool access (read/write/edit/
+    // delete files, run_command, etc.) that the parent tab itself never had. See "Coding tools
+    // available inside an Assistant-kind tab" investigation/fix.
+    kind: parentTab.kind,
     messages: [
       {
         id: nanoid(),

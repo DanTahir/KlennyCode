@@ -169,8 +169,25 @@ export type ToolName =
 
 /** Tools that need a real, open coding-project workspace to make sense (file I/O, shell,
  *  semantic code search). Gated off entirely on Assistant-kind tabs and whenever no workspace
- *  is open — see getToolDefinitions() in agent/tools/definitions.ts. */
-export const CODING_ONLY_TOOLS: ToolName[] = ['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command', 'read_terminal', 'codebase_search']
+ *  is open — see getToolDefinitions() in agent/tools/definitions.ts.
+ *
+ *  read_file/grep/glob are included even though they're read-only: they resolve paths against
+ *  getWorkspace(), which is a single process-global singleton, not scoped per tab or window. If
+ *  any window has a project open, those calls would otherwise silently succeed against that
+ *  ambient project even from an Assistant-kind tab that has no workspace of its own — see the
+ *  "Coding tools available inside an Assistant-kind tab" investigation/fix. */
+export const CODING_ONLY_TOOLS: ToolName[] = [
+  'read_file',
+  'write_file',
+  'edit_file',
+  'multi_edit',
+  'delete_file',
+  'grep',
+  'glob',
+  'run_command',
+  'read_terminal',
+  'codebase_search'
+]
 
 /** The single multiplexed browser-automation tool (action-addressed: open/navigate/snapshot/
  *  click/etc — see agent/tools/browser.ts). Doesn't fit CODING_ONLY_TOOLS (no file/workspace

@@ -80,12 +80,18 @@ describe('tool definitions', () => {
     expect(tools).not.toContain('delete_file')
     expect(tools).not.toContain('run_command')
     expect(tools).not.toContain('codebase_search')
-    // read-only, workspace-independent tools remain available
-    expect(tools).toContain('read_file')
-    expect(tools).toContain('grep')
-    expect(tools).toContain('glob')
+    // read_file/grep/glob resolve against the process-global getWorkspace() singleton, not a
+    // per-tab workspace, so they're coding-only too — otherwise an Assistant tab could silently
+    // read whatever project happens to be open in another window. See "Coding tools available
+    // inside an Assistant-kind tab" investigation/fix.
+    expect(tools).not.toContain('read_file')
+    expect(tools).not.toContain('grep')
+    expect(tools).not.toContain('glob')
+    // genuinely workspace-independent tools remain available
     expect(tools).toContain('web_search')
     expect(tools).toContain('fetch_url')
+    expect(tools).toContain('read_memory')
+    expect(tools).toContain('write_memory')
     expect(tools).toContain('gmail_list_messages')
     expect(tools).toContain('discord_post_message')
     expect(tools).toContain('scheduler_create_task')
@@ -96,10 +102,16 @@ describe('tool definitions', () => {
     const tools = getToolDefinitions('agent').map((t) => t.function.name)
     expect(tools).toContain('write_file')
     expect(tools).toContain('run_command')
+    expect(tools).toContain('read_file')
   })
 
-  test('hasWorkspace=false still respects restrictTo for subagent tool restriction', () => {
+  test('hasWorkspace=false overrides restrictTo for coding-only tools (a subagent spawned from an Assistant tab cannot be handed file/shell access)', () => {
     const tools = getToolDefinitions('agent', ['read_file', 'gmail_list_messages'], false, false).map((t) => t.function.name)
-    expect(tools).toEqual(['read_file', 'gmail_list_messages'])
+    expect(tools).toEqual(['gmail_list_messages'])
+  })
+
+  test('hasWorkspace=false still respects restrictTo for workspace-independent tools', () => {
+    const tools = getToolDefinitions('agent', ['web_search', 'gmail_list_messages'], false, false).map((t) => t.function.name)
+    expect(tools).toEqual(['web_search', 'gmail_list_messages'])
   })
 })
