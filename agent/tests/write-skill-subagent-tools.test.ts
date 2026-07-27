@@ -150,4 +150,74 @@ describe('writeSubagentType manager guard + scoping', () => {
     expect(found).toBeDefined()
     expect(found?.scope).toBe('project')
   })
+
+  // Regression test: a custom subagent's authored body (the actual instructions passed to
+  // write_subagent) used to be parsed off the markdown file and then discarded — listSubagentTypes
+  // only returned the frontmatter fields (name/description/tools/model), so the body never made
+  // it anywhere. That meant every custom subagent silently ran with none of its own instructions,
+  // degrading into a generic agent that only differed by its tool restriction. See
+  // getSubagentType()/runSubagent()/buildSystemPrompt() for the fix: the body must survive
+  // scanAgents() and be injected into that run's system prompt.
+  test('listSubagentTypes returns the full instruction body below the frontmatter, not just metadata', async () => {
+    const { writeSubagentType, listSubagentTypes, getSubagentType } = await import('../src/main/agent/subagents/manager')
+    const longBody = 'Step 1: log in.\nStep 2: do the analysis.\n\nDetailed instructions go here.'
+    await writeSubagentType('body-carrier', 'global', 'Carries a body', 'all', undefined, longBody)
+
+    const types = await listSubagentTypes()
+    const found = types.find((t) => t.name === 'body-carrier')
+    expect(found?.body).toBe(longBody)
+
+    const viaGetter = await getSubagentType('body-carrier')
+    expect(viaGetter?.body).toBe(longBody)
+  })
+
+  test('built-in subagent types have no body (their behavior comes from the generic prompt + tool restriction)', async () => {
+    const { getSubagentType } = await import('../src/main/agent/subagents/manager')
+    const explore = await getSubagentType('explore')
+    expect(explore?.builtIn).toBe(true)
+    expect(explore?.body).toBeUndefined()
+  })
+})
+
+describe('buildSystemPrompt injects a custom subagent\'s body into its own run', () => {
+  let tempRoot: string
+
+  beforeAll(async () => {
+    tempRoot = await mkdtemp(join(tmpdir(), 'klenny-system-prompt-'))
+    fakeHome = tempRoot
+  })
+
+  afterAll(async () => {
+    await rm(tempRoot, { recursive: true, force: true })
+  })
+
+  test('a subagentCtx with a body produces a system prompt containing that body and the agent type name', async () => {
+    const { writeSubagentType, getSubagentType } = await import('../src/main/agent/subagents/manager')
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const distinctiveInstruction = 'ONLY-IN-THIS-SUBAGENT: log into LoomIQ with the embedded credentials.'
+    await writeSubagentType('loomiq-test-agent', 'global', 'test', 'all', undefined, distinctiveInstruction)
+    const typeDef = await getSubagentType('loomiq-test-agent')
+    expect(typeDef?.body).toBe(distinctiveInstruction)
+
+    const prompt = await buildSystemPrompt('agent', undefined, {
+      allowedTools: 'all',
+      agentType: 'loomiq-test-agent',
+      body: typeDef?.body
+    })
+
+    expect(prompt).toContain(distinctiveInstruction)
+    expect(prompt).toContain('loomiq-test-agent')
+  })
+
+  test('no subagentCtx (main chat tab) produces a system prompt with no per-subagent body section', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent')
+    expect(prompt).not.toContain('You are running as the')
+  })
+
+  test('a subagentCtx with no body (built-in subagent type) produces no per-subagent body section', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent', undefined, { allowedTools: 'all', agentType: 'explore' })
+    expect(prompt).not.toContain('You are running as the')
+  })
 })

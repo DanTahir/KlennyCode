@@ -9,6 +9,7 @@ import { listSkills, skillsCatalogPrompt } from '../skills/manager'
 import { listSubagentTypes, subagentsCatalog } from '../subagents/manager'
 import { buildAgentModePrompt, buildPlanModePrompt } from '../plan/manager'
 import { readSoul } from '../soul/manager'
+import type { SubagentContext } from './state'
 
 /**
  * The one genuinely per-request-dynamic piece of context the model needs (for computing relative
@@ -30,7 +31,11 @@ export function buildCurrentTimeNote(): string {
   return `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
 }
 
-export async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string | null): Promise<string> {
+export async function buildSystemPrompt(
+  mode: 'agent' | 'plan',
+  shellId?: string | null,
+  subagentCtx?: SubagentContext
+): Promise<string> {
   const ws = getWorkspace()
   const [projMem, globalMem, autoMem, skills, subagents, otherProjects, soul] = await Promise.all([
     loadProjectMemory(),
@@ -46,6 +51,13 @@ export async function buildSystemPrompt(mode: 'agent' | 'plan', shellId?: string
 
   const parts = [
     mode === 'plan' ? buildPlanModePrompt(soul) : buildAgentModePrompt(soul),
+    // A custom subagent's own instructions (the write_subagent-authored body) take priority over
+    // — and go right after — the generic persona/rules above: this is what actually makes a
+    // custom subagent type behave as authored instead of degrading into a plain general-purpose
+    // agent that only differs by its tool restriction. Built-in types (general-purpose/explore/
+    // plan-checker) have no body, so this is a no-op for them.
+    subagentCtx?.body &&
+      `You are running as the "${subagentCtx.agentType}" subagent. These are that subagent type's own operating instructions — follow them as your primary task guidance, in addition to (not instead of) the general rules above:\n\n${subagentCtx.body}`,
     ws ? `Workspace: ${ws}` : 'No workspace open.',
     `run_command executes via ${shell.name} — write commands using that shell's syntax (quoting, path separators, env vars, chaining operators).`,
     projMem && `Project memory:\n${projMem}`,

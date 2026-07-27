@@ -317,6 +317,10 @@ export interface SubagentTypeSummary {
   builtIn: boolean
   scope?: 'project' | 'global'
   path?: string
+  /** Custom subagent types' full SKILL.md-style instructions (the markdown body below the
+   *  frontmatter), fed into that subagent run's system prompt. Undefined for built-in types,
+   *  which get their behavior from the generic agent-mode prompt plus their tool restriction. */
+  body?: string
 }
 
 export interface SubagentRun {

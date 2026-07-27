@@ -23,6 +23,16 @@ export type LoopStopReason =
 export interface SubagentContext {
   /** tool restriction for this subagent type ('all' = no restriction beyond mode defaults) */
   allowedTools: ToolName[] | 'all'
+  /** name of the running subagent type, for the system prompt's own reference (e.g. so it can
+   *  say "you are running as the X subagent") */
+  agentType?: string
+  /** the custom subagent type's own SKILL.md-style instructions (markdown body below the
+   *  frontmatter), injected into this run's system prompt so custom subagents (created via
+   *  write_subagent) actually behave as authored instead of falling back to the generic
+   *  agent-mode prompt. Undefined for built-in subagent types (general-purpose/explore/
+   *  plan-checker), which intentionally have no body — their behavior comes from the generic
+   *  prompt plus their tool restriction. */
+  body?: string
 }
 
 export const abortControllers = new Map<string, AbortController>()

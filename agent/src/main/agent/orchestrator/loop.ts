@@ -172,7 +172,7 @@ export async function agentLoop(
     })
   }
 
-  const systemPrompt = await buildSystemPrompt(tab.mode, settings.shellId)
+  const systemPrompt = await buildSystemPrompt(tab.mode, settings.shellId, subagentCtx)
   const orMessages = toORMessages(
     messagesForWire(tab.messages, tab.compactedThroughMessageId),
     systemPrompt,
@@ -942,7 +942,7 @@ export async function runSubagent(
     }
   }
 
-  const subagentCtx: SubagentContext = { allowedTools: typeDef.tools }
+  const subagentCtx: SubagentContext = { allowedTools: typeDef.tools, agentType, body: typeDef.body }
 
   try {
     const reason = await agentLoop(subTab, apiKey, defaultSubModel, capture, signal, subagentDepth + 1, subagentCtx)

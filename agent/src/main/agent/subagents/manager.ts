@@ -68,7 +68,7 @@ async function scanAgents(dir: string, scope: 'project' | 'global'): Promise<Sub
       if (!file.endsWith('.md')) continue
       const path = join(dir, file)
       const raw = await readFile(path, 'utf8')
-      const { data } = matter(raw)
+      const { data, content } = matter(raw)
       const tools = data.tools === 'all' ? 'all' : ((data.tools as ToolName[]) ?? ['read_file', 'grep', 'glob'])
       out.push({
         name: String(data.name ?? file.replace(/\.md$/, '')),
@@ -77,7 +77,8 @@ async function scanAgents(dir: string, scope: 'project' | 'global'): Promise<Sub
         model: data.model ? String(data.model) : undefined,
         builtIn: false,
         scope,
-        path
+        path,
+        body: content.trim()
       })
     }
   } catch {
