@@ -29,7 +29,7 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Selectable shell** — pick which shell `run_command` and the terminal use (e.g. Git Bash, PowerShell, cmd, WSL) in Settings, or leave it on OS-default Auto
 - **No `.gitignore` gymnastics** — plans, auto-memory notes, and the codebase index live in Klenny Code's own app data directory, not in your project
 - **Skills** — Cursor-style `SKILL.md` files, auto-discovered and loaded when relevant. Authored via the Skills panel, directly on disk, or by the agent itself via the `write_skill` tool (project or global scope)
-- **Subagents** — built-in + custom types, parallel execution, separate subagent model setting. Custom types are authored via the UI, directly on disk, or by the agent itself via the `write_subagent` tool (project or global scope)
+- **Subagents** — built-in + custom types, parallel execution, separate subagent model setting. Custom types are authored via the UI, directly on disk, or by the agent itself via the `write_subagent` tool (project or global scope), and read back (including built-ins) via `read_subagent`
 - **Clarifying questions** — structured multiple-choice prompts in every mode (especially Plan mode)
 - **Vision** — attach/paste images in chat for multimodal models
 - **Spending cap** — per-session or daily USD limit with warning and hard block

@@ -147,6 +147,7 @@ export type ToolName =
   | 'write_memory'
   | 'write_skill'
   | 'write_subagent'
+  | 'read_subagent'
   | 'task'
   | 'ask_question'
   | 'save_plan'
@@ -210,6 +211,7 @@ export const ASSISTANT_TOOLS: ToolName[] = [
   'write_memory',
   'write_skill',
   'write_subagent',
+  'read_subagent',
   'open_settings_panel',
   'gmail_list_messages',
   'gmail_get_message',
@@ -239,6 +241,7 @@ export const READ_ONLY_TOOLS: ToolName[] = [
   'list_skills',
   'read_skill',
   'read_memory',
+  'read_subagent',
   'ask_question',
   'codebase_search',
   'list_projects',

@@ -285,6 +285,21 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'read_subagent',
+        description:
+          'Read a subagent type\'s full definition by name (as listed in the Subagents catalog in the system prompt) — description, tool restriction, model override, and (for custom types) the full instruction body written via write_subagent. Use this before editing a custom subagent with write_subagent (which overwrites), or to inspect a built-in type\'s tool restriction.',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Exact subagent type name, e.g. "explore" or a custom type\'s name.' }
+          },
+          required: ['name']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'task',
         description:
           "Delegate a self-contained chunk of work to a subagent that runs in its own isolated context window and reports back only a final summary. Use it proactively, before doing the work yourself, when a step is open-ended or likely to take many tool calls — broad codebase exploration, multi-file research, hunting for where something is handled, verifying a hypothesis across many files — so that exploration noise (file reads, grep hits, dead ends) stays out of your own context instead of bloating it. Also use it to fan out independent, parallelizable lookups by issuing multiple task calls in the same turn (e.g. researching several unrelated libraries at once). Do NOT delegate a single small, well-scoped edit or lookup you could finish yourself in 1-2 tool calls — the round-trip isn't worth it there. Pick agent_type from the Subagents catalog in the system prompt. Write `prompt` as a fully self-contained brief: the subagent sees nothing else from this conversation, so include all relevant context, files, and the exact question or outcome you need back.",
@@ -662,6 +677,7 @@ export function getToolDefinitions(
     'list_skills',
     'read_skill',
     'read_memory',
+    'read_subagent',
     'ask_question',
     'task',
     'save_plan',
@@ -691,6 +707,7 @@ export function getToolDefinitions(
     'write_memory',
     'write_skill',
     'write_subagent',
+    'read_subagent',
     'task',
     'ask_question',
     'codebase_search',

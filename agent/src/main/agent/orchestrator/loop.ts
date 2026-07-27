@@ -674,6 +674,13 @@ async function dispatchTool(
         return { ok: false, summary: 'Failed to save subagent', error: e instanceof Error ? e.message : String(e) }
       }
     }
+    case 'read_subagent': {
+      const found = await getSubagentType(String(args.name))
+      if (!found) {
+        return { ok: false, summary: `Subagent "${String(args.name)}" not found`, error: 'not found' }
+      }
+      return { ok: true, summary: `Subagent "${found.name}" loaded`, data: { subagent: found } }
+    }
     case 'list_projects':
       return listProjectsTool()
     case 'read_other_project_file':
@@ -812,6 +819,8 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       return `Writing skill "${str(args.name) ?? ''}"`
     case 'write_subagent':
       return `Writing subagent "${str(args.name) ?? ''}"`
+    case 'read_subagent':
+      return `Reading subagent "${str(args.name) ?? ''}"`
     case 'ask_question':
       return 'Asking a clarifying question'
     case 'codebase_search':

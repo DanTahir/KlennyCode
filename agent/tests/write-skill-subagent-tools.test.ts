@@ -40,6 +40,18 @@ describe('write_skill / write_subagent tool definitions', () => {
   })
 })
 
+describe('read_subagent tool definition', () => {
+  test('is exposed in both agent and plan mode (read-only)', () => {
+    expect(getToolDefinitions('agent').map((t) => t.function.name)).toContain('read_subagent')
+    expect(getToolDefinitions('plan').map((t) => t.function.name)).toContain('read_subagent')
+  })
+
+  test('remains available with no workspace open (Assistant tab)', () => {
+    const tools = getToolDefinitions('agent', 'all', false, false).map((t) => t.function.name)
+    expect(tools).toContain('read_subagent')
+  })
+})
+
 describe('writeSkill manager guard + scoping', () => {
   let tempRoot: string
   let workspace: string

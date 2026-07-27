@@ -31,7 +31,8 @@ Read-only tools only. Klenny Code will ask clarifying questions, research your c
 | `web_search` / `fetch_url` | Look up docs and references |
 | `ask_question` | Ask you structured multiple-choice questions |
 | `task` | Spawn an isolated subagent |
-| `read_skill` | Load a Cursor-style skill |
+| `read_skill` / `write_skill` | Load or author a Cursor-style skill |
+| `read_subagent` / `write_subagent` | Inspect or author a custom subagent type |
 | `read_memory` | Load the full content of an auto-memory topic note |
 | `write_memory` | Persist notes for future sessions |
 | `codebase_search` | Semantic search across the codebase (only available if enabled in Settings) |
