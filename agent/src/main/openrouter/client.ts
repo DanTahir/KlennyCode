@@ -357,7 +357,15 @@ export async function summarizeMessages(
     {
       role: 'system',
       content:
-        'Summarize the following conversation history concisely, preserving key decisions, file paths, and open tasks.'
+        'Summarize the following conversation history concisely, preserving key decisions, file paths, and open tasks. ' +
+        'This transcript already contains the literal, ground-truth record of every tool call that was actually made, ' +
+        'rendered as "[called toolName({...})]" markers and "tool result (toolName): ..." lines. Only ever report tool ' +
+        'calls, arguments, and outcomes that are literally present in this transcript, using their exact tool names and ' +
+        'argument keys as written — never invent, infer, paraphrase into a different schema, or assume a call succeeded ' +
+        '(or happened at all) beyond what the transcript explicitly shows. If a message merely proposes, plans, or ' +
+        'discusses an action (e.g. plan markdown describing a future edit) without a matching "[called ...]" marker, ' +
+        'summarize it as a proposal/plan — never as something that was executed. When genuinely unsure whether an action ' +
+        'happened, say so explicitly rather than filling in a plausible-sounding but unverified account.'
     },
     { role: 'user', content: text }
   ]
