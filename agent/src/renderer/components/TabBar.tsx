@@ -1,8 +1,12 @@
 import { useAppStore } from '../store/useAppStore'
+import { useCodeTabActions } from '../hooks/useCodeTabActions'
+import { useAssistantTabActions } from '../hooks/useAssistantTabActions'
 
 export function TabBar() {
   const { tabs, activeTabId, setTabs, setActiveTab, plans, openPlanTabs, activePlanSlug, closePlanTab, openPlanTab } =
     useAppStore()
+  const { openCodeTab } = useCodeTabActions()
+  const { openAssistantTab } = useAssistantTabActions()
 
   return (
     <div className="flex items-center gap-1 px-2 py-1 border-b border-klenny-border bg-klenny-panel overflow-x-auto">
@@ -59,16 +63,18 @@ export function TabBar() {
         )
       })}
       <button
-        className="px-2 py-1 text-klenny-muted hover:text-klenny-text"
-        title="New tab (Ctrl+T)"
-        onClick={() =>
-          void window.klenny.createTab().then(async (tab) => {
-            setTabs(await window.klenny.listTabs())
-            setActiveTab(tab.id)
-          })
-        }
+        className="flex items-center px-2 py-1 text-klenny-muted hover:text-klenny-text"
+        title="New Code Chat tab (Ctrl+T)"
+        onClick={() => void openCodeTab()}
       >
-        +
+        💻+
+      </button>
+      <button
+        className="flex items-center px-2 py-1 text-klenny-muted hover:text-klenny-text"
+        title="New Assistant tab"
+        onClick={() => void openAssistantTab()}
+      >
+        🐾+
       </button>
     </div>
   )

@@ -4,6 +4,7 @@ import { DEFAULT_BRAND_NAME } from '@shared/types'
 import { useAppStore } from '../store/useAppStore'
 import { useWorkspaceActions } from '../hooks/useWorkspaceActions'
 import { useAssistantTabActions } from '../hooks/useAssistantTabActions'
+import { useCodeTabActions } from '../hooks/useCodeTabActions'
 
 const items = [
   { id: 'chat', label: 'Chat' },
@@ -19,6 +20,7 @@ export function Sidebar() {
   const { panel, setPanel, workspace, updateStatus, updateSupported, settings, customIconUrl } = useAppStore()
   const { openWorkspace } = useWorkspaceActions()
   const { openAssistantTab } = useAssistantTabActions()
+  const { openCodeTab } = useCodeTabActions()
   const [justChecked, setJustChecked] = useState<'up-to-date' | 'error' | null>(null)
   const brandName = settings?.brandName || DEFAULT_BRAND_NAME
 
@@ -88,10 +90,17 @@ export function Sidebar() {
           ))}
         <button
           className="w-full text-xs px-3 py-2 rounded-md bg-klenny-accent text-black font-medium hover:bg-klenny-accent2"
+          title="Open a new Code Chat tab (file/shell access for the current coding project)"
+          onClick={() => void openCodeTab()}
+        >
+          Open Code Chat 💻
+        </button>
+        <button
+          className="w-full text-xs px-3 py-2 rounded-md bg-klenny-accent text-black font-medium hover:bg-klenny-accent2"
           title="Open a new Assistant tab (Gmail, Discord, scheduler, web search — no coding project needed)"
           onClick={() => void openAssistantTab()}
         >
-          Open Assistant
+          Open Assistant 🐾
         </button>
         {workspace && (
           <div className="text-[10px] text-klenny-muted truncate px-1" title={workspace}>
