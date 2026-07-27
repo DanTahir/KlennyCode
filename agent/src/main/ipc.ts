@@ -12,6 +12,12 @@ import { listSkills, readSkill, writeSkill } from './agent/skills/manager'
 import { listSubagentTypes, writeSubagentType } from './agent/subagents/manager'
 import { listPlans, readPlan } from './agent/plan/manager'
 import { readMemoryFile, writeMemoryFile } from './agent/memory/manager'
+import {
+  listAssistantMemory,
+  deleteAssistantMemorySlot,
+  clearAssistantMemoryRollup,
+  clearAllAssistantMemory
+} from './agent/memory/assistantMemory'
 import { readSoul, writeSoul, resetSoul } from './agent/soul/manager'
 import { getApiKey } from './settings'
 import { detectShells } from './shells'
@@ -247,6 +253,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.memoryWrite, async (_e, scope: 'project' | 'global', content: string) =>
     writeMemoryFile(scope, content)
   )
+
+  ipcMain.handle(IPC.assistantMemoryList, async () => listAssistantMemory())
+  ipcMain.handle(IPC.assistantMemoryDeleteSlot, async (_e, tabId: string) => deleteAssistantMemorySlot(tabId))
+  ipcMain.handle(IPC.assistantMemoryClearRollup, async () => clearAssistantMemoryRollup())
+  ipcMain.handle(IPC.assistantMemoryClearAll, async () => clearAllAssistantMemory())
 
   ipcMain.handle(IPC.soulRead, async () => readSoul())
   ipcMain.handle(IPC.soulWrite, async (_e, content: string) => writeSoul(content))

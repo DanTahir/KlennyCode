@@ -297,6 +297,30 @@ export function SettingsPanel() {
           </section>
 
           <section className="mb-6 space-y-2">
+            <h3 className="font-medium">Assistant window memory</h3>
+            <label className="block text-sm">Shared memory pool size</label>
+            <select
+              className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
+              value={String(settings.assistantMemorySize)}
+              onChange={(e) => {
+                const v = e.target.value
+                void patch({ assistantMemorySize: v === 'disabled' ? 'disabled' : (Number(v) as 10000 | 20000) })
+              }}
+            >
+              <option value="disabled">Disabled — no silent memory writes</option>
+              <option value="10000">Small (~10,000 tokens)</option>
+              <option value="20000">Large (~20,000 tokens)</option>
+            </select>
+            <p className="text-xs text-klenny-muted">
+              After each Assistant-tab turn, Klenny silently uses the utility model to update a
+              short memory note for that window, so other Assistant windows can see at a glance
+              what it's been doing. The whole pool shares this token budget; older notes get
+              folded into a compact rollup once it fills up. Disabling stops new writes
+              immediately — existing notes stick around until cleared from the Memory panel.
+            </p>
+          </section>
+
+          <section className="mb-6 space-y-2">
             <h3 className="font-medium">Prompt caching</h3>
             <label className="flex items-center gap-2 text-sm">
               <input

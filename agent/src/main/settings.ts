@@ -8,6 +8,7 @@ import {
   DEFAULT_UTILITY_MODEL,
   DEFAULT_AUTOMATION_PERMISSIONS,
   DEFAULT_BROWSER_AUTOMATION,
+  DEFAULT_ASSISTANT_MEMORY_SIZE,
   BRAND_NAME_MAX_LENGTH
 } from '@shared/types'
 import { hasCustomIcon, hasCustomRunningGif } from './branding'
@@ -47,7 +48,8 @@ const DEFAULTS: AppSettings = {
   startOnLogin: false,
   brandName: null,
   hasCustomIcon: false,
-  hasCustomRunningGif: false
+  hasCustomRunningGif: false,
+  assistantMemorySize: DEFAULT_ASSISTANT_MEMORY_SIZE
 }
 
 function settingsPath(): string {

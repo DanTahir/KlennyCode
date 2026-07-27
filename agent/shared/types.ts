@@ -499,11 +499,50 @@ export interface AppSettings {
   hasCustomIcon: boolean
   /** boolean flag only — see hasCustomIcon */
   hasCustomRunningGif: boolean
+
+  /** Aggregate token budget for the Assistant-window shared memory pool (see
+   *  AssistantMemoryPool). 'disabled' turns off all silent background writes immediately. */
+  assistantMemorySize: AssistantMemorySize
 }
 
 /** Max length enforced for AppSettings.brandName, both in the renderer input and defensively
  *  in the main-process settings save path. */
 export const BRAND_NAME_MAX_LENGTH = 15
+
+// ---------- Assistant window shared, auto-compacting memory ----------
+
+/** Aggregate token budget for the whole Assistant-memory pool. 'disabled' stops all silent
+ *  writes immediately (existing slots/rollup stay on disk, simply excluded from prompts). */
+export type AssistantMemorySize = 10000 | 20000 | 'disabled'
+
+export const DEFAULT_ASSISTANT_MEMORY_SIZE: AssistantMemorySize = 10000
+
+/** One Assistant window's continuously-updated memory slot, silently rewritten in place by the
+ *  app after each round of work — never via a model-visible tool call. Persists after its tab
+ *  is closed/deleted; only compaction or explicit user deletion ever removes content. */
+export interface AssistantMemorySlot {
+  tabId: string
+  /** snapshot of the tab's title at last update time, for display after the tab is gone */
+  tabTitle: string
+  content: string
+  updatedAt: number
+  tokenEstimate: number
+  /** id of the last tab.messages entry folded into `content` so far; null = never memorized yet */
+  lastMemorizedMessageId: string | null
+}
+
+/** Single rolled-up note that older, compacted-away slot content gets merged into once the
+ *  pool's aggregate budget is exceeded. */
+export interface AssistantMemoryRollup {
+  content: string
+  updatedAt: number
+  tokenEstimate: number
+}
+
+export interface AssistantMemoryPool {
+  slots: AssistantMemorySlot[]
+  rollup: AssistantMemoryRollup | null
+}
 
 export const DEFAULT_BRAND_NAME = 'Klenny Code'
 

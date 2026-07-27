@@ -28,6 +28,16 @@ describe('tool definitions', () => {
     expect(getToolDefinitions('agent').map((t) => t.function.name)).toContain('read_memory')
   })
 
+  test("read_memory's schema accepts scope 'assistant' and no longer requires topic (assistant scope needs no topic)", () => {
+    const def = getToolDefinitions('agent').find((t) => t.function.name === 'read_memory')
+    expect(def).toBeDefined()
+    const params = def!.function.parameters as { properties: { scope: { enum: string[] } }; required: string[] }
+    expect(params.properties.scope.enum).toContain('assistant')
+    expect(params.properties.scope.enum).toContain('project')
+    expect(params.properties.scope.enum).toContain('global')
+    expect(params.required).toEqual(['scope'])
+  })
+
   test('cross-project read-only tools are available in both plan and agent mode', () => {
     const crossProjectTools = [
       'list_projects',

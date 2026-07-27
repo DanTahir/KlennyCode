@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import type { AssistantMemoryPool } from '@shared/types'
 
-type Scope = 'project' | 'global' | 'soul'
+type Scope = 'project' | 'global' | 'soul' | 'assistant'
 
 export function MemoryPanel() {
   const [scope, setScope] = useState<Scope>('project')
@@ -10,7 +11,14 @@ export function MemoryPanel() {
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const [pool, setPool] = useState<AssistantMemoryPool | null>(null)
+  const [poolBusy, setPoolBusy] = useState(false)
+
   const load = useCallback(async (s: Scope) => {
+    if (s === 'assistant') {
+      setPool(await window.klenny.listAssistantMemory())
+      return
+    }
     const value = s === 'soul' ? await window.klenny.readSoul() : await window.klenny.readMemory(s)
     setContent(value)
   }, [])
@@ -27,7 +35,7 @@ export function MemoryPanel() {
     try {
       if (scope === 'soul') {
         await window.klenny.writeSoul(content)
-      } else {
+      } else if (scope !== 'assistant') {
         await window.klenny.writeMemory(scope, content)
       }
       // Re-read from disk to confirm the save actually persisted and to
@@ -58,6 +66,18 @@ export function MemoryPanel() {
     }
   }
 
+  const runPoolAction = async (fn: () => Promise<AssistantMemoryPool>) => {
+    setPoolBusy(true)
+    setError(null)
+    try {
+      setPool(await fn())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPoolBusy(false)
+    }
+  }
+
   return (
     <div className="flex-1 overflow-y-auto p-6 max-w-3xl space-y-4">
       <h2 className="text-xl font-semibold">Memory</h2>
@@ -75,6 +95,7 @@ export function MemoryPanel() {
         <option value="project">Project (KLENNY.md)</option>
         <option value="global">Global (~/.klenny/KLENNY.md)</option>
         <option value="soul">Personality (~/.klenny/SOUL.md)</option>
+        <option value="assistant">Assistant windows (shared memory)</option>
       </select>
       {scope === 'soul' && (
         <p className="text-sm text-klenny-muted">
@@ -85,36 +106,123 @@ export function MemoryPanel() {
           no matter what you write here.
         </p>
       )}
-      <textarea
-        className="w-full min-h-[400px] font-mono text-sm px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
-        value={content}
-        onChange={(e) => {
-          setContent(e.target.value)
-          setSavedAt(null)
-          setError(null)
-        }}
-      />
-      <div className="flex items-center gap-3">
+      {scope === 'assistant' ? (
+        <AssistantMemoryViewer pool={pool} busy={poolBusy} error={error} runAction={runPoolAction} />
+      ) : (
+        <>
+          <textarea
+            className="w-full min-h-[400px] font-mono text-sm px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
+            value={content}
+            onChange={(e) => {
+              setContent(e.target.value)
+              setSavedAt(null)
+              setError(null)
+            }}
+          />
+          <div className="flex items-center gap-3">
+            <button
+              className="px-3 py-1 rounded bg-klenny-accent text-black text-sm disabled:opacity-50"
+              onClick={() => void handleSave()}
+              disabled={saving}
+            >
+              {saving ? 'Saving…' : 'Save memory'}
+            </button>
+            {scope === 'soul' && (
+              <button
+                className="px-3 py-1 rounded border border-klenny-border text-sm disabled:opacity-50"
+                onClick={() => void handleRestoreDefault()}
+                disabled={restoring}
+                title="Overwrite SOUL.md with Klenny's built-in default personality"
+              >
+                {restoring ? 'Restoring…' : 'Restore default personality'}
+              </button>
+            )}
+            {savedAt && <span className="text-xs text-klenny-muted">Saved</span>}
+            {error && <span className="text-xs text-red-400">Save failed: {error}</span>}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+function AssistantMemoryViewer({
+  pool,
+  busy,
+  error,
+  runAction
+}: {
+  pool: AssistantMemoryPool | null
+  busy: boolean
+  error: string | null
+  runAction: (fn: () => Promise<AssistantMemoryPool>) => Promise<void>
+}) {
+  if (!pool) return <p className="text-sm text-klenny-muted">Loading…</p>
+
+  const slots = [...pool.slots].sort((a, b) => b.updatedAt - a.updatedAt)
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-klenny-muted">
+        A single shared, auto-compacting memory pool that lets Assistant chat windows see (at a
+        glance) what other Assistant windows have been up to. Klenny silently updates its own slot
+        after each turn using the utility model; older slots get folded into the rollup below once
+        the pool's token budget (set in Settings → Models & cost) fills up. This view is read-only
+        aside from the delete/clear actions — Klenny itself is the only writer.
+      </p>
+      {error && <p className="text-xs text-red-400">{error}</p>}
+
+      {pool.rollup && (
+        <div className="border border-klenny-border rounded p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">Rollup (older, compacted history)</h3>
+            <button
+              className="px-2 py-0.5 rounded border border-klenny-border text-xs disabled:opacity-50"
+              disabled={busy}
+              onClick={() => void runAction(() => window.klenny.clearAssistantMemoryRollup())}
+            >
+              Clear rollup
+            </button>
+          </div>
+          <p className="text-xs text-klenny-muted whitespace-pre-wrap">{pool.rollup.content}</p>
+          <p className="text-xs text-klenny-muted">
+            ~{pool.rollup.tokenEstimate} tokens · updated {new Date(pool.rollup.updatedAt).toLocaleString()}
+          </p>
+        </div>
+      )}
+
+      {slots.length === 0 && !pool.rollup && (
+        <p className="text-sm text-klenny-muted">No Assistant-window memory yet.</p>
+      )}
+
+      {slots.map((slot) => (
+        <div key={slot.tabId} className="border border-klenny-border rounded p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">{slot.tabTitle || 'Untitled Assistant tab'}</h3>
+            <button
+              className="px-2 py-0.5 rounded border border-klenny-border text-xs disabled:opacity-50"
+              disabled={busy}
+              onClick={() => void runAction(() => window.klenny.deleteAssistantMemorySlot(slot.tabId))}
+            >
+              Delete
+            </button>
+          </div>
+          <p className="text-xs text-klenny-muted whitespace-pre-wrap">{slot.content}</p>
+          <p className="text-xs text-klenny-muted">
+            ~{slot.tokenEstimate} tokens · updated {new Date(slot.updatedAt).toLocaleString()}
+          </p>
+        </div>
+      ))}
+
+      {(slots.length > 0 || pool.rollup) && (
         <button
-          className="px-3 py-1 rounded bg-klenny-accent text-black text-sm disabled:opacity-50"
-          onClick={() => void handleSave()}
-          disabled={saving}
+          className="px-3 py-1 rounded border border-klenny-border text-sm disabled:opacity-50"
+          disabled={busy}
+          onClick={() => void runAction(() => window.klenny.clearAllAssistantMemory())}
         >
-          {saving ? 'Saving…' : 'Save memory'}
+          Clear all assistant memory
         </button>
-        {scope === 'soul' && (
-          <button
-            className="px-3 py-1 rounded border border-klenny-border text-sm disabled:opacity-50"
-            onClick={() => void handleRestoreDefault()}
-            disabled={restoring}
-            title="Overwrite SOUL.md with Klenny's built-in default personality"
-          >
-            {restoring ? 'Restoring…' : 'Restore default personality'}
-          </button>
-        )}
-        {savedAt && <span className="text-xs text-klenny-muted">Saved</span>}
-        {error && <span className="text-xs text-red-400">Save failed: {error}</span>}
-      </div>
+      )}
     </div>
   )
 }

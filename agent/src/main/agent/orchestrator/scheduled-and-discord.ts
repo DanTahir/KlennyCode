@@ -12,6 +12,7 @@ import { getWorkspace, setWorkspace } from '../../workspace'
 import { sessionStore, appendMessageToWorkspaceTab } from '../../session/store'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
 import { truncateSummary } from '../turnControl'
+import { updateAssistantMemoryForTab } from '../memory/assistantMemory'
 import { agentLoop } from './loop'
 import { type SubagentContext, emitToAll } from './state'
 
@@ -171,6 +172,7 @@ async function deliverScheduledTaskResult(
       await sessionStore.updateTab(tab)
       emitToAll({ type: 'tab_upserted', tab })
       notifyIfUnfocused(task)
+      updateAssistantMemoryForTab(tab.id)
       return
     }
 
@@ -182,6 +184,7 @@ async function deliverScheduledTaskResult(
         emitToAll({ type: 'history_entry_removed', tabId: task.creatorTabId })
         emitToAll({ type: 'tab_upserted', tab: reopened })
         notifyIfUnfocused(task)
+        updateAssistantMemoryForTab(reopened.id)
         return
       }
     }
@@ -192,6 +195,7 @@ async function deliverScheduledTaskResult(
     await sessionStore.updateTab(tab)
     emitToAll({ type: 'tab_upserted', tab })
     notifyIfUnfocused(task)
+    updateAssistantMemoryForTab(tab.id)
     return
   }
 

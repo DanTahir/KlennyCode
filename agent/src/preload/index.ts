@@ -74,6 +74,11 @@ const api: KlennyApi = {
   readMemory: (scope) => ipcRenderer.invoke(IPC.memoryRead, scope),
   writeMemory: (scope, content) => ipcRenderer.invoke(IPC.memoryWrite, scope, content),
 
+  listAssistantMemory: () => ipcRenderer.invoke(IPC.assistantMemoryList),
+  deleteAssistantMemorySlot: (tabId) => ipcRenderer.invoke(IPC.assistantMemoryDeleteSlot, tabId),
+  clearAssistantMemoryRollup: () => ipcRenderer.invoke(IPC.assistantMemoryClearRollup),
+  clearAllAssistantMemory: () => ipcRenderer.invoke(IPC.assistantMemoryClearAll),
+
   readSoul: () => ipcRenderer.invoke(IPC.soulRead),
   writeSoul: (content) => ipcRenderer.invoke(IPC.soulWrite, content),
   resetSoul: () => ipcRenderer.invoke(IPC.soulReset),

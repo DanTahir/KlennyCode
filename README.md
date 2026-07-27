@@ -17,7 +17,7 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Plan mode** — read-only research, clarifying questions, reviewable plan artifacts before edits
 - **Thinking display** — streams reasoning tokens from supported models live
 - **Diff viewer** — see every code change with accept/reject approval workflow
-- **Memory** — project `KLENNY.md`, global `~/.klenny/KLENNY.md`, and auto-memory notes (Claude Code-style)
+- **Memory** — project `KLENNY.md`, global `~/.klenny/KLENNY.md`, and auto-memory notes (Claude Code-style); Assistant tabs additionally share a single auto-compacting memory pool across every Assistant window — see [Assistant window shared memory](#assistant-window-shared-memory) below
 - **Personality** — a user-editable `~/.klenny/SOUL.md` describing who the agent is and how it talks, defaulting to a playful corgi persona; edit it from the Memory tab's "Personality" scope, blank it out for a neutral voice, or restore the built-in default with one click — hardcoded guardrails always keep personality from affecting reasoning, plans, or code quality
 - **Cross-project reference (read-only)** — the agent can read files and memory from *other* projects it has previously opened, so you can ask it to port a feature or convention from one project into the one you're currently working in
 - **Personal Assistant** — an on-demand, persistent "🐾 Assistant" tab (Gmail, Discord, web search, scheduler, cross-project reference — no coding project required), plus a background scheduler for recurring tasks and a Discord bot for two-way chat/automation — see [Personal Assistant](#personal-assistant) below
@@ -135,6 +135,8 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
   regular chat tab. Assistant tabs are workspace-independent: they persist across app restarts,
   and closing one (once it has messages) archives it to the "🐾 Assistant" section of the History
   panel instead of discarding it — reopen it from there to keep going.
+- **Shared Assistant memory** — every Assistant tab silently keeps other Assistant windows in the
+  loop; see [Assistant window shared memory](#assistant-window-shared-memory) below.
 - **Gmail** — connect your own Google Cloud OAuth client in Settings → Integrations to let the
   agent read and (once you opt in) send email.
 - **Discord** — connect a bot application (never a personal account) to let the agent post
@@ -163,6 +165,40 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
 
 Coding tools (file read/write, shell commands, codebase search) remain scoped to an actual open
 project — the Assistant tab and its tools are additive, available everywhere, not a replacement.
+
+### Assistant window shared memory
+
+Assistant tabs (see above) share a single, workspace-independent memory pool so that opening a
+second (or third, or tenth) Assistant window doesn't mean starting from a blank slate — each
+window can see at a glance what the others have been up to.
+
+- **How it's written** — after each Assistant-tab turn finishes (live in the UI, or delivered by a
+  scheduled task), Klenny silently uses the cheap/fast **utility model** (Settings → Models & cost)
+  to rewrite that tab's own memory slot: a short note summarizing what happened since its last
+  update. This never shows up as a visible tool call — it's a background housekeeping step, same
+  spirit as chat-history compaction.
+- **How it's read** — every Assistant tab's system prompt is silently given a digest of every
+  *other* Assistant tab's current slot (never its own — see the caching note below) at the top of
+  each turn, so the agent can naturally reference other windows' work without you having to
+  paste anything in. It can also be read on demand any time via `read_memory` with
+  `scope: "assistant"`.
+- **Aggregate budget & compaction** — the whole pool shares one token budget, set in
+  Settings → Models & cost as "Assistant window memory": Small (~10k tokens, default), Large
+  (~20k tokens), or Disabled. The newest ~40% of the budget is kept as individually-addressable
+  slots; anything older gets folded into a single rolled-up summary (also via the utility model,
+  bounded to ~2,000 tokens) so the pool never grows without limit. Turning the setting to Disabled
+  stops all new writes immediately — existing notes stick around, simply excluded from prompts,
+  until you re-enable it or clear them by hand.
+- **Viewing/managing it** — the Memory panel's scope dropdown has an "Assistant windows (shared
+  memory)" option showing every slot (tab title, content, token estimate, last-updated time) and
+  the current rollup, with per-slot delete, "Clear rollup", and "Clear all" actions. Klenny itself
+  is the only writer — this view is otherwise read-only.
+- **Cost & caching** — utility-model calls for a tab's own slot update are attributed to that tab's
+  cost total; pool-wide rollup compaction is attributed globally (not to any one tab), same
+  convention as codebase-index embedding costs. The digest is injected as an uncached trailing
+  note (alongside the current-time note) so it never invalidates prompt caching on the big, static
+  part of the system prompt — see the code comments in `system-prompt.ts` if you're curious about
+  the caching mechanics.
 
 ## Architecture
 

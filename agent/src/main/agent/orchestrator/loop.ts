@@ -58,6 +58,7 @@ import {
   readOtherProjectMemoryTool
 } from '../tools/otherProjects'
 import { writeMemory, readMemoryTopic } from '../memory/manager'
+import { buildFullAssistantMemoryDigest } from '../memory/assistantMemory'
 import { listSkills, readSkill, writeSkill } from '../skills/manager'
 import { getSubagentType, writeSubagentType } from '../subagents/manager'
 import { savePlan } from '../plan/manager'
@@ -250,7 +251,7 @@ export async function agentLoop(
     includeLastMessageCacheBreakpoint,
     priorCacheBreakpointIdx,
     maxTokens: modelInfo.maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS,
-    currentTimeNote: buildCurrentTimeNote()
+    currentTimeNote: await buildCurrentTimeNote(tab.kind === 'assistant' ? tab.id : undefined)
   })) {
     if (signal.aborted) break
     if (chunk.type === 'text' && chunk.text) {
@@ -654,6 +655,14 @@ async function dispatchTool(
     case 'read_skill':
       return { ok: true, summary: 'Skill loaded', data: { content: await readSkill(String(args.path)) } }
     case 'read_memory': {
+      if (args.scope === 'assistant') {
+        const content = await buildFullAssistantMemoryDigest()
+        return {
+          ok: true,
+          summary: content ? 'Read assistant memory digest' : 'Assistant memory is empty or disabled',
+          data: { content }
+        }
+      }
       try {
         const content = await readMemoryTopic(args.scope as 'project' | 'global', String(args.topic))
         return { ok: true, summary: `Read memory topic "${String(args.topic)}"`, data: { content } }
@@ -830,7 +839,7 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
     case 'read_skill':
       return `Reading skill ${str(args.path) ?? ''}`
     case 'read_memory':
-      return `Reading memory "${str(args.topic) ?? ''}"`
+      return args.scope === 'assistant' ? 'Reading assistant memory digest' : `Reading memory "${str(args.topic) ?? ''}"`
     case 'write_memory':
       return `Writing memory "${str(args.topic) ?? ''}"`
     case 'write_skill':

@@ -3,6 +3,7 @@ import type {
   ApprovalDecision,
   AppSettings,
   ArchivedTabSession,
+  AssistantMemoryPool,
   CostReport,
   IndexStatus,
   ModelInfo,
@@ -72,6 +73,11 @@ export const IPC = {
 
   memoryRead: 'memory:read',
   memoryWrite: 'memory:write',
+
+  assistantMemoryList: 'assistantMemory:list',
+  assistantMemoryDeleteSlot: 'assistantMemory:deleteSlot',
+  assistantMemoryClearRollup: 'assistantMemory:clearRollup',
+  assistantMemoryClearAll: 'assistantMemory:clearAll',
 
   soulRead: 'soul:read',
   soulWrite: 'soul:write',
@@ -192,6 +198,13 @@ export interface KlennyApi {
 
   readMemory: (scope: 'project' | 'global') => Promise<string>
   writeMemory: (scope: 'project' | 'global', content: string) => Promise<void>
+
+  /** Assistant-window shared, auto-compacting memory pool (see AssistantMemoryPool) — a single
+   *  workspace-independent pool viewed/managed from the Memory panel. */
+  listAssistantMemory: () => Promise<AssistantMemoryPool>
+  deleteAssistantMemorySlot: (tabId: string) => Promise<AssistantMemoryPool>
+  clearAssistantMemoryRollup: () => Promise<AssistantMemoryPool>
+  clearAllAssistantMemory: () => Promise<AssistantMemoryPool>
 
   /** SOUL.md — user-editable agent personality, global across all projects (`~/.klenny/SOUL.md`). */
   readSoul: () => Promise<string>

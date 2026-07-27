@@ -9,6 +9,7 @@ import { getApiKey, loadSettings } from '../../settings'
 import { sessionStore } from '../../session/store'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
 import { approvalManager } from '../approval/manager'
+import { updateAssistantMemoryForTab } from '../memory/assistantMemory'
 import { agentLoop } from './loop'
 import { checkSpendCap } from './approval-previews'
 import {
@@ -108,6 +109,13 @@ async function startAgentLoop(
     const isRealCompletion = stopReason === 'natural' || stopReason === 'error' || stopReason === 'truncation_failed' || stopReason === 'thrown'
     if (isRealCompletion && !BrowserWindow.getFocusedWindow()) {
       new Notification({ title: 'Klenny Code task finished', body: tab.title }).show()
+    }
+    // Trigger site 1 (see the Assistant memory plan): a live Assistant tab's turn just
+    // completed naturally/erroring/truncating — silently update its shared memory slot.
+    // Enqueue-and-return, never awaited, so this extra utility-model round-trip never delays
+    // the Send button/UI re-enable that endTurn() above already triggered.
+    if (isRealCompletion && tab.kind === 'assistant') {
+      updateAssistantMemoryForTab(tab.id)
     }
     // Only clear the bookkeeping if we're still the "current" controller for this tab — a
     // newer call may have already preempted us (see launchAgentLoop) and installed its own

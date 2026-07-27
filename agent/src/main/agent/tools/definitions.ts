@@ -214,14 +214,14 @@ export function getToolDefinitions(
       function: {
         name: 'read_memory',
         description:
-          'Read the full content of one auto-memory topic note by its exact title, as shown in the Auto-memory index in the system prompt (e.g. "Shell selection feature"). Do NOT use read_file for this — memory notes live outside the workspace tree, not in the project filesystem.',
+          'Read the full content of one auto-memory topic note by its exact title, as shown in the Auto-memory index in the system prompt (e.g. "Shell selection feature"). Do NOT use read_file for this — memory notes live outside the workspace tree, not in the project filesystem. Pass scope "assistant" (topic not needed) to read the full shared Assistant-window memory digest on demand, including this tab\'s own entry (the version auto-injected into Assistant-tab prompts each turn excludes the tab\'s own entry; this on-demand read does not).',
         parameters: {
           type: 'object',
           properties: {
-            scope: { type: 'string', enum: ['project', 'global'] },
+            scope: { type: 'string', enum: ['project', 'global', 'assistant'] },
             topic: { type: 'string' }
           },
-          required: ['scope', 'topic']
+          required: ['scope']
         }
       }
     },

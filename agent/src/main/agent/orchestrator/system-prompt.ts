@@ -9,6 +9,7 @@ import { listSkills, skillsCatalogPrompt } from '../skills/manager'
 import { listSubagentTypes, subagentsCatalog } from '../subagents/manager'
 import { buildAgentModePrompt, buildPlanModePrompt } from '../plan/manager'
 import { readSoul } from '../soul/manager'
+import { buildAssistantMemoryDigestForTab } from '../memory/assistantMemory'
 import type { SubagentContext } from './state'
 
 /**
@@ -24,11 +25,21 @@ import type { SubagentContext } from './state'
  * normally. Also note: whichever message this note gets appended to is deliberately never the
  * one `applyCacheControl` cache-marks (that mark instead lands one message earlier) — see its
  * doc comment for why a note-bearing message must never also be a cache breakpoint.
+ *
+ * `assistantTabId`, when given, folds the shared Assistant-memory digest (see
+ * assistantMemory.ts) into this same uncached trailing note rather than a separate one — the
+ * digest is pool-wide state that can change on *any* Assistant tab's turn, not just this one, so
+ * it must live in the same never-cached tail slot described above. Excludes `assistantTabId`'s
+ * own slot so a tab never "reads back" its own last update as if it were another window's
+ * activity.
  */
-export function buildCurrentTimeNote(): string {
+export async function buildCurrentTimeNote(assistantTabId?: string): Promise<string> {
   const now = new Date()
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  return `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
+  const timeNote = `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
+  if (!assistantTabId) return timeNote
+  const digest = await buildAssistantMemoryDigestForTab(assistantTabId)
+  return digest ? `${timeNote}\n\n${digest}` : timeNote
 }
 
 export async function buildSystemPrompt(

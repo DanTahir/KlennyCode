@@ -60,6 +60,7 @@ or Command approve at any time.
 - **Global**: `~/.klenny/KLENNY.md` (personal, all projects).
 - **Auto-memory**: Klenny Code can write topic files (stored outside your project, in Klenny Code's app data directory) and index them in `MEMORY.md`.
 - **Personality**: `~/.klenny/SOUL.md` (personal, all projects) — describes who the agent is and how it expresses itself in chat. Editable from the Memory tab's "Personality" scope; defaults to a playful corgi persona, but you can rewrite or blank it out for a plain, personality-free voice, or click **Restore default personality** to bring back Klenny's built-in default. A separate, hardcoded set of guardrails (not user-editable) always keeps personality from affecting reasoning, plans, or code quality, no matter what SOUL.md says.
+- **Assistant window shared memory**: every 🐾 Assistant tab (see Personal Assistant below) shares a single, auto-compacting memory pool so other Assistant windows can see at a glance what each one has been up to. View and manage it from the Memory tab's "Assistant windows (shared memory)" scope; the pool size (or turning it off) is set in **Settings → Models & cost**.
 
 ## Cross-project reference (read-only)
 
@@ -69,7 +70,8 @@ Klenny Code keeps track of every project you've previously opened. While working
 
 Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
 
-- **Assistant tab** — click **Open Assistant** in the sidebar to open a fresh chat tab with web search, cross-project reference, memory, Gmail, Discord, and scheduler tools, but no file/shell access (no coding project needed). Every click makes a brand-new tab; closing one discards it for good — Assistant tabs don't persist or show up in History.
+- **Assistant tab** — click **Open Assistant** in the sidebar to open a fresh chat tab with web search, cross-project reference, memory, Gmail, Discord, and scheduler tools, but no file/shell access (no coding project needed). Every click makes a brand-new tab; Assistant tabs persist across app restarts, and closing one (once it has messages) archives it to the "🐾 Assistant" section of History instead of discarding it.
+- **Shared Assistant memory** — after each Assistant-tab turn, Klenny silently uses the utility model to update a short note for that window; every other Assistant tab's prompt gets a digest of what the others have been doing, so windows naturally stay in sync without you copy-pasting context between them. See "Assistant window shared memory" under Memory above for how to view, size, or disable this.
 - **Gmail** — connect your own Google Cloud OAuth client in **Settings → Integrations** to let the agent read, and (once you opt in) send, email.
 - **Discord** — connect a bot application (never a personal account) so the agent can post updates and respond to DMs/mentions/`!klenny` commands, including reviewing a known project read-only when asked.
 - **Scheduler** — define recurring tasks ("every morning at 8am, summarize my inbox") that run unattended as background subagents, even while minimized to the system tray. **Minimize to tray** is on by default in Settings (and **Start on login** can be enabled there too) to keep the scheduler and Discord bot running. When a run finishes, its answer is delivered as a chat message in the tab that created it (reopened from History if needed, or a brand-new tab if that's gone too). Tasks can also be limited to a set number of firings (**Max runs**) — asking for something "at 8pm" or "in 10 minutes" creates a one-shot task that runs once and deletes itself, while "every 10 minutes, 3 times" runs 3 times then deletes itself; leave Max runs blank for a task that recurs forever.
@@ -80,7 +82,7 @@ Coding tools (file read/write, shell commands, codebase search) stay scoped to a
 
 ## History
 
-Closing a chat tab that has messages archives it instead of deleting it. Open the **History** panel from the sidebar to reopen or permanently delete archived chats. (Assistant tabs are the exception — they're ephemeral and never archived.)
+Closing a chat tab that has messages archives it instead of deleting it. Open the **History** panel from the sidebar to reopen or permanently delete archived chats — it has separate "💻 Code" and "🐾 Assistant" sections, since Assistant tabs archive to their own history rather than a project's.
 
 ## Cost Report
 
