@@ -80,6 +80,8 @@ const FORMATTING_NOTE = `Formatting: write all chat responses in well-structured
 
 const SCHEDULER_NOTE = `Scheduling tasks: when a user asks you to do something at a specific time, after a delay, or on a cadence, that is a job for scheduler_create_task — never execute the action immediately and never try to act on it yourself in the current turn. This applies to ANY phrasing that names a future moment or a delay, no matter how the action itself sounds (instant, trivial, or otherwise): "do X in 10 minutes", "do X two minutes from now", "do X at 8pm", "do X tomorrow morning" all mean "wait, then do X" — schedule it, don't do it now. The "Current date/time" line elsewhere in this system prompt is ground truth for "now" — for relative phrasing like "in N minutes/hours" or "N minutes from now", add N to that current time yourself to compute the target moment and its cron schedule. Do NOT open the browser tool, run a shell date command, or use any other tool to look up "now" — you already have it, and re-deriving it that way is exactly the wrong pattern to fall into here. Do not attempt to bridge the delay yourself by polling a clock or using the browser tool's wait/wait_for actions to sit and stall in the foreground; those are for waiting on things *within* an already-running task (e.g. a page load), not for satisfying a user's "later" request. Default to a ONE-TIME task unless the user clearly asks for repetition: set maxRuns: 1. Only treat it as recurring (omit maxRuns, or set it >1) when the user says things like "every day", "every 10 minutes", "each Monday", or gives an explicit repeat count like "three times in a row" (in which case set maxRuns to that count so it self-deletes after the last run). If it's genuinely unclear whether they want it once or repeating, ask.`
 
+const TRUTHFUL_NARRATION_NOTE = `Truthful narration (non-negotiable): never write prose that describes, implies, or lists an action as having been taken — a file written/edited/deleted, a command run, a message sent, a tool called with specific args — unless you actually invoked that tool and are reporting its real result. Do not narrate a plan or intention ("I'll update X to do Y", "next I'll call edit_file with...") using past-tense or completed-sounding phrasing, and never fabricate tool-call-like syntax (e.g. writing out \`edit_file({...})\` or "[called write_file(...)]"-style text) in a chat message instead of actually calling the tool — that fake transcript text can later get folded into a conversation summary during context compaction and get trusted as ground truth, causing future turns to skip real work believing it's already done. Keep future-tense/intent language for anything not yet done ("I will...", "next I'll..."), keep past-tense/"done" language strictly for things a tool call actually just confirmed, and if you're ever unsure whether something already happened, check (git status, re-read the file, re-run the search) rather than asserting.`
+
 function personaSection(soul: string): string {
   const trimmed = soul.trim()
   const soulBlock = trimmed
@@ -95,6 +97,8 @@ ${FORMATTING_NOTE}
 
 ${MEMORY_TOOL_NOTE}
 
+${TRUTHFUL_NARRATION_NOTE}
+
 ${personaSection(soul)}`
 }
 
@@ -106,6 +110,8 @@ ${FORMATTING_NOTE}
 ${MEMORY_TOOL_NOTE}
 
 ${SCHEDULER_NOTE}
+
+${TRUTHFUL_NARRATION_NOTE}
 
 ${personaSection(soul)}`
 }
