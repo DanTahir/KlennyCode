@@ -234,7 +234,11 @@ export function getToolDefinitions(
           type: 'object',
           properties: {
             scope: { type: 'string', enum: ['project', 'global'] },
-            topic: { type: 'string' },
+            topic: {
+              type: 'string',
+              description:
+                'Plain descriptive title, e.g. "Shell selection feature". Must NOT contain "/" or "\\" — the topic becomes a literal filename on disk, so a path separator is an illegal character and the call will fail.'
+            },
             content: { type: 'string' }
           },
           required: ['scope', 'topic', 'content']

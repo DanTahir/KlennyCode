@@ -2,7 +2,7 @@
 // call) and the spending-cap guard checked at the start of every user turn.
 import { readFile } from 'node:fs/promises'
 import type { PendingAction, TabSession } from '@shared/types'
-import { resolveWorkspacePath, previewMultiEdit, type MultiEditOp } from '../tools/index'
+import { resolveWorkspacePath, previewMultiEdit, normalizeEditsArg, type MultiEditOp } from '../tools/index'
 import { toLf } from '../tools/eol'
 import { makeDiff } from '../tools/diff'
 import { resolveEditMatch } from '../tools/edit-match'
@@ -45,7 +45,8 @@ export async function previewMutatingTool(
     }
   }
   if (name === 'multi_edit') {
-    const edits = (Array.isArray(args.edits) ? args.edits : []) as MultiEditOp[]
+    const normalized = normalizeEditsArg(args.edits)
+    const edits = (normalized.ok ? normalized.edits : []) as MultiEditOp[]
     // previewMultiEdit/planMultiEdit validate each edit and reject malformed paths cleanly, but
     // guard here too (matching the edit_file/write_file branches above) so any unexpected
     // failure degrades to a plain preview instead of crashing the whole tool call and leaving

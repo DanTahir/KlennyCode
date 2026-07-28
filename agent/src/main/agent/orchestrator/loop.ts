@@ -39,6 +39,7 @@ import {
   writeFileTool,
   editFileTool,
   multiEditFileTool,
+  normalizeEditsArg,
   type MultiEditOp,
   deleteFileTool,
   grepTool,
@@ -821,7 +822,8 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
     case 'edit_file':
       return `Editing ${str(args.path) ?? 'file'}`
     case 'multi_edit': {
-      const edits = Array.isArray(args.edits) ? (args.edits as Array<{ path?: unknown }>) : []
+      const normalized = normalizeEditsArg(args.edits)
+      const edits = normalized.ok ? (normalized.edits as Array<{ path?: unknown }>) : []
       const paths = [...new Set(edits.map((e) => (typeof e.path === 'string' ? e.path : '')).filter(Boolean))]
       return paths.length > 1 ? `Editing ${paths.length} files` : `Editing ${paths[0] ?? 'files'}`
     }

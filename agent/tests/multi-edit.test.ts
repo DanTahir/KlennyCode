@@ -162,11 +162,42 @@ describe('multiEditFileTool', () => {
     expect(await readFile(join(workspaceDir, rel), 'utf8')).toBe('const a = 1\n')
   })
 
-  test('does not throw when edits is not an array (e.g. a double-encoded JSON string)', async () => {
+  test('parses edits when sent as a valid JSON-encoded string instead of a real array', async () => {
+    const { multiEditFileTool } = await import('../src/main/agent/tools/index')
+    const rel = 'stringified-edits.ts'
+    await writeFile(join(workspaceDir, rel), 'const a = 1\n', 'utf8')
+
+    const result = await multiEditFileTool({
+      edits: JSON.stringify([{ path: rel, old_string: 'const a = 1', new_string: 'const a = 10' }]) as unknown as never
+    })
+
+    expect(result.ok).toBe(true)
+    expect(await readFile(join(workspaceDir, rel), 'utf8')).toBe('const a = 10\n')
+  })
+
+  test('rejects edits sent as a string that is not valid JSON', async () => {
     const { multiEditFileTool } = await import('../src/main/agent/tools/index')
     const result = await multiEditFileTool({
-      edits: '[{"path":"whatever.ts","old_string":"a","new_string":"b"}]' as unknown as never
+      edits: 'not json at all {' as unknown as never
     })
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('no_edits')
+    expect(result.summary).toContain('not valid JSON')
+  })
+
+  test('rejects edits sent as a JSON string that parses to a non-array', async () => {
+    const { multiEditFileTool } = await import('../src/main/agent/tools/index')
+    const result = await multiEditFileTool({
+      edits: JSON.stringify({ path: 'whatever.ts', old_string: 'a', new_string: 'b' }) as unknown as never
+    })
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('no_edits')
+    expect(result.summary).toContain('did not parse to an array')
+  })
+
+  test('still reports no_edits (without throwing) when edits is neither an array nor a string', async () => {
+    const { multiEditFileTool } = await import('../src/main/agent/tools/index')
+    const result = await multiEditFileTool({ edits: 42 as unknown as never })
     expect(result.ok).toBe(false)
     expect(result.error).toBe('no_edits')
   })

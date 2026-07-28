@@ -253,12 +253,43 @@ async function planMultiEdit(
   return { ok: true, files: [...files.values()] }
 }
 
+/** `edits` should always arrive as a real array per the tool schema, but some models/providers
+ *  double-encode nested-array arguments as a JSON string instead of sending the actual array.
+ *  Rather than silently treating that string as an (empty, or character-iterated) array — which
+ *  previously crashed deep inside planMultiEdit with an uncaught TypeError — detect the string
+ *  case and attempt to JSON.parse it; if it parses to a real array, use that. Any other shape
+ *  (not a string, not an array, or a string that fails to parse / doesn't parse to an array) is
+ *  reported back as a normal tool error the model can see and correct.
+ */
+export function normalizeEditsArg(rawEdits: unknown): { ok: true; edits: MultiEditOp[] } | { ok: false; summary: string } {
+  if (Array.isArray(rawEdits)) return { ok: true, edits: rawEdits as MultiEditOp[] }
+  if (typeof rawEdits === 'string') {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(rawEdits)
+    } catch (e) {
+      return {
+        ok: false,
+        summary: `multi_edit "edits" was a string but not valid JSON (${e instanceof Error ? e.message : String(e)}); pass edits as a real JSON array, not a stringified one`
+      }
+    }
+    if (!Array.isArray(parsed)) {
+      return {
+        ok: false,
+        summary: 'multi_edit "edits" was a JSON string but did not parse to an array; it must be an array of {path, old_string, new_string} objects'
+      }
+    }
+    return { ok: true, edits: parsed as MultiEditOp[] }
+  }
+  return { ok: false, summary: 'multi_edit called with no edits' }
+}
+
 export async function multiEditFileTool(args: { edits: MultiEditOp[] }): Promise<ToolResultPayload> {
-  // `edits` should always be an array per the tool schema, but guard against a non-array value
-  // (e.g. a model double-encoding it as a JSON string) rather than silently iterating over the
-  // wrong thing — that previously led to malformed "edits" (string chars, not edit objects)
-  // crashing deep inside planMultiEdit with an uncaught TypeError.
-  const edits = Array.isArray(args.edits) ? args.edits : []
+  const normalized = normalizeEditsArg(args.edits)
+  if (!normalized.ok) {
+    return { ok: false, summary: normalized.summary, error: 'no_edits' }
+  }
+  const edits = normalized.edits
   if (edits.length === 0) {
     return { ok: false, summary: 'multi_edit called with no edits', error: 'no_edits' }
   }

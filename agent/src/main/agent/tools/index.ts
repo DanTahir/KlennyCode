@@ -8,6 +8,7 @@ export {
   editFileTool,
   multiEditFileTool,
   previewMultiEdit,
+  normalizeEditsArg,
   deleteFileTool,
   type MultiEditOp
 } from './file-ops'

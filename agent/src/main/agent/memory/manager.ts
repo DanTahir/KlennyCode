@@ -48,7 +48,22 @@ export async function loadAutoMemoryIndex(workspace?: string): Promise<string> {
   }
 }
 
+/** Memory topics become a literal filename (`<topic>.md`) on disk, so a topic containing a
+ *  path separator would either escape the memory directory or throw a raw fs error deep inside
+ *  writeFile/mkdir. Reject it up front with a clean, catchable message the model can act on. */
+function assertValidTopic(topic: string): void {
+  if (typeof topic !== 'string' || topic.length === 0) {
+    throw new Error('write_memory: topic must be a non-empty string')
+  }
+  if (topic.includes('/') || topic.includes('\\')) {
+    throw new Error(
+      `write_memory: topic "${topic}" contains a "/" or "\\" — those are illegal in a memory topic title because it becomes a filename on disk. Use a plain descriptive title with no path separators (e.g. "Shell selection feature", not "features/shell-selection").`
+    )
+  }
+}
+
 export async function writeMemory(scope: 'project' | 'global', topic: string, content: string): Promise<void> {
+  assertValidTopic(topic)
   if (scope === 'global') {
     await mkdir(GLOBAL_DIR, { recursive: true })
     const path = join(GLOBAL_DIR, 'memory', `${topic}.md`)
