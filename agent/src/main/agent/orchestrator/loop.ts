@@ -646,7 +646,7 @@ async function dispatchTool(
         fileRoot
       )
     case 'multi_edit':
-      return multiEditFileTool(args as unknown as { edits: MultiEditOp[] }, fileRoot)
+      return multiEditFileTool(args as unknown as { edits: MultiEditOp[]; path?: string }, fileRoot)
     case 'delete_file':
       return deleteFileTool(args as { path: string }, fileRoot)
     case 'read_docx':

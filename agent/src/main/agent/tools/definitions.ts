@@ -75,13 +75,19 @@ export function getToolDefinitions(
       function: {
         name: 'multi_edit',
         description:
-          'Batch multiple edit_file-style replacements, across one file or several, into a single call that needs only one approval. Prefer this over several separate edit_file calls whenever you already know all the changes you want to make (for example updating the same file in 3 places, or making a coordinated change across multiple files) - it cuts down on repeated round-trips and approval prompts. Edits are validated as one all-or-nothing batch: if any old_string fails to match, nothing is written. Edits are applied in order, so a later edit can target text produced by an earlier edit to the same file. Each edit follows the same rules as edit_file: old_string must match file contents exactly (read_file first, no line-number prefixes), and replace_all replaces every occurrence of the old_string within that edit.',
+          'Batch multiple edit_file-style replacements, across one file or several, into a single call that needs only one approval. Prefer this over several separate edit_file calls whenever you already know all the changes you want to make (for example updating the same file in 3 places, or making a coordinated change across multiple files) - it cuts down on repeated round-trips and approval prompts. Edits are validated as one all-or-nothing batch: if any old_string fails to match, nothing is written. Edits are applied in order, so a later edit can target text produced by an earlier edit to the same file. Each edit follows the same rules as edit_file: old_string must match file contents exactly (read_file first, no line-number prefixes), and replace_all replaces every occurrence of the old_string within that edit. If every edit in the batch targets the same file, you may pass the top-level `path` instead of repeating it on each edit entry — any entry that omits its own `path` inherits the top-level one; entries that do specify their own `path` are left as-is, so a batch can still span multiple files by giving those entries their own `path`.',
         parameters: {
           type: 'object',
           properties: {
+            path: {
+              type: 'string',
+              description:
+                'Optional default path applied to any edit entry that omits its own "path" — convenient when every edit targets the same file. Entries with their own "path" override this.'
+            },
             edits: {
               type: 'array',
-              description: 'One or more edits to apply, each targeting a path (the same file may repeat across entries).',
+              description:
+                'One or more edits to apply. Each may include its own "path" (needed when the batch spans multiple files); if omitted, it falls back to the top-level "path".',
               items: {
                 type: 'object',
                 properties: {
@@ -90,7 +96,7 @@ export function getToolDefinitions(
                   new_string: { type: 'string' },
                   replace_all: { type: 'boolean', description: 'Replace every occurrence within that edit.' }
                 },
-                required: ['path', 'old_string', 'new_string']
+                required: ['old_string', 'new_string']
               }
             }
           },

@@ -286,9 +286,26 @@ async function planMultiEdit(
  *  case and attempt to JSON.parse it; if it parses to a real array, use that. Any other shape
  *  (not a string, not an array, or a string that fails to parse / doesn't parse to an array) is
  *  reported back as a normal tool error the model can see and correct.
+ *
+ *  `defaultPath` backs the top-level `path` convenience argument: when every edit in the batch
+ *  targets the same file, models frequently omit `path` on each individual entry (as if it were
+ *  inherited), which previously failed validation with "each entry needs string path". Any entry
+ *  missing/empty `path` gets `defaultPath` filled in here; entries that already specify their own
+ *  path (e.g. a batch spanning multiple files) are left untouched, so mixed-file batches still work.
  */
-export function normalizeEditsArg(rawEdits: unknown): { ok: true; edits: MultiEditOp[] } | { ok: false; summary: string } {
-  if (Array.isArray(rawEdits)) return { ok: true, edits: rawEdits as MultiEditOp[] }
+export function normalizeEditsArg(
+  rawEdits: unknown,
+  defaultPath?: string
+): { ok: true; edits: MultiEditOp[] } | { ok: false; summary: string } {
+  const applyDefaultPath = (edits: MultiEditOp[]): MultiEditOp[] => {
+    if (!defaultPath) return edits
+    return edits.map((op) =>
+      op && typeof op === 'object' && (typeof op.path !== 'string' || op.path.length === 0)
+        ? { ...op, path: defaultPath }
+        : op
+    )
+  }
+  if (Array.isArray(rawEdits)) return { ok: true, edits: applyDefaultPath(rawEdits as MultiEditOp[]) }
   if (typeof rawEdits === 'string') {
     let parsed: unknown
     try {
@@ -305,13 +322,16 @@ export function normalizeEditsArg(rawEdits: unknown): { ok: true; edits: MultiEd
         summary: 'multi_edit "edits" was a JSON string but did not parse to an array; it must be an array of {path, old_string, new_string} objects'
       }
     }
-    return { ok: true, edits: parsed as MultiEditOp[] }
+    return { ok: true, edits: applyDefaultPath(parsed as MultiEditOp[]) }
   }
   return { ok: false, summary: 'multi_edit called with no edits' }
 }
 
-export async function multiEditFileTool(args: { edits: MultiEditOp[] }, root?: string): Promise<ToolResultPayload> {
-  const normalized = normalizeEditsArg(args.edits)
+export async function multiEditFileTool(
+  args: { edits: MultiEditOp[]; path?: string },
+  root?: string
+): Promise<ToolResultPayload> {
+  const normalized = normalizeEditsArg(args.edits, args.path)
   if (!normalized.ok) {
     return { ok: false, summary: normalized.summary, error: 'no_edits' }
   }

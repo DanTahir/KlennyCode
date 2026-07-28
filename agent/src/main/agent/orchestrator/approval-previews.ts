@@ -94,7 +94,7 @@ export async function previewMutatingTool(
     }
   }
   if (name === 'multi_edit') {
-    const normalized = normalizeEditsArg(args.edits)
+    const normalized = normalizeEditsArg(args.edits, typeof args.path === 'string' ? args.path : undefined)
     const edits = (normalized.ok ? normalized.edits : []) as MultiEditOp[]
     // previewMultiEdit/planMultiEdit validate each edit and reject malformed paths cleanly, but
     // guard here too (matching the edit_file/write_file branches above) so any unexpected

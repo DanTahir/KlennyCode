@@ -201,6 +201,61 @@ describe('multiEditFileTool', () => {
     expect(result.ok).toBe(false)
     expect(result.error).toBe('no_edits')
   })
+
+  test('a top-level "path" fills in edits that omit their own path', async () => {
+    const { multiEditFileTool } = await import('../src/main/agent/tools/index')
+    const rel = 'default-path.ts'
+    await writeFile(join(workspaceDir, rel), 'const a = 1\nconst b = 2\n', 'utf8')
+
+    const result = await multiEditFileTool({
+      path: rel,
+      edits: [
+        { old_string: 'const a = 1', new_string: 'const a = 10' } as unknown as {
+          path: string
+          old_string: string
+          new_string: string
+        },
+        { old_string: 'const b = 2', new_string: 'const b = 20' } as unknown as {
+          path: string
+          old_string: string
+          new_string: string
+        }
+      ]
+    })
+
+    expect(result.ok).toBe(true)
+    expect(await readFile(join(workspaceDir, rel), 'utf8')).toBe('const a = 10\nconst b = 20\n')
+  })
+
+  test('a per-edit "path" overrides the top-level default, so mixed-file batches still work', async () => {
+    const { multiEditFileTool } = await import('../src/main/agent/tools/index')
+    await mkdir(join(workspaceDir, 'default-path-mixed'), { recursive: true })
+    const relA = 'default-path-mixed/a.ts'
+    const relB = 'default-path-mixed/b.ts'
+    await writeFile(join(workspaceDir, relA), 'export const a = "old-a"\n', 'utf8')
+    await writeFile(join(workspaceDir, relB), 'export const b = "old-b"\n', 'utf8')
+
+    const result = await multiEditFileTool({
+      path: relA,
+      edits: [
+        { old_string: 'old-a', new_string: 'new-a' } as unknown as { path: string; old_string: string; new_string: string },
+        { path: relB, old_string: 'old-b', new_string: 'new-b' }
+      ]
+    })
+
+    expect(result.ok).toBe(true)
+    expect(await readFile(join(workspaceDir, relA), 'utf8')).toBe('export const a = "new-a"\n')
+    expect(await readFile(join(workspaceDir, relB), 'utf8')).toBe('export const b = "new-b"\n')
+  })
+
+  test('without a top-level "path", an edit missing its own path still fails cleanly', async () => {
+    const { multiEditFileTool } = await import('../src/main/agent/tools/index')
+    const result = await multiEditFileTool({
+      edits: [{ old_string: 'a', new_string: 'b' } as unknown as { path: string; old_string: string; new_string: string }]
+    })
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('invalid_edit')
+  })
 })
 
 describe('previewMultiEdit', () => {
