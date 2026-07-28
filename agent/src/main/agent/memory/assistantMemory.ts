@@ -206,11 +206,13 @@ function transcriptFor(messages: TabSession['messages']): string {
   return lines.join('\n')
 }
 
-const MEMORY_UPDATE_SYSTEM_PROMPT = `You maintain a single short memory note for one Assistant chat window, so that OTHER Assistant windows can see at a glance what this window has been doing. You will be given the note's current content (if any) and the new messages since it was last updated. Produce the updated note.
+const MEMORY_UPDATE_SYSTEM_PROMPT = `You maintain a single short memory note for one Assistant chat window, so that OTHER Assistant windows can see at a glance what this window has been doing AND how the interaction with the user went. You will be given the note's current content (if any) and the new messages since it was last updated. Produce the updated note.
 
 Guidelines:
 - Default to brevity: for routine or simple work (e.g. "checked email, found 2 unread, replied to one"), a single short line — who/what was involved plus a one-line stub — is enough.
 - Only write more detail when the work is genuinely long-running or multi-step (e.g. a multi-stage research task, an ongoing project being tracked across many turns) where a future window would benefit from knowing specifics.
+- Don't limit yourself to task/work content: if the new messages include personal or affective moments — the user giving praise, a treat, thanks, a joke, a scolding, or any other feedback on how things went — fold a brief mention of that in too, even if the surrounding task was already noted. These moments are just as worth remembering as the work itself, and are often the whole reason a note gets revisited.
+- Always carry forward anything from the current note that's still relevant — you are updating the note, not just reacting to the newest messages in isolation. Don't let a new routine exchange (e.g. a short thank-you or treat with no task attached) silently overwrite/drop an existing note's still-relevant content; merge, don't replace, unless the old content is genuinely stale.
 - Never include secrets, tokens, or full email/message bodies — summarize, don't quote at length.
 - Write the note as plain text (no markdown headers), a few sentences at most.
 - Output ONLY the updated note content, nothing else (no preamble, no "Here's the updated note:").`
@@ -309,7 +311,7 @@ const ROLLUP_SYSTEM_PROMPT = `You are compacting older Assistant-window memory n
 
 Guidelines:
 - Stay bounded: a few sentences, roughly 1500 tokens or less — never a full transcript or a list of every detail.
-- Preserve only what's still useful to know at a glance (who/what, outcomes) — drop specifics that no longer matter.
+- Preserve only what's still useful to know at a glance (who/what, outcomes, and any notable personal/affective moments like praise, treats, or feedback from the user) — drop specifics that no longer matter, but don't treat personal moments as automatically disposable just because they aren't task outcomes.
 - Output ONLY the combined note content, nothing else.`
 
 async function maybeCompactPool(
