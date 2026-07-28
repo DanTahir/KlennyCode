@@ -15,6 +15,7 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Chat interface** with tabbed sessions (new/close tabs; closing the last opens a fresh one)
 - **Agent mode** — read/write/edit/delete files, grep (regex), glob, shell commands, web search
 - **Word document support** — `read_docx`/`write_docx`/`edit_docx` tools read structured content (paragraphs, runs with formatting, tables, headers/footers, comments, tracked changes) from `.docx` files, generate brand-new ones from a JSON spec, and apply surgical edits directly to a `.docx`'s underlying XML so untouched content (images, comments, revisions, unknown formatting) survives byte-for-byte, unlike round-tripping through a lossy text conversion
+- **Image viewing** — `read_image` reads a png/jpg/gif/webp file from disk (any absolute path on the host, or relative to the open workspace) and lets the agent actually see it, exactly like a user-pasted/attached image
 - **Plan mode** — read-only research, clarifying questions, reviewable plan artifacts before edits
 - **Thinking display** — streams reasoning tokens from supported models live
 - **Diff viewer** — see every code change with accept/reject approval workflow
@@ -122,8 +123,9 @@ on the host the way you, the logged-in user running Klenny Code, can (not limite
 project). A relative path still resolves against the current workspace as before, and with no
 path at all grep/glob still default to the workspace root. `write_file`/`edit_file`/
 `multi_edit`/`delete_file` remain sandboxed to the currently open workspace only — mutation
-never reaches outside the project you have open. `read_docx` follows the same global, read-only
-rule; `write_docx`/`edit_docx` are sandboxed the same way as the other mutating file tools.
+never reaches outside the project you have open. `read_docx` and `read_image` follow the same
+global, read-only rule; `write_docx`/`edit_docx` are sandboxed the same way as the other mutating
+file tools.
 
 Because every project's memory/plans/index and chat sessions are keyed by path under Klenny
 Code's own `userData` directory (not inside the project itself — see above), Klenny Code
@@ -143,8 +145,9 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
 - **Assistant tab** — click "Open Assistant" in the sidebar (between "Check for update" and
   "Change project") to spin up a new chat tab with web search, `list_projects` discovery, memory,
   Gmail, Discord, scheduler tools, and full file tools (read/write/edit/multi_edit/delete/grep/
-  glob, plus `read_docx`/`write_docx`/`edit_docx` for Word documents specifically) — but no
-  coding project needed and no shell/`run_command`/`codebase_search` access.
+  glob, plus `read_docx`/`write_docx`/`edit_docx` for Word documents specifically and `read_image`
+  to actually see image files) — but no coding project needed and no
+  shell/`run_command`/`codebase_search` access.
   File-tool relative paths and every mutation are sandboxed to a **Documents directory**
   (Settings → Behavior → "Documents directory", default your OS Documents folder) instead of a
   project workspace; absolute-path reads can still reach anywhere on the machine, same as in a

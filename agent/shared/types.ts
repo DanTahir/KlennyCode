@@ -138,6 +138,7 @@ export type ToolName =
   | 'read_docx'
   | 'write_docx'
   | 'edit_docx'
+  | 'read_image'
   | 'grep'
   | 'glob'
   | 'run_command'
@@ -211,6 +212,7 @@ export const ASSISTANT_TOOLS: ToolName[] = [
   'read_docx',
   'write_docx',
   'edit_docx',
+  'read_image',
   'grep',
   'glob',
   'web_search',
@@ -249,6 +251,7 @@ export interface ToolResultPayload {
 export const READ_ONLY_TOOLS: ToolName[] = [
   'read_file',
   'read_docx',
+  'read_image',
   'grep',
   'glob',
   'read_terminal',

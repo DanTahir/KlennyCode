@@ -185,6 +185,19 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'read_image',
+        description:
+          'Read an image file from disk (png/jpg/jpeg/gif/webp) and see it, exactly as if the user had pasted or attached it into the chat. Use this to look at screenshots, diagrams, design mockups, or any other image on the host filesystem. Accepts an absolute path (anywhere on the host) or a path relative to the open workspace.',
+        parameters: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'grep',
         description:
           'Search files with regex using ripgrep. Set context to include surrounding lines (like grep -C) — use it instead of a follow-up read_file when the match lines alone are enough to decide what to do or to see what to pass as old_string in edit_file.',
@@ -699,6 +712,7 @@ export function getToolDefinitions(
 
   const planAllowed = new Set<ToolName>([
     'read_file',
+    'read_image',
     'grep',
     'glob',
     'read_terminal',
@@ -722,6 +736,7 @@ export function getToolDefinitions(
     'edit_file',
     'multi_edit',
     'delete_file',
+    'read_image',
     'grep',
     'glob',
     'run_command',
@@ -783,6 +798,7 @@ export function getToolDefinitions(
       'edit_file',
       'multi_edit',
       'delete_file',
+      'read_image',
       'grep',
       'glob'
     ])

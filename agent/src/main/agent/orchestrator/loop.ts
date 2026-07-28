@@ -48,7 +48,8 @@ import {
   runCommandTool,
   readTerminalTool,
   webSearchTool,
-  fetchUrlTool
+  fetchUrlTool,
+  readImageTool
 } from '../tools/index'
 import { browserTool, isBrowserActionMutating, buildBrowserApprovalPreview } from '../tools/browser'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
@@ -410,19 +411,35 @@ export async function agentLoop(
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i]
     const result = results[i]
+
+    // Some read-only tools (read_image today) return the raw image bytes as data.dataUrl so the
+    // model can actually see them — but a `tool`-role message's content can't itself carry an
+    // image_url part on OpenAI-compatible APIs (only 'user' can — see messages.ts's doc comment),
+    // so lift it out into a real ImageBlock on this tool message instead. MessageBubble already
+    // renders any ImageBlock regardless of role, and toORMessages resends it as an image content
+    // part on every subsequent turn, exactly like a user-pasted image. Stripped from the payload
+    // itself (result.payload and the assistant's mirrored tool_call block share this same `data`
+    // object) so the — often large — base64 blob isn't also duplicated into the JSON-stringified
+    // tool result text that gets persisted and replayed via compactToolResult.
+    const resultData = result.payload.data as Record<string, unknown> | undefined
+    let imageDataUrl: string | undefined
+    if (resultData && typeof resultData.dataUrl === 'string') {
+      imageDataUrl = resultData.dataUrl
+      delete resultData.dataUrl
+    }
+
+    const toolCallBlock: ContentBlock = {
+      type: 'tool_call',
+      id: tc.id,
+      toolName: tc.function.name,
+      args: {},
+      status: result.status,
+      result: result.payload
+    }
     const toolMsg: ChatMessage = {
       id: nanoid(),
       role: 'tool',
-      blocks: [
-        {
-          type: 'tool_call',
-          id: tc.id,
-          toolName: tc.function.name,
-          args: {},
-          status: result.status,
-          result: result.payload
-        }
-      ],
+      blocks: imageDataUrl ? [toolCallBlock, { type: 'image', dataUrl: imageDataUrl }] : [toolCallBlock],
       createdAt: Date.now()
     }
     tab.messages.push(toolMsg)
@@ -651,6 +668,8 @@ async function dispatchTool(
       return deleteFileTool(args as { path: string }, fileRoot)
     case 'read_docx':
       return readDocxTool(args as { path: string }, fileRoot)
+    case 'read_image':
+      return readImageTool(args as { path: string }, fileRoot)
     case 'write_docx':
       return writeDocxTool(args as any, fileRoot)
     case 'edit_docx':

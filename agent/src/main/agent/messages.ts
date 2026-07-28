@@ -39,7 +39,25 @@ export function toORMessages(
     out.push({ role: 'system', content: summaryMsg })
   }
   const sentToolResults = new Set<string>()
+  // Images returned by tool results (read_image today — see orchestrator/loop.ts) get queued
+  // here rather than pushed immediately, and flushed as a single trailing synthetic user message
+  // right after a whole run of consecutive tool messages. Anthropic (which OpenRouter must
+  // translate to for Claude models) requires every tool_result for one assistant turn to live in
+  // a single following user message — interleaving a user message between two tool messages from
+  // the same batch of parallel tool calls would break that. A `tool`-role message's content can't
+  // itself carry an image_url part on OpenAI-compatible APIs (only 'user' can), so this trailing
+  // user message is the mechanism that actually lets the model see the image(s).
+  let pendingToolImages: string[] = []
+  const flushPendingToolImages = () => {
+    if (!pendingToolImages.length) return
+    out.push({
+      role: 'user',
+      content: pendingToolImages.map((dataUrl) => ({ type: 'image_url' as const, image_url: { url: dataUrl } }))
+    })
+    pendingToolImages = []
+  }
   for (const m of messages) {
+    if (m.role !== 'tool') flushPendingToolImages()
     if (m.role === 'user') {
       const textParts = m.blocks.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text)
       const images = m.blocks.filter((b) => b.type === 'image') as Array<{ dataUrl: string }>
@@ -84,9 +102,12 @@ export function toORMessages(
           tool_call_id: tc.id,
           content: compactToolResult(tc.result)
         })
+        const images = m.blocks.filter((b) => b.type === 'image') as Array<{ dataUrl: string }>
+        pendingToolImages.push(...images.map((img) => img.dataUrl))
       }
     }
   }
+  flushPendingToolImages()
   return out
 }
 
