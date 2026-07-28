@@ -48,37 +48,58 @@ export async function loadAutoMemoryIndex(workspace?: string): Promise<string> {
   }
 }
 
-/** Memory topics become a literal filename (`<topic>.md`) on disk, so a topic containing a
- *  path separator would either escape the memory directory or throw a raw fs error deep inside
- *  writeFile/mkdir. Reject it up front with a clean, catchable message the model can act on. */
-function assertValidTopic(topic: string): void {
+/** Memory topics become a literal filename (`<topic>.md`) on disk. Rather than rejecting a
+ *  topic containing path separators or other filesystem-illegal characters (the model has
+ *  repeatedly ignored the system-prompt instruction not to include them), sanitize it
+ *  automatically so the write always succeeds with a safe, close-to-intended filename:
+ *  - path separators and other reserved characters (Windows + POSIX) are stripped/replaced
+ *  - leading/trailing dots and whitespace (which can create hidden or invalid names) are trimmed
+ *  - collapses to a fallback name if nothing usable survives
+ *  - truncated to a sane length to avoid hitting filesystem path limits
+ */
+function sanitizeTopic(topic: string): string {
   if (typeof topic !== 'string' || topic.length === 0) {
     throw new Error('write_memory: topic must be a non-empty string')
   }
-  if (topic.includes('/') || topic.includes('\\')) {
-    throw new Error(
-      `write_memory: topic "${topic}" contains a "/" or "\\" — those are illegal in a memory topic title because it becomes a filename on disk. Use a plain descriptive title with no path separators (e.g. "Shell selection feature", not "features/shell-selection").`
-    )
+  let safe = topic
+    // Path separators (the biggest offender) and Windows-reserved characters.
+    .replace(/[/\\:*?"<>|]/g, ' ')
+    // Control characters, which are also illegal in filenames on most platforms.
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    // Collapse any whitespace runs left behind by the replacements above.
+    .replace(/\s+/g, ' ')
+    .trim()
+    // Leading/trailing dots can produce hidden files or "." / ".." on some filesystems.
+    .replace(/^\.+|\.+$/g, '')
+    .trim()
+  if (safe.length === 0) {
+    safe = 'Untitled memory'
   }
+  // Keep well under typical filesystem filename limits (topic + ".md").
+  if (safe.length > 150) {
+    safe = safe.slice(0, 150).trim()
+  }
+  return safe
 }
 
-export async function writeMemory(scope: 'project' | 'global', topic: string, content: string): Promise<void> {
-  assertValidTopic(topic)
+export async function writeMemory(scope: 'project' | 'global', topic: string, content: string): Promise<string> {
+  const safeTopic = sanitizeTopic(topic)
   if (scope === 'global') {
     await mkdir(GLOBAL_DIR, { recursive: true })
-    const path = join(GLOBAL_DIR, 'memory', `${topic}.md`)
+    const path = join(GLOBAL_DIR, 'memory', `${safeTopic}.md`)
     await mkdir(join(GLOBAL_DIR, 'memory'), { recursive: true })
     await writeFile(path, content, 'utf8')
-    await updateMemoryIndex(join(GLOBAL_DIR, 'memory'), topic, content.split('\n')[0] ?? topic)
-    return
+    await updateMemoryIndex(join(GLOBAL_DIR, 'memory'), safeTopic, content.split('\n')[0] ?? safeTopic)
+    return safeTopic
   }
   const ws = getWorkspace()
   if (!ws) throw new Error('No workspace open')
   const memDir = projectMemoryDir(ws)
   await mkdir(memDir, { recursive: true })
-  const path = join(memDir, `${topic}.md`)
+  const path = join(memDir, `${safeTopic}.md`)
   await writeFile(path, content, 'utf8')
-  await updateMemoryIndex(memDir, topic, content.split('\n')[0] ?? topic)
+  await updateMemoryIndex(memDir, safeTopic, content.split('\n')[0] ?? safeTopic)
+  return safeTopic
 }
 
 async function updateMemoryIndex(memDir: string, topic: string, summary: string): Promise<void> {
@@ -147,7 +168,7 @@ export async function readMemoryTopic(scope: 'project' | 'global', topic: string
           if (!ws) throw new Error('No workspace open')
           return projectMemoryDir(ws)
         })()
-  const safeTopic = topic.replace(/\.md$/i, '')
+  const safeTopic = sanitizeTopic(topic.replace(/\.md$/i, ''))
   return readFile(join(dir, `${safeTopic}.md`), 'utf8')
 }
 

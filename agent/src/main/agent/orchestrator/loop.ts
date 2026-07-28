@@ -687,8 +687,15 @@ async function dispatchTool(
       // Writes stay scoped to the current workspace/global memory only — there is deliberately
       // no `project` argument here, unlike read_memory/list_memory. Klenny should never write
       // notes into a project it isn't currently open in.
-      await writeMemory(args.scope as 'project' | 'global', String(args.topic), String(args.content))
-      return { ok: true, summary: 'Memory saved' }
+      {
+        const requestedTopic = String(args.topic)
+        const savedTopic = await writeMemory(args.scope as 'project' | 'global', requestedTopic, String(args.content))
+        const summary =
+          savedTopic === requestedTopic
+            ? 'Memory saved'
+            : `Memory saved as "${savedTopic}" (topic was sanitized: illegal filename characters were stripped/replaced from "${requestedTopic}")`
+        return { ok: true, summary, data: { topic: savedTopic } }
+      }
     case 'list_memory': {
       const scope = args.scope as 'project' | 'global'
       let projectRoot: string | undefined

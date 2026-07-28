@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeAll, afterAll } from 'bun:test'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { electronMockState } from './testElectronMock' // registers the shared electron mock before workspace.ts (imports electron) loads anywhere
@@ -21,15 +21,38 @@ afterAll(async () => {
   await rm(workspaceDir, { recursive: true, force: true })
 })
 
-describe('writeMemory topic validation', () => {
-  test('rejects a project-scope topic containing a forward slash instead of writing anywhere', async () => {
+describe('writeMemory topic sanitization', () => {
+  test('sanitizes a project-scope topic containing a forward slash instead of throwing', async () => {
     const { writeMemory } = await import('../src/main/agent/memory/manager')
-    await expect(writeMemory('project', 'features/shell-selection', 'some content')).rejects.toThrow(/illegal/i)
+    const { projectDataDir } = await import('../src/main/dataDir')
+
+    const saved = await writeMemory('project', 'features/shell-selection', 'some content')
+    expect(saved).not.toContain('/')
+    expect(saved).not.toContain('\\')
+
+    const memDir = join(projectDataDir(workspaceDir), 'memory')
+    const files = await readdir(memDir)
+    expect(files).toContain(`${saved}.md`)
+    expect(await readFile(join(memDir, `${saved}.md`), 'utf8')).toBe('some content')
   })
 
-  test('rejects a global-scope topic containing a backslash', async () => {
+  test('sanitizes a global-scope topic containing a backslash', async () => {
     const { writeMemory } = await import('../src/main/agent/memory/manager')
-    await expect(writeMemory('global', 'features\\shell-selection', 'some content')).rejects.toThrow(/illegal/i)
+    const saved = await writeMemory('global', 'features\\shell-selection', 'some content')
+    expect(saved).not.toContain('/')
+    expect(saved).not.toContain('\\')
+  })
+
+  test('sanitizes other filesystem-illegal characters (colons, wildcards, quotes, pipes)', async () => {
+    const { writeMemory } = await import('../src/main/agent/memory/manager')
+    const saved = await writeMemory('project', 'weird: name*with?illegal<chars>|"here"', 'content')
+    expect(saved).not.toMatch(/[/\\:*?"<>|]/)
+  })
+
+  test('falls back to a default name when nothing usable survives sanitization', async () => {
+    const { writeMemory } = await import('../src/main/agent/memory/manager')
+    const saved = await writeMemory('project', '///\\\\\\', 'content')
+    expect(saved).toBe('Untitled memory')
   })
 
   test('rejects an empty topic', async () => {
@@ -37,14 +60,25 @@ describe('writeMemory topic validation', () => {
     await expect(writeMemory('project', '', 'some content')).rejects.toThrow(/non-empty/i)
   })
 
-  test('accepts a plain topic title with no path separators', async () => {
+  test('accepts a plain topic title with no path separators unchanged', async () => {
     const { writeMemory, loadAutoMemoryIndex } = await import('../src/main/agent/memory/manager')
-    await writeMemory('project', 'Shell selection feature', 'Implemented shell selection.\n')
+    const saved = await writeMemory('project', 'Shell selection feature', 'Implemented shell selection.\n')
+    expect(saved).toBe('Shell selection feature')
     const index = await loadAutoMemoryIndex(workspaceDir)
     expect(index).toContain('Shell selection feature')
 
     const { projectDataDir } = await import('../src/main/dataDir')
     const notePath = join(projectDataDir(workspaceDir), 'memory', 'Shell selection feature.md')
     expect(await readFile(notePath, 'utf8')).toBe('Implemented shell selection.\n')
+  })
+
+  test('readMemoryTopic can read back a note using the original unsanitized topic name', async () => {
+    const { writeMemory, readMemoryTopic } = await import('../src/main/agent/memory/manager')
+    const requested = 'nested/topic/name'
+    const saved = await writeMemory('project', requested, 'nested content')
+    const content = await readMemoryTopic('project', requested, workspaceDir)
+    expect(content).toBe('nested content')
+    const contentBySavedName = await readMemoryTopic('project', saved, workspaceDir)
+    expect(contentBySavedName).toBe('nested content')
   })
 })
