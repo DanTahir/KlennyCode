@@ -82,7 +82,9 @@ Installers are written to `agent/dist/`.
 Set a default in Settings, and override it per chat tab from the dropdown next to Send/Stop
 (useful when you want one tab to run hands-off while another stays under manual review). Clicking
 "Accept all" on a pending approval card also flips that tab's dropdown to Auto approve — you can
-switch it back to Manual or Command approve afterward.
+switch it back to Manual or Command approve afterward. Assistant tabs get the same dropdown (since
+they can write files/memory too) but without the Command approve option, since Assistant tabs have
+no shell/`run_command` tool for it to affect.
 
 | Mode | Behavior |
 |------|----------|

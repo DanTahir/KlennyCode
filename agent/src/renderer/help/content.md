@@ -53,7 +53,8 @@ Set the default in **Settings**. Each chat tab also has its own approval-mode dr
 Send/Stop, which overrides the Settings default just for that tab — handy for letting one tab run
 hands-off while another stays under manual review. Clicking **Accept all** on a pending approval
 card switches that tab's dropdown to Auto approve automatically; you can change it back to Manual
-or Command approve at any time.
+or Command approve at any time. Assistant tabs show the same dropdown minus **Command approve**,
+since that mode's only effect is on shell commands and Assistant tabs have no `run_command` tool.
 
 ## Memory
 

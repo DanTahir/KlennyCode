@@ -160,8 +160,13 @@ export function ChatPane() {
             />
           </div>
           <div className="flex gap-2 items-center">
-            {tab.kind !== 'assistant' && settings && (
-              <ApprovalModeSelect tabId={tab.id} mode={tab.approvalMode} globalMode={settings.approvalMode} />
+            {settings && (
+              <ApprovalModeSelect
+                tabId={tab.id}
+                mode={tab.approvalMode}
+                globalMode={settings.approvalMode}
+                hideCommand={tab.kind === 'assistant'}
+              />
             )}
             {isStreaming && (
               <button
