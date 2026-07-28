@@ -233,29 +233,30 @@ describe('buildSystemPrompt injects a custom subagent\'s body into its own run',
     expect(prompt).not.toContain('You are running as the')
   })
 
-  // Regression coverage for the "Assistant tool schema/prompt leak" fix: an Assistant tab never
-  // has read_file/write_file/edit_file/multi_edit/delete_file/grep/glob/run_command/read_terminal/
-  // codebase_search offered in its tool list (see tools.test.ts's hasWorkspace=false coverage),
-  // but the system prompt used to name several of them anyway (AGENT_MODE_PROMPT_BODY's file-
-  // editing instructions, MEMORY_TOOL_NOTE's "never open them with read_file", and an unconditional
-  // "Workspace: ..." / "run_command executes via ..." line built from the ambient getWorkspace()
-  // singleton) — priming the model to attempt calls to tools it was never given schemas for.
-  const CODING_TOOL_NAMES = [
-    'read_file',
-    'write_file',
-    'edit_file',
-    'multi_edit',
-    'delete_file',
-    'run_command',
-    'read_terminal',
-    'codebase_search'
-  ]
+  // Regression coverage for the "Assistant tool schema/prompt leak" fix, updated for the later
+  // "global file tools, sandboxed to documentsDirectory" feature: an Assistant tab now DOES get
+  // read_file/write_file/edit_file/multi_edit/delete_file/grep/glob offered (see ASSISTANT_TOOLS
+  // in shared/types.ts), so the prompt legitimately names them — but it never gets the truly
+  // workspace-dependent tools (run_command/read_terminal/codebase_search — see CODING_ONLY_TOOLS),
+  // and the prompt must still never name those or the unconditional "Workspace: ..." /
+  // "run_command executes via ..." line built from the ambient getWorkspace() singleton —
+  // priming the model to attempt calls to tools it was never given schemas for.
+  const WORKSPACE_ONLY_TOOL_NAMES = ['run_command', 'read_terminal', 'codebase_search']
+  const FILE_TOOL_NAMES = ['read_file', 'write_file', 'edit_file', 'multi_edit', 'delete_file', 'grep', 'glob']
 
-  test('an Assistant-tab system prompt never mentions any coding-only tool by name', async () => {
+  test('an Assistant-tab system prompt never mentions a workspace-only tool (run_command/read_terminal/codebase_search) by name', async () => {
     const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
     const prompt = await buildSystemPrompt('agent', undefined, undefined, 'assistant')
-    for (const name of CODING_TOOL_NAMES) {
+    for (const name of WORKSPACE_ONLY_TOOL_NAMES) {
       expect(prompt).not.toContain(name)
+    }
+  })
+
+  test('an Assistant-tab system prompt DOES name the file tools, since it now has them (scoped to documentsDirectory)', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent', undefined, undefined, 'assistant')
+    for (const name of FILE_TOOL_NAMES) {
+      expect(prompt).toContain(name)
     }
   })
 

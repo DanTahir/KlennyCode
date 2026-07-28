@@ -410,6 +410,43 @@ export function SettingsPanel() {
           </section>
 
           <section className="mb-6 space-y-2">
+            <h3 className="font-medium">Documents directory</h3>
+            <div className="flex items-center gap-2">
+              <input
+                className="flex-1 px-2 py-1 bg-klenny-bg border border-klenny-border rounded text-sm"
+                readOnly
+                placeholder="OS default Documents folder"
+                value={settings.documentsDirectory ?? ''}
+              />
+              <button
+                type="button"
+                className="px-3 py-1.5 text-sm rounded border border-klenny-border hover:bg-klenny-hover"
+                onClick={async () => {
+                  const path = await window.klenny.pickDocumentsDirectory()
+                  if (path) await patch({ documentsDirectory: path })
+                }}
+              >
+                Browse…
+              </button>
+              {settings.documentsDirectory && (
+                <button
+                  type="button"
+                  className="px-3 py-1.5 text-sm rounded border border-klenny-border hover:bg-klenny-hover"
+                  onClick={() => void patch({ documentsDirectory: null })}
+                >
+                  Reset
+                </button>
+              )}
+            </div>
+            <p className="text-xs text-klenny-muted">
+              Where file tools (read/write/edit/search) operate when the agent has no coding project open — the
+              ephemeral Assistant tab, and any scheduled/Discord run with no target project. Defaults to your OS
+              Documents folder. Absolute paths can still read anywhere on this machine; only relative paths and
+              mutations (write/edit/delete) are confined to this folder.
+            </p>
+          </section>
+
+          <section className="mb-6 space-y-2">
             <h3 className="font-medium">Long-running tasks</h3>
             <select
               className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded"

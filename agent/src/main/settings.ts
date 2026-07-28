@@ -49,7 +49,8 @@ const DEFAULTS: AppSettings = {
   brandName: null,
   hasCustomIcon: false,
   hasCustomRunningGif: false,
-  assistantMemorySize: DEFAULT_ASSISTANT_MEMORY_SIZE
+  assistantMemorySize: DEFAULT_ASSISTANT_MEMORY_SIZE,
+  documentsDirectory: null
 }
 
 function settingsPath(): string {

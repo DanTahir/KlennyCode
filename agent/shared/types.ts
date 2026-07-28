@@ -165,31 +165,19 @@ export type ToolName =
   | 'scheduler_delete_task'
   | 'browser'
 
-/** Tools that need a real, open coding-project workspace to make sense (file I/O, shell,
- *  semantic code search). Gated off entirely on Assistant-kind tabs and whenever no workspace
- *  is open — see getToolDefinitions() in agent/tools/definitions.ts.
+/** Tools that need a real, open coding-project *workspace* to make sense — a shell to run
+ *  commands in, or a semantic index built over a specific project — and so remain gated off
+ *  entirely on Assistant-kind tabs (they have no workspace) and on any project tab with no
+ *  workspace open. See getToolDefinitions() in agent/tools/definitions.ts.
  *
- *  read_file/grep/glob are included even though they're now global, read-only tools that can
- *  reach any absolute path on the host (not sandboxed to a workspace — see file-ops.ts's
- *  resolveWorkspacePath and search.ts): they still resolve *relative* paths against
- *  getWorkspace(), a single process-global singleton not scoped per tab or window, and still
- *  default to the workspace root when no path is given at all. If any window has a project
- *  open, a relative-path or no-path call would otherwise silently succeed against that ambient
- *  project even from an Assistant-kind tab that has no workspace of its own — see the
- *  "Coding tools available inside an Assistant-kind tab" investigation/fix. Assistant tabs
- *  simply never get these tools offered at all, absolute-path global reach included. */
-export const CODING_ONLY_TOOLS: ToolName[] = [
-  'read_file',
-  'write_file',
-  'edit_file',
-  'multi_edit',
-  'delete_file',
-  'grep',
-  'glob',
-  'run_command',
-  'read_terminal',
-  'codebase_search'
-]
+ *  File tools (read_file/write_file/edit_file/multi_edit/delete_file/grep/glob) are
+ *  deliberately NOT in this list even though they used to be: Assistant tabs now get them too,
+ *  scoped to AppSettings.documentsDirectory (default: the OS Documents folder) for anything
+ *  that resolves a relative path or performs a mutation — see file-ops.ts's resolveWorkspacePath
+ *  `root` parameter and documentsDir.ts. Reads given an absolute path can still reach anywhere
+ *  on the host, same as in a project tab; only the *root* differs (documentsDirectory instead of
+ *  the open project) and mutations are sandboxed under that root instead of the workspace. */
+export const CODING_ONLY_TOOLS: ToolName[] = ['run_command', 'read_terminal', 'codebase_search']
 
 /** The single multiplexed browser-automation tool (action-addressed: open/navigate/snapshot/
  *  click/etc — see agent/tools/browser.ts). Doesn't fit CODING_ONLY_TOOLS (no file/workspace
@@ -198,18 +186,40 @@ export const CODING_ONLY_TOOLS: ToolName[] = [
  *  both project and Assistant-tab contexts since browsing doesn't require a workspace. */
 export const BROWSER_TOOLS: ToolName[] = ['browser']
 
-/** Tools available everywhere — regular coding-project tabs AND the Assistant tab — because
- *  they don't depend on a workspace at all. */
+/** Canonical, authoritative list of every tool available on an Assistant-kind tab (kind ===
+ *  'assistant') — consumed directly by getToolDefinitions() to build its `assistantAllowed` set
+ *  (agent/src/main/agent/tools/definitions.ts). ASSISTANT_MODE_PROMPT_BODY in plan/manager.ts
+ *  separately spells the same tool names out in its capabilities paragraph in prose (not
+ *  generated from this array) — keep the two in sync by hand whenever this list changes. Also
+ *  enforced server-side as an allowlist at dispatch time (see the Assistant-tab guard in
+ *  orchestrator/loop.ts's executeTool()).
+ *
+ *  Includes the file tools (scoped to AppSettings.documentsDirectory for relative paths and all
+ *  mutations — see CODING_ONLY_TOOLS's doc comment above) alongside everything genuinely
+ *  workspace-independent. Deliberately excludes run_command/read_terminal/codebase_search
+ *  (CODING_ONLY_TOOLS — need a real project workspace) and save_plan (plan mode is hidden from
+ *  Assistant tabs entirely; see the mode-toggle visibility fix). */
 export const ASSISTANT_TOOLS: ToolName[] = [
+  'read_file',
+  'write_file',
+  'edit_file',
+  'multi_edit',
+  'delete_file',
+  'grep',
+  'glob',
   'web_search',
   'fetch_url',
   'list_projects',
+  'list_skills',
+  'read_skill',
   'read_memory',
   'write_memory',
   'list_memory',
   'write_skill',
   'write_subagent',
   'read_subagent',
+  'task',
+  'ask_question',
   'open_settings_panel',
   'gmail_list_messages',
   'gmail_get_message',
@@ -218,7 +228,8 @@ export const ASSISTANT_TOOLS: ToolName[] = [
   'scheduler_create_task',
   'scheduler_list_tasks',
   'scheduler_update_task',
-  'scheduler_delete_task'
+  'scheduler_delete_task',
+  'browser'
 ]
 
 export interface ToolResultPayload {
@@ -498,6 +509,15 @@ export interface AppSettings {
   /** Aggregate token budget for the Assistant-window shared memory pool (see
    *  AssistantMemoryPool). 'disabled' turns off all silent background writes immediately. */
   assistantMemorySize: AssistantMemorySize
+
+  /** Root directory that Assistant-tab file tools (read_file/write_file/edit_file/multi_edit/
+   *  delete_file/grep/glob) resolve relative paths against and sandbox all mutations under —
+   *  Assistant tabs have no project workspace, so this stands in for one. null = use the OS
+   *  default Documents folder (see documentsDir.ts's defaultDocumentsDirectory()); set via
+   *  Settings -> General to pick a different folder. Absolute-path reads (read_file/grep/glob)
+   *  still reach anywhere on the host regardless of this setting, exactly like in a project tab
+   *  — only relative-path resolution and every mutation are confined to this directory. */
+  documentsDirectory: string | null
 }
 
 /** Max length enforced for AppSettings.brandName, both in the renderer input and defensively

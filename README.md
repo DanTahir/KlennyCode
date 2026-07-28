@@ -138,13 +138,16 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
 
 - **Assistant tab** — click "Open Assistant" in the sidebar (between "Check for update" and
   "Change project") to spin up a new chat tab with web search, `list_projects` discovery, memory,
-  Gmail, Discord, and scheduler tools, but no file/shell access (no coding project needed,
-  and none of read_file/grep/glob's global filesystem reach either). Every
-  click creates a fresh, independent tab (no create-or-focus singleton behavior), tagged with a
-  🐾 pawprint in the tab bar and automatically retitled from your first message, just like a
-  regular chat tab. Assistant tabs are workspace-independent: they persist across app restarts,
-  and closing one (once it has messages) archives it to the "🐾 Assistant" section of the History
-  panel instead of discarding it — reopen it from there to keep going.
+  Gmail, Discord, scheduler tools, and full file tools (read/write/edit/multi_edit/delete/grep/
+  glob) — but no coding project needed and no shell/`run_command`/`codebase_search` access.
+  File-tool relative paths and every mutation are sandboxed to a **Documents directory**
+  (Settings → Behavior → "Documents directory", default your OS Documents folder) instead of a
+  project workspace; absolute-path reads can still reach anywhere on the machine, same as in a
+  project tab. Every click creates a fresh, independent tab (no create-or-focus singleton
+  behavior), tagged with a 🐾 pawprint in the tab bar and automatically retitled from your first
+  message, just like a regular chat tab. Assistant tabs are workspace-independent: they persist
+  across app restarts, and closing one (once it has messages) archives it to the "🐾 Assistant"
+  section of the History panel instead of discarding it — reopen it from there to keep going.
 - **Shared Assistant memory** — every Assistant tab silently keeps other Assistant windows in the
   loop; see [Assistant window shared memory](#assistant-window-shared-memory) below.
 - **Gmail** — connect your own Google Cloud OAuth client in Settings → Integrations to let the
@@ -173,8 +176,9 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
   (Gmail read/send, Discord read/post, scheduler on/off) governing what the agent may do
   unattended; there's no live "ask me" prompt for background actions.
 
-Coding tools (file read/write, shell commands, codebase search) remain scoped to an actual open
-project — the Assistant tab and its tools are additive, available everywhere, not a replacement.
+Shell commands (`run_command`), the interactive terminal, and codebase semantic search remain
+scoped to an actual open project — the Assistant tab and its tools are additive, available
+everywhere, not a replacement for a project tab when you actually need to edit code.
 
 ### Assistant window shared memory
 

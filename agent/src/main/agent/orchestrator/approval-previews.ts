@@ -11,7 +11,11 @@ import { emitToAll } from './state'
 
 export async function previewMutatingTool(
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  /** Sandbox root for the mutation — the resolved Assistant documentsDirectory when this call
+   *  came from an Assistant tab, otherwise undefined (falls back to the open workspace). See
+   *  resolveWorkspacePath/assertInRoot in tools/file-ops.ts. */
+  root?: string
 ): Promise<{ title: string; extra: Partial<PendingAction> }> {
   if (name === 'run_command') {
     return {
@@ -23,7 +27,7 @@ export async function previewMutatingTool(
   if (name === 'write_file') {
     let oldContent = ''
     try {
-      const abs = resolveWorkspacePath(path)
+      const abs = resolveWorkspacePath(path, root)
       oldContent = toLf(await readFile(abs, 'utf8'))
     } catch {
       // new file — diff against empty content
@@ -32,7 +36,7 @@ export async function previewMutatingTool(
   }
   if (name === 'edit_file') {
     try {
-      const abs = resolveWorkspacePath(path)
+      const abs = resolveWorkspacePath(path, root)
       const content = toLf(await readFile(abs, 'utf8'))
       const match = resolveEditMatch(content, String(args.old_string), String(args.new_string))
       if (!match) return { title: `Edit ${path}`, extra: { filePath: path } }
@@ -52,7 +56,7 @@ export async function previewMutatingTool(
     // failure degrades to a plain preview instead of crashing the whole tool call and leaving
     // its tool_call block stuck at "running" forever — see "multi_edit tool broken" fix.
     try {
-      const { paths, diff } = await previewMultiEdit(edits)
+      const { paths, diff } = await previewMultiEdit(edits, root)
       const title = paths.length === 1 ? `Edit ${paths[0]}` : `Edit ${paths.length} files (${edits.length} edits)`
       return { title, extra: { filePaths: paths, diff } }
     } catch {
@@ -62,7 +66,7 @@ export async function previewMutatingTool(
     }
   }
   try {
-    const abs = resolveWorkspacePath(path)
+    const abs = resolveWorkspacePath(path, root)
     const oldContent = toLf(await readFile(abs, 'utf8'))
     return { title: `Delete ${path}`, extra: { filePath: path, diff: makeDiff(oldContent, '', path) } }
   } catch {

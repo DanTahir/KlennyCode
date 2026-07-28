@@ -22,7 +22,14 @@ export async function pickWorkspace(): Promise<string | null> {
 
 export function assertInWorkspace(absPath: string): boolean {
   if (!workspaceRoot) return false
+  return isInsideDirectory(absPath, workspaceRoot)
+}
+
+/** Generic version of assertInWorkspace's containment check against an arbitrary root, rather
+ *  than the open-project workspace singleton — used to sandbox Assistant-tab file mutations
+ *  under AppSettings.documentsDirectory instead (see documentsDir.ts). */
+export function isInsideDirectory(absPath: string, root: string): boolean {
   const normalized = absPath.replace(/\\/g, '/').toLowerCase()
-  const root = workspaceRoot.replace(/\\/g, '/').toLowerCase()
-  return normalized === root || normalized.startsWith(root + '/')
+  const normalizedRoot = root.replace(/\\/g, '/').toLowerCase()
+  return normalized === normalizedRoot || normalized.startsWith(normalizedRoot + '/')
 }

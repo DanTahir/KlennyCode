@@ -1,5 +1,5 @@
 import type { ToolName } from '@shared/types'
-import { CODING_ONLY_TOOLS } from '@shared/types'
+import { ASSISTANT_TOOLS, CODING_ONLY_TOOLS } from '@shared/types'
 import type { ToolDef } from '../../openrouter/client'
 
 export function getToolDefinitions(
@@ -7,11 +7,18 @@ export function getToolDefinitions(
   restrictTo?: ToolName[] | 'all',
   /** false (default) hides codebase_search entirely — the model never sees a tool it can't use, avoiding confusing failures when the feature isn't configured. */
   codebaseSearchAvailable = false,
-  /** true (default) means coding tools (file r/w, run_command, codebase_search) stay available
-   *  as before. Pass false for the ephemeral Assistant tab or any tab with no real workspace
-   *  open — see CODING_ONLY_TOOLS in shared/types.ts and the Personal Assistant Platform plan's
-   *  tool-gating design. */
-  hasWorkspace = true
+  /** true (default) means coding tools that need a real project workspace (run_command,
+   *  read_terminal, codebase_search — see CODING_ONLY_TOOLS in shared/types.ts) stay available.
+   *  Pass false for any project tab with no workspace open. Ignored when `isAssistant` is true
+   *  (Assistant tabs are gated by `isAssistant` alone, below — they never have a workspace but
+   *  still get file tools, scoped to AppSettings.documentsDirectory instead). */
+  hasWorkspace = true,
+  /** true for the ephemeral Assistant tab (and any subagent spawned from one — see loop.ts's
+   *  kind inheritance). Swaps in ASSISTANT_TOOLS as the allow-set instead of the mode's normal
+   *  agent/plan set, so Assistant tabs only ever see exactly the tools ASSISTANT_TOOLS lists
+   *  (file tools included, scoped to documentsDirectory; run_command/read_terminal/
+   *  codebase_search/save_plan excluded) regardless of `restrictTo`/`hasWorkspace`. */
+  isAssistant = false
 ): ToolDef[] {
   const all: ToolDef[] = [
     {
@@ -673,7 +680,12 @@ export function getToolDefinitions(
     'browser'
   ])
 
-  const allowed = mode === 'plan' ? planAllowed : agentAllowed
+  // Assistant tabs get their own fixed allow-set (ASSISTANT_TOOLS, shared/types.ts) instead of
+  // the mode's normal plan/agent set — this is what lets file tools (read/write/edit/multi_edit/
+  // delete/grep/glob) reach Assistant tabs (scoped to documentsDirectory by the caller) while
+  // still excluding workspace-only tools like run_command/read_terminal/codebase_search/save_plan.
+  const assistantAllowed = new Set<ToolName>(ASSISTANT_TOOLS)
+  const allowed = isAssistant ? assistantAllowed : mode === 'plan' ? planAllowed : agentAllowed
   let defs = all.filter((t) => allowed.has(t.function.name as ToolName))
 
   if (restrictTo && restrictTo !== 'all') {
@@ -684,12 +696,25 @@ export function getToolDefinitions(
     defs = defs.filter((t) => restrictSet.has(t.function.name as ToolName))
   }
 
-  // Coding tools (file r/w, run_command, codebase_search) need a real workspace to operate on
-  // — hide them entirely on the ephemeral Assistant tab / whenever no project is open, per the
-  // Personal Assistant Platform plan's tool-gating design (CODING_ONLY_TOOLS in shared/types.ts).
-  if (!hasWorkspace) {
-    const codingOnly = new Set<ToolName>(CODING_ONLY_TOOLS)
-    defs = defs.filter((t) => !codingOnly.has(t.function.name as ToolName))
+  // Tools that need a real project workspace get hidden on a project-kind tab whenever no
+  // project is open: CODING_ONLY_TOOLS (run_command/read_terminal/codebase_search) plus the file
+  // tools, since on a project tab (unlike an Assistant tab) they have no fallback root to resolve
+  // relative paths or sandbox mutations against — see resolveWorkspacePath/assertInRoot in
+  // file-ops.ts, which only take an explicit `root` for Assistant-tab calls. This never applies
+  // to Assistant tabs — they're already scoped to exactly ASSISTANT_TOOLS above, which routes
+  // file tools through documentsDirectory regardless of hasWorkspace.
+  if (!isAssistant && !hasWorkspace) {
+    const needsWorkspace = new Set<ToolName>([
+      ...CODING_ONLY_TOOLS,
+      'read_file',
+      'write_file',
+      'edit_file',
+      'multi_edit',
+      'delete_file',
+      'grep',
+      'glob'
+    ])
+    defs = defs.filter((t) => !needsWorkspace.has(t.function.name as ToolName))
   }
 
   // codebase_search is only ever surfaced when the feature is fully configured (enabled,

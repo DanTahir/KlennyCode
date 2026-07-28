@@ -6,9 +6,12 @@ import { resolveWorkspacePath } from './file-ops'
 import { runProcess } from './shell'
 
 // grep/glob are global, read-only search tools (see resolveWorkspacePath in file-ops.ts): an
-// absolute `path`/`cwd` searches anywhere on the host, a relative one resolves against the open
-// workspace, and with neither given they default to the workspace root when one is open. Only
-// when there's no workspace AND no explicit path/cwd do we have nothing to search and error out.
+// absolute `path`/`cwd` searches anywhere on the host, a relative one resolves against `root`
+// (falling back to the open workspace when `root` isn't given), and with neither given they
+// default to `root`/the workspace itself. `root` is passed by the caller for Assistant-tab
+// calls (AppSettings.documentsDirectory — see documentsDir.ts), since Assistant tabs have no
+// project workspace. Only when there's no root/workspace AND no explicit path/cwd do we have
+// nothing to search and error out.
 export async function grepTool(
   args: {
     pattern: string
@@ -18,11 +21,12 @@ export async function grepTool(
     /** Lines of context to include before/after each match (ripgrep -C), capped at 10. */
     context?: number
   },
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  root?: string
 ): Promise<ToolResultPayload> {
-  const ws = getWorkspace()
+  const ws = root ?? getWorkspace()
   if (!args.path && !ws) return { ok: false, summary: 'No workspace open — pass an absolute path to search', error: 'no_workspace' }
-  const searchPath = args.path ? resolveWorkspacePath(args.path) : (ws as string)
+  const searchPath = args.path ? resolveWorkspacePath(args.path, root) : (ws as string)
 
   const rgArgs = ['--json', '--max-count', '200', '-e', args.pattern, searchPath]
   const context = Math.max(0, Math.min(args.context ?? 0, 10))
@@ -64,10 +68,10 @@ export async function grepTool(
   }
 }
 
-export async function globTool(args: { pattern: string; cwd?: string }): Promise<ToolResultPayload> {
-  const ws = getWorkspace()
+export async function globTool(args: { pattern: string; cwd?: string }, root?: string): Promise<ToolResultPayload> {
+  const ws = root ?? getWorkspace()
   if (!args.cwd && !ws) return { ok: false, summary: 'No workspace open — pass an absolute cwd to search', error: 'no_workspace' }
-  const cwd = args.cwd ? resolveWorkspacePath(args.cwd) : (ws as string)
+  const cwd = args.cwd ? resolveWorkspacePath(args.cwd, root) : (ws as string)
   const files = await fg(args.pattern, { cwd, absolute: false, dot: false, ignore: ['**/node_modules/**', '**/.git/**'] })
   return { ok: true, summary: `Found ${files.length} files`, data: { files: files.slice(0, 500) } }
 }

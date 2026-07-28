@@ -51,9 +51,10 @@ export async function runScheduledTask(
     model: settings.subagentModel,
     createdAt: Date.now(),
     updatedAt: Date.now(),
-    // No targetWorkspace => force the assistant tool-only allowlist regardless of whatever
-    // project happens to be the ambient global workspace right now (see getWorkspace() gating
-    // in the tools: getToolDefinitions(...) call above).
+    // No targetWorkspace => force the Assistant tool-only allowlist (ASSISTANT_TOOLS — file
+    // tools included, scoped to documentsDirectory, but no run_command/read_terminal/
+    // codebase_search) regardless of whatever project happens to be the ambient global workspace
+    // right now (see getToolDefinitions()'s isAssistant gate in agentLoop's tools: ... call).
     kind: task.targetWorkspace ? 'project' : 'assistant',
     messages: [
       {

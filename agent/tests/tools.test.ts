@@ -92,7 +92,7 @@ describe('tool definitions', () => {
     expect(tools).toContain('scheduler_delete_task')
   })
 
-  test('hasWorkspace=false (ephemeral Assistant tab / no project open) hides coding-only tools but keeps assistant tools', () => {
+  test('hasWorkspace=false on a project-kind tab (no project open, isAssistant not set) hides file tools and coding-only tools but keeps assistant tools', () => {
     const tools = getToolDefinitions('agent', undefined, false, false).map((t) => t.function.name)
     expect(tools).not.toContain('write_file')
     expect(tools).not.toContain('edit_file')
@@ -100,9 +100,9 @@ describe('tool definitions', () => {
     expect(tools).not.toContain('delete_file')
     expect(tools).not.toContain('run_command')
     expect(tools).not.toContain('codebase_search')
-    // read_file/grep/glob resolve against the process-global getWorkspace() singleton, not a
-    // per-tab workspace, so they're coding-only too — otherwise an Assistant tab could silently
-    // read whatever project happens to be open in another window. See "Coding tools available
+    // On a project-kind tab, read_file/write_file/etc. and grep/glob have no root to resolve
+    // relative paths or sandbox mutations against once the workspace is gone — unlike an
+    // Assistant tab, there's no documentsDirectory fallback here. See "Coding tools available
     // inside an Assistant-kind tab" investigation/fix.
     expect(tools).not.toContain('read_file')
     expect(tools).not.toContain('grep')
@@ -125,7 +125,7 @@ describe('tool definitions', () => {
     expect(tools).toContain('read_file')
   })
 
-  test('hasWorkspace=false overrides restrictTo for coding-only tools (a subagent spawned from an Assistant tab cannot be handed file/shell access)', () => {
+  test('hasWorkspace=false overrides restrictTo for file/coding-only tools on a project-kind tab', () => {
     const tools = getToolDefinitions('agent', ['read_file', 'gmail_list_messages'], false, false).map((t) => t.function.name)
     expect(tools).toEqual(['gmail_list_messages'])
   })
@@ -133,5 +133,39 @@ describe('tool definitions', () => {
   test('hasWorkspace=false still respects restrictTo for workspace-independent tools', () => {
     const tools = getToolDefinitions('agent', ['web_search', 'gmail_list_messages'], false, false).map((t) => t.function.name)
     expect(tools).toEqual(['web_search', 'gmail_list_messages'])
+  })
+
+  test('isAssistant=true offers exactly ASSISTANT_TOOLS regardless of mode/hasWorkspace — file tools included, coding-only tools excluded', () => {
+    const tools = getToolDefinitions('agent', undefined, false, false, true).map((t) => t.function.name)
+    // File tools ARE available on an Assistant tab now (scoped to documentsDirectory by the
+    // caller — see documentsDir.ts), unlike a workspace-less project tab.
+    expect(tools).toContain('read_file')
+    expect(tools).toContain('write_file')
+    expect(tools).toContain('edit_file')
+    expect(tools).toContain('multi_edit')
+    expect(tools).toContain('delete_file')
+    expect(tools).toContain('grep')
+    expect(tools).toContain('glob')
+    // Still never available on an Assistant tab: truly workspace-dependent tools, and save_plan.
+    expect(tools).not.toContain('run_command')
+    expect(tools).not.toContain('read_terminal')
+    expect(tools).not.toContain('codebase_search')
+    expect(tools).not.toContain('save_plan')
+    // Assistant-compatible tools remain available.
+    expect(tools).toContain('web_search')
+    expect(tools).toContain('gmail_list_messages')
+    expect(tools).toContain('task')
+  })
+
+  test('isAssistant=true ignores hasWorkspace=true too — still no run_command/codebase_search', () => {
+    const tools = getToolDefinitions('agent', undefined, true, true, true).map((t) => t.function.name)
+    expect(tools).not.toContain('run_command')
+    expect(tools).not.toContain('codebase_search')
+    expect(tools).toContain('read_file')
+  })
+
+  test('isAssistant=true still respects restrictTo (subagent spawned from an Assistant tab)', () => {
+    const tools = getToolDefinitions('agent', ['read_file', 'gmail_list_messages'], false, false, true).map((t) => t.function.name)
+    expect(tools).toEqual(['read_file', 'gmail_list_messages'])
   })
 })

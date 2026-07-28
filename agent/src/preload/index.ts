@@ -12,6 +12,8 @@ const api: KlennyApi = {
   openWorkspace: () => ipcRenderer.invoke(IPC.workspaceOpen),
   getWorkspace: () => ipcRenderer.invoke(IPC.workspaceGet),
 
+  pickDocumentsDirectory: () => ipcRenderer.invoke(IPC.documentsDirectoryPick),
+
   listModels: (force) => ipcRenderer.invoke(IPC.modelsList, force),
   listShells: () => ipcRenderer.invoke(IPC.shellsList),
 

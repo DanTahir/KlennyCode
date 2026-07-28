@@ -29,6 +29,7 @@ import type {
 } from '@shared/types'
 import { DEFAULT_BROWSER_AUTOMATION, CODING_ONLY_TOOLS } from '@shared/types'
 import { loadSettings } from '../../settings'
+import { resolveDocumentsDirectory } from '../../documentsDir'
 import { getWorkspace } from '../../workspace'
 import { sessionStore } from '../../session/store'
 import { streamChatCompletion, fetchModels, type ToolCall } from '../../openrouter/client'
@@ -231,14 +232,16 @@ export async function agentLoop(
     model: tab.model,
     messages: orMessages,
     // Subagents can't spawn nested subagents — there's no UI to surface a deeper
-    // level's approvals/questions, and it would risk runaway recursion. Coding tools are
-    // hidden entirely on the ephemeral Assistant tab (see TabSession.kind) or when no
-    // workspace is open — they don't apply there.
+    // level's approvals/questions, and it would risk runaway recursion. The ephemeral Assistant
+    // tab gets its own fixed ASSISTANT_TOOLS allow-set (file tools included, scoped to
+    // documentsDirectory below, but no run_command/read_terminal/codebase_search/save_plan);
+    // other tabs hide workspace-only tools whenever no project is open.
     tools: getToolDefinitions(
       tab.mode,
       subagentCtx?.allowedTools,
       isIndexActive(),
-      tab.kind !== 'assistant' && Boolean(getWorkspace())
+      Boolean(getWorkspace()),
+      tab.kind === 'assistant'
     ).filter(
       (t) => !subagentCtx || t.function.name !== 'task'
     ),
@@ -485,6 +488,13 @@ async function executeTool(
     }
   }
 
+  // File tools (read_file/write_file/edit_file/multi_edit/delete_file/grep/glob) resolve
+  // relative paths and sandbox mutations against this root instead of the open workspace when
+  // the call came from an Assistant tab — see documentsDir.ts and AppSettings.documentsDirectory.
+  // undefined here means \"use the open project workspace\" (file-ops.ts/search.ts's existing
+  // default), which is exactly the old behavior for every non-Assistant tab.
+  const fileRoot = tab.kind === 'assistant' ? await resolveDocumentsDirectory() : undefined
+
   if (name === 'ask_question') {
     // Subagents run headless — there is no UI to ever answer this, so it would
     // hang forever waiting on a promise that never resolves. Fail fast instead.
@@ -522,7 +532,7 @@ async function executeTool(
     const needsApproval = approvalMode === 'manual' || (approvalMode === 'command' && name === 'run_command')
     if (needsApproval) {
       const kind = name as PendingActionKind
-      const preview = await previewMutatingTool(name, args)
+      const preview = await previewMutatingTool(name, args, fileRoot)
       const action = approvalManager.buildPendingFromTool(tab.id, tc.id, kind, preview.title, preview.extra)
       emit({ type: 'pending_action', tabId: tab.id, action })
       const decision = await approvalManager.waitForDecision(action.id)
@@ -594,7 +604,8 @@ async function executeTool(
       shellId,
       Boolean(subagentCtx),
       browserAutomation,
-      onToolProgress
+      onToolProgress,
+      fileRoot
     )
     return { payload, status: payload.ok ? 'success' : 'error' }
   } catch (e) {
@@ -618,28 +629,33 @@ async function dispatchTool(
   shellId?: string | null,
   unattended = false,
   browserAutomation?: BrowserAutomationSettings,
-  onToolProgress?: (message: string) => void
+  onToolProgress?: (message: string) => void,
+  /** Sandbox root for file tools — see the matching parameter on executeTool/
+   *  previewMutatingTool above. undefined means "use the open project workspace". */
+  fileRoot?: string
 ): Promise<ToolResultPayload> {
   switch (name) {
     case 'read_file':
-      return readFileTool(args as { path: string; offset?: number; limit?: number })
+      return readFileTool(args as { path: string; offset?: number; limit?: number }, fileRoot)
     case 'write_file':
-      return writeFileTool(args as { path: string; content: string })
+      return writeFileTool(args as { path: string; content: string }, fileRoot)
     case 'edit_file':
       return editFileTool(
-        args as { path: string; old_string: string; new_string: string; replace_all?: boolean }
+        args as { path: string; old_string: string; new_string: string; replace_all?: boolean },
+        fileRoot
       )
     case 'multi_edit':
-      return multiEditFileTool(args as unknown as { edits: MultiEditOp[] })
+      return multiEditFileTool(args as unknown as { edits: MultiEditOp[] }, fileRoot)
     case 'delete_file':
-      return deleteFileTool(args as { path: string })
+      return deleteFileTool(args as { path: string }, fileRoot)
     case 'grep':
       return grepTool(
         args as { pattern: string; path?: string; glob?: string; case_insensitive?: boolean; context?: number },
-        signal
+        signal,
+        fileRoot
       )
     case 'glob':
-      return globTool(args as { pattern: string; cwd?: string })
+      return globTool(args as { pattern: string; cwd?: string }, fileRoot)
     case 'run_command':
       return runCommandTool(args as { command: string; cwd?: string; timeout_ms?: number }, signal, shellId)
     case 'read_terminal':

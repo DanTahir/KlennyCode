@@ -4,6 +4,7 @@ import { checkForUpdates, installUpdate, isUpdateSupported } from './updater'
 import { IPC } from '@shared/ipc'
 import { loadSettings, saveSettings, setApiKey, clearApiKey, setPineconeKey, clearPineconeKey } from './settings'
 import { getWorkspace, pickWorkspace, setWorkspace } from './workspace'
+import { pickDocumentsDirectory } from './documentsDir'
 import { sessionStore } from './session/store'
 import { fetchModels } from './openrouter/client'
 import { runUserTurn, stopGeneration, resolveQuestion, continueTurn, clearTabState } from './agent/orchestrator'
@@ -141,6 +142,8 @@ export function registerIpcHandlers(): void {
     return path
   })
   ipcMain.handle(IPC.workspaceGet, async () => getWorkspace())
+
+  ipcMain.handle(IPC.documentsDirectoryPick, async () => pickDocumentsDirectory())
 
   ipcMain.handle(IPC.modelsList, async (_e, force?: boolean) => {
     const key = await getApiKey()

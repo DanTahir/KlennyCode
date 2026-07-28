@@ -71,7 +71,7 @@ Klenny Code keeps track of every project you've previously opened. While working
 
 Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
 
-- **Assistant tab** — click **Open Assistant** in the sidebar to open a fresh chat tab with web search, cross-project reference, memory, Gmail, Discord, and scheduler tools, but no file/shell access (no coding project needed). Every click makes a brand-new tab; Assistant tabs persist across app restarts, and closing one (once it has messages) archives it to the "🐾 Assistant" section of History instead of discarding it.
+- **Assistant tab** — click **Open Assistant** in the sidebar to open a fresh chat tab with web search, cross-project reference, memory, Gmail, Discord, scheduler tools, and full file tools (read/write/edit/multi_edit/delete/grep/glob) — but no coding project needed and no shell/`run_command`/codebase-search access. File-tool relative paths and every mutation are sandboxed to a **Documents directory** (Settings → Behavior, default your OS Documents folder) instead of a project workspace; absolute-path reads can still reach anywhere on the machine. Every click makes a brand-new tab; Assistant tabs persist across app restarts, and closing one (once it has messages) archives it to the "🐾 Assistant" section of History instead of discarding it.
 - **Shared Assistant memory** — after each Assistant-tab turn, Klenny silently uses the utility model to update a short note for that window; every other Assistant tab's prompt gets a digest of what the others have been doing, so windows naturally stay in sync without you copy-pasting context between them. See "Assistant window shared memory" under Memory above for how to view, size, or disable this.
 - **Gmail** — connect your own Google Cloud OAuth client in **Settings → Integrations** to let the agent read, and (once you opt in) send, email.
 - **Discord** — connect a bot application (never a personal account) so the agent can post updates and respond to DMs/mentions/`!klenny` commands, including reviewing a known project read-only when asked.
@@ -79,7 +79,7 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
 - **Desktop notifications** — a native OS notification fires whenever no Klenny Code window is focused and a subagent run, a main chat turn, or a scheduled task run finishes.
 - **Automation Permissions** (Settings → Integrations) — per-action allow/block toggles (Gmail read/send, Discord read/post, scheduler on/off) governing what the agent may do unattended. There's no live "ask me" prompt for background actions — set the toggle you're comfortable with ahead of time.
 
-Coding tools (file read/write, shell commands, codebase search) stay scoped to an actual open project — the Assistant tab and its tools are additive, available everywhere, not a replacement.
+Shell commands (`run_command`), the interactive terminal, and codebase semantic search stay scoped to an actual open project — the Assistant tab and its tools are additive, available everywhere, not a replacement for a project tab when you actually need to edit code.
 
 ## History
 

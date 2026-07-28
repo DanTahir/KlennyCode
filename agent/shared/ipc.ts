@@ -28,6 +28,8 @@ export const IPC = {
   workspaceOpen: 'workspace:open',
   workspaceGet: 'workspace:get',
 
+  documentsDirectoryPick: 'documentsDirectory:pick',
+
   modelsList: 'models:list',
   shellsList: 'shells:list',
 
@@ -134,6 +136,11 @@ export interface KlennyApi {
 
   openWorkspace: () => Promise<string | null>
   getWorkspace: () => Promise<string | null>
+
+  /** Opens a native folder-picker for AppSettings.documentsDirectory (the Assistant-tab file
+   *  sandbox root — see documentsDir.ts). Returns the newly-picked absolute path, or null if the
+   *  user canceled the dialog. */
+  pickDocumentsDirectory: () => Promise<string | null>
 
   listModels: (forceRefresh?: boolean) => Promise<ModelInfo[]>
   listShells: () => Promise<ShellInfo[]>

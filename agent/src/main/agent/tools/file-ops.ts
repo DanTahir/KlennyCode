@@ -4,7 +4,7 @@ import type { ToolResultPayload } from '@shared/types'
 import { buildEditNotFoundHelp, countOccurrences, resolveEditMatch } from './edit-match'
 import { detectEol, fromLf, toLf, type Eol } from './eol'
 import { makeDiff } from './diff'
-import { assertInWorkspace, getWorkspace } from '../../workspace'
+import { assertInWorkspace, getWorkspace, isInsideDirectory } from '../../workspace'
 
 // `content` in this cache is always normalized to LF, regardless of the file's on-disk
 // EOL style or the machine's `core.autocrlf` setting — see ./eol.ts. This keeps matching,
@@ -12,7 +12,13 @@ import { assertInWorkspace, getWorkspace } from '../../workspace'
 // line-ended; the original EOL style is restored when writing back to disk.
 const fileReadCache = new Map<string, { mtimeMs: number; content: string }>()
 
-export function resolveWorkspacePath(relOrAbs: string): string {
+/** `root`, when given, overrides the open-project workspace as the base a relative path
+ *  resolves against and (for mutations, via `assertInRoot` below) the sandbox boundary. Used
+ *  for Assistant-tab calls, which pass AppSettings.documentsDirectory (resolved once by the
+ *  caller — see documentsDir.ts) since Assistant tabs have no project workspace of their own.
+ *  Omitted (the default), this behaves exactly as before: relative paths resolve against
+ *  getWorkspace()'s process-global singleton. */
+export function resolveWorkspacePath(relOrAbs: string, root?: string): string {
   if (typeof relOrAbs !== 'string' || relOrAbs.length === 0) {
     // Guards against a malformed tool call (e.g. a batch edit missing/nulling `path`) crashing
     // with a raw TypeError from node:path — throw a clean, catchable Error instead so callers
@@ -21,18 +27,29 @@ export function resolveWorkspacePath(relOrAbs: string): string {
     throw new Error(`Invalid path: expected a non-empty string, got ${JSON.stringify(relOrAbs)}`)
   }
   if (isAbsolute(relOrAbs)) return resolve(relOrAbs)
-  const ws = getWorkspace()
-  if (!ws) throw new Error('No workspace open. Pass an absolute path to reach a file outside a workspace.')
-  return resolve(ws, relOrAbs)
+  const base = root ?? getWorkspace()
+  if (!base) throw new Error('No workspace open. Pass an absolute path to reach a file outside a workspace.')
+  return resolve(base, relOrAbs)
 }
 
-// read_file (and grep/glob, see search.ts) are deliberately NOT sandboxed to the workspace —
+/** Sandbox check for a mutation's resolved absolute path: against `root` when given (Assistant
+ *  tabs, scoped to documentsDirectory), otherwise falls back to the open-project workspace via
+ *  assertInWorkspace, exactly like before `root` existed. */
+function assertInRoot(abs: string, root?: string): boolean {
+  return root ? isInsideDirectory(abs, root) : assertInWorkspace(abs)
+}
+
+// read_file (and grep/glob, see search.ts) are deliberately NOT sandboxed for absolute paths —
 // per user request, they're global, read-only tools that can see anything the OS user running
-// Klenny can see (any absolute path on the host, or a path relative to the open workspace).
-// write_file/edit_file/multi_edit/delete_file remain workspace-only (see assertInWorkspace below)
-// since mutation is the operation that actually needs the safety rail.
-export async function readFileTool(args: { path: string; offset?: number; limit?: number }): Promise<ToolResultPayload> {
-  const abs = resolveWorkspacePath(args.path)
+// Klenny can see (any absolute path on the host, or a path relative to `root`/the open
+// workspace). write_file/edit_file/multi_edit/delete_file remain sandboxed to `root`/the
+// workspace (see assertInRoot above) since mutation is the operation that actually needs the
+// safety rail.
+export async function readFileTool(
+  args: { path: string; offset?: number; limit?: number },
+  root?: string
+): Promise<ToolResultPayload> {
+  const abs = resolveWorkspacePath(args.path, root)
   const raw = await readFile(abs, 'utf8')
   const content = toLf(raw)
   const st = await stat(abs)
@@ -45,9 +62,9 @@ export async function readFileTool(args: { path: string; offset?: number; limit?
   return { ok: true, summary: `Read ${args.path} (${slice.length} lines)`, data: { path: args.path, content: numbered } }
 }
 
-export async function writeFileTool(args: { path: string; content: string }): Promise<ToolResultPayload> {
-  const abs = resolveWorkspacePath(args.path)
-  if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+export async function writeFileTool(args: { path: string; content: string }, root?: string): Promise<ToolResultPayload> {
+  const abs = resolveWorkspacePath(args.path, root)
+  if (!assertInRoot(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   let oldRaw = ''
   let hadExisting = false
   try {
@@ -73,14 +90,17 @@ export async function writeFileTool(args: { path: string; content: string }): Pr
   }
 }
 
-export async function editFileTool(args: {
-  path: string
-  old_string: string
-  new_string: string
-  replace_all?: boolean
-}): Promise<ToolResultPayload> {
-  const abs = resolveWorkspacePath(args.path)
-  if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+export async function editFileTool(
+  args: {
+    path: string
+    old_string: string
+    new_string: string
+    replace_all?: boolean
+  },
+  root?: string
+): Promise<ToolResultPayload> {
+  const abs = resolveWorkspacePath(args.path, root)
+  if (!assertInRoot(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   const raw = await readFile(abs, 'utf8')
   const eol = detectEol(raw)
   const content = toLf(raw)
@@ -164,7 +184,8 @@ interface PlanMultiEditError {
  */
 async function planMultiEdit(
   edits: MultiEditOp[],
-  checkStale: boolean
+  checkStale: boolean,
+  root?: string
 ): Promise<{ ok: true; files: PlannedFileEdit[] } | PlanMultiEditError> {
   const files = new Map<string, PlannedFileEdit>()
 
@@ -192,8 +213,8 @@ async function planMultiEdit(
       }
     }
 
-    const abs = resolveWorkspacePath(op.path)
-    if (!assertInWorkspace(abs)) {
+    const abs = resolveWorkspacePath(op.path, root)
+    if (!assertInRoot(abs, root)) {
       return { ok: false, index: i, path: op.path, summary: 'Path outside workspace', error: 'sandbox' }
     }
 
@@ -289,7 +310,7 @@ export function normalizeEditsArg(rawEdits: unknown): { ok: true; edits: MultiEd
   return { ok: false, summary: 'multi_edit called with no edits' }
 }
 
-export async function multiEditFileTool(args: { edits: MultiEditOp[] }): Promise<ToolResultPayload> {
+export async function multiEditFileTool(args: { edits: MultiEditOp[] }, root?: string): Promise<ToolResultPayload> {
   const normalized = normalizeEditsArg(args.edits)
   if (!normalized.ok) {
     return { ok: false, summary: normalized.summary, error: 'no_edits' }
@@ -299,7 +320,7 @@ export async function multiEditFileTool(args: { edits: MultiEditOp[] }): Promise
     return { ok: false, summary: 'multi_edit called with no edits', error: 'no_edits' }
   }
 
-  const plan = await planMultiEdit(edits, true)
+  const plan = await planMultiEdit(edits, true, root)
   if (!plan.ok) {
     return {
       ok: false,
@@ -338,8 +359,8 @@ export async function multiEditFileTool(args: { edits: MultiEditOp[] }): Promise
  *  the same plan and combined diff without touching disk or checking staleness (the user
  *  hasn't approved anything yet, so we don't want a stale-cache error blocking the preview
  *  itself; the real staleness check still runs when the tool actually executes post-approval). */
-export async function previewMultiEdit(edits: MultiEditOp[]): Promise<{ paths: string[]; diff?: string }> {
-  const plan = await planMultiEdit(edits, false)
+export async function previewMultiEdit(edits: MultiEditOp[], root?: string): Promise<{ paths: string[]; diff?: string }> {
+  const plan = await planMultiEdit(edits, false, root)
   if (!plan.ok) {
     return { paths: [...new Set(edits.map((e) => (typeof e?.path === 'string' ? e.path : '')).filter(Boolean))] }
   }
@@ -350,9 +371,9 @@ export async function previewMultiEdit(edits: MultiEditOp[]): Promise<{ paths: s
   }
 }
 
-export async function deleteFileTool(args: { path: string }): Promise<ToolResultPayload> {
-  const abs = resolveWorkspacePath(args.path)
-  if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+export async function deleteFileTool(args: { path: string }, root?: string): Promise<ToolResultPayload> {
+  const abs = resolveWorkspacePath(args.path, root)
+  if (!assertInRoot(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   let oldContent = ''
   try {
     oldContent = toLf(await readFile(abs, 'utf8'))

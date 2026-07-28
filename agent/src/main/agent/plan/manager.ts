@@ -115,13 +115,17 @@ ${personaSection(soul)}`
 
 /**
  * `kind` selects between the regular coding-project prompt body (default, and the only option
- * that ever mentions read_file/write_file/edit_file/multi_edit/delete_file/grep/glob/run_command/
- * codebase_search/read_terminal by name) and a separate Assistant-tab body that never names those
- * tools at all — Assistant tabs never have them in their offered tool list (see CODING_ONLY_TOOLS
- * in shared/types.ts / getToolDefinitions()'s hasWorkspace gate), so instructing the model to use
- * them, or even mentioning them as *unavailable*, only teaches it about tools it doesn't have and
- * invites a hallucinated call that then has to be rejected at dispatch time. See "Assistant tool
- * schema/prompt leak" investigation for the bug this fixes.
+ * that ever mentions run_command/codebase_search/read_terminal by name) and a separate
+ * Assistant-tab body. Assistant tabs DO get file tools (read_file/write_file/edit_file/
+ * multi_edit/delete_file/grep/glob — see ASSISTANT_TOOLS in shared/types.ts), scoped to
+ * AppSettings.documentsDirectory instead of a project workspace (see documentsDir.ts), but never
+ * get the truly workspace-dependent tools (run_command/read_terminal/codebase_search — see
+ * CODING_ONLY_TOOLS in shared/types.ts / getToolDefinitions()'s isAssistant gate). The Assistant
+ * body names the file tools (so the model knows it has them, scoped to a documents folder) but
+ * never mentions run_command/read_terminal/codebase_search — those aren't in its tool list at
+ * all, so mentioning them, even as *unavailable*, would only teach it about tools it doesn't have
+ * and invite a hallucinated call that then has to be rejected at dispatch time. See "Assistant
+ * tool schema/prompt leak" investigation for the bug this originally fixed.
  */
 export function buildAgentModePrompt(soul: string, kind: 'project' | 'assistant' = 'project'): string {
   const isAssistant = kind === 'assistant'
@@ -167,14 +171,16 @@ Subagents (task tool): actively look for chances to delegate rather than default
 Autonomy: work through multi-step tasks to completion via tool calls, without pausing mid-task to ask "should I continue?" or to summarize progress and wait. Keep going — call the next tool — until the task is genuinely done, you're truly blocked by ambiguity (use ask_question), or a tool result requires human approval. Only stop and hand control back once there is nothing left to do. This includes context compaction: if a system message tells you older conversation history was just summarized to save space, that is routine background maintenance, not a task boundary — briefly acknowledge it to the user in one sentence and then immediately keep working toward the original goal in the same reply, rather than stopping and waiting.`
 
 /** Used only for the ephemeral Assistant tab (tab.kind === 'assistant') instead of
- *  AGENT_MODE_PROMPT_BODY. Deliberately says nothing about file/code/shell tools — Assistant
- *  tabs have no workspace and never get those tools offered (see CODING_ONLY_TOOLS gating in
- *  getToolDefinitions()) — so this body only describes capabilities that actually exist here:
- *  web research, memory, skills/subagents, Gmail/Discord, the scheduler, settings, and browser
- *  automation. Keeping coding-tool names out of this prompt entirely (rather than e.g. saying
- *  "you have no read_file/edit_file access here") avoids planting those tool names in context in
- *  the first place, which is what was priming the model to attempt calling them despite never
- *  seeing their schemas.
+ *  AGENT_MODE_PROMPT_BODY. Says nothing about run_command/read_terminal/codebase_search —
+ *  Assistant tabs never get those tools offered (see CODING_ONLY_TOOLS gating in
+ *  getToolDefinitions()'s isAssistant branch) — but DOES name the file tools
+ *  (read_file/write_file/edit_file/multi_edit/delete_file/grep/glob), since Assistant tabs do
+ *  have them now, scoped to AppSettings.documentsDirectory (a user-configurable folder, default
+ *  the OS Documents directory — see documentsDir.ts) rather than a project workspace. Keeping
+ *  run_command/read_terminal/codebase_search's names out of this prompt entirely (rather than
+ *  e.g. saying "you have no run_command access here") avoids planting those tool names in
+ *  context in the first place, which is what was priming the model to attempt calling them
+ *  despite never seeing their schemas.
  *
  *  Two deliberate differences from AGENT_MODE_PROMPT_BODY, per user request: a slightly warmer/
  *  more playful opening line (this is the one place a bit of personality is baked into the
@@ -183,9 +189,9 @@ Autonomy: work through multi-step tasks to completion via tool calls, without pa
  *  memory (see the "Memory" paragraph below): it must speak of what read_memory/the injected
  *  cross-window digest surfaces as its own recollection ("I fetched a ball"), never as an
  *  external document it's citing ("according to my memory notes, I fetched a ball"). */
-const ASSISTANT_MODE_PROMPT_BODY = `You are Klenny, a personal assistant — think of this Assistant tab as your home base between errands: no project open, just you, your tools, and whatever the user needs handled. Use tools to accomplish tasks. When requirements are ambiguous, use ask_question before making irreversible changes.
+const ASSISTANT_MODE_PROMPT_BODY = `You are Klenny, a personal assistant — think of this Assistant tab as your home base between errands: no coding project open, just you, your tools, and whatever the user needs handled. Use tools to accomplish tasks. When requirements are ambiguous, use ask_question before making irreversible changes.
 
-Your available capabilities here: web research (web_search, fetch_url), reading/writing memory notes (read_memory/write_memory/list_memory — read_memory and list_memory take an optional 'project' name to look at a DIFFERENT known project's memory), discovering known coding projects (list_projects), listing/reading skills and subagent types (list_skills, read_skill, read_subagent) and authoring global ones (write_skill, write_subagent with scope 'global'), delegating research to subagents (task), opening the Settings panel (open_settings_panel), Gmail (gmail_list_messages/gmail_get_message/gmail_send_message), Discord (discord_post_message), managing scheduled background tasks (scheduler_create_task/scheduler_list_tasks/scheduler_update_task/scheduler_delete_task), and driving a local browser (browser). If the user asks for something that needs an actual project workspace (editing code, running shell commands, reading/searching project files, searching a specific codebase), tell them to open or switch to a project tab for that — don't attempt it here.
+Your available capabilities here: reading and writing files (read_file/write_file/edit_file/multi_edit/delete_file/grep/glob) — these are scoped to a documents folder (not a coding project) since there's no project workspace open in this tab, but absolute paths can still read anywhere on the machine the user has access to — web research (web_search, fetch_url), reading/writing memory notes (read_memory/write_memory/list_memory — read_memory and list_memory take an optional 'project' name to look at a DIFFERENT known project's memory), discovering known coding projects (list_projects), listing/reading skills and subagent types (list_skills, read_skill, read_subagent) and authoring global ones (write_skill, write_subagent with scope 'global'), delegating research to subagents (task), opening the Settings panel (open_settings_panel), Gmail (gmail_list_messages/gmail_get_message/gmail_send_message), Discord (discord_post_message), managing scheduled background tasks (scheduler_create_task/scheduler_list_tasks/scheduler_update_task/scheduler_delete_task), and driving a local browser (browser). If the user asks for something that needs an actual coding project workspace (editing code in a project, running shell commands, searching a specific codebase), tell them to open or switch to a project tab for that — don't attempt it here.
 
 Memory: treat whatever read_memory returns, and whatever appears under "Recently, in your other Assistant windows" in context, as your own recollection — not as a document you're consulting. If the user asks something like "what was the last thing you did?", answer directly and in character from that content ("I fetched a ball" or "I checked your email and replied to two messages"), never by citing it as a source ("according to my memory notes...", "based on the digest...", "my records show..."). The mechanism (notes, digests, read_memory) is implementation detail the user never needs to hear about unless they specifically ask how memory works.
 
