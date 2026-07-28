@@ -112,24 +112,34 @@ Global config (shared across all projects) lives in `~/.klenny/` — global skil
 custom subagents, global memory (`KLENNY.md` + auto-memory notes), and the agent's personality
 (`SOUL.md`).
 
-### Cross-project reference (read-only)
+### Filesystem access and cross-project reference
+
+`read_file`, `grep`, and `glob` are global, read-only tools — they can reach any absolute path
+on the host the way you, the logged-in user running Klenny Code, can (not limited to the open
+project). A relative path still resolves against the current workspace as before, and with no
+path at all grep/glob still default to the workspace root. `write_file`/`edit_file`/
+`multi_edit`/`delete_file` remain sandboxed to the currently open workspace only — mutation
+never reaches outside the project you have open.
 
 Because every project's memory/plans/index and chat sessions are keyed by path under Klenny
 Code's own `userData` directory (not inside the project itself — see above), Klenny Code
-already knows about every project you've previously opened. The agent can use this to read
-files and memory notes from *other* projects while working in your current one — e.g.
-"port the shell-selection feature from my other project into this one" — via a small set of
-read-only tools (`list_projects`, `read_other_project_file`, `grep_other_project`,
-`glob_other_project`, `read_other_project_memory`). There is no cross-project write/edit —
-the agent can only ever modify files in the project you currently have open.
+already knows about every project you've previously opened; `list_projects` lists them. Combined
+with global read_file/grep/glob, the agent can reference or port things from *other* projects
+while working in your current one — e.g. "port the shell-selection feature from my other project
+into this one" — just by passing an absolute path from `list_projects`. `read_memory` and
+`list_memory` similarly take an optional `project` argument to look at a different known
+project's memory notes instead of the current one. There is still no cross-project write/edit or
+memory write — the agent can only ever modify files or write memory for the project you
+currently have open.
 
 ### Personal Assistant
 
 Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
 
 - **Assistant tab** — click "Open Assistant" in the sidebar (between "Check for update" and
-  "Change project") to spin up a new chat tab with web search, cross-project reference, memory,
-  Gmail, Discord, and scheduler tools, but no file/shell access (no coding project needed). Every
+  "Change project") to spin up a new chat tab with web search, `list_projects` discovery, memory,
+  Gmail, Discord, and scheduler tools, but no file/shell access (no coding project needed,
+  and none of read_file/grep/glob's global filesystem reach either). Every
   click creates a fresh, independent tab (no create-or-focus singleton behavior), tagged with a
   🐾 pawprint in the tab bar and automatically retitled from your first message, just like a
   regular chat tab. Assistant tabs are workspace-independent: they persist across app restarts,

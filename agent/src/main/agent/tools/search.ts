@@ -1,10 +1,14 @@
 import fg from 'fast-glob'
 import type { ToolResultPayload } from '@shared/types'
 import { getRgPath } from '../../ripgrep'
-import { assertInWorkspace, getWorkspace } from '../../workspace'
+import { getWorkspace } from '../../workspace'
 import { resolveWorkspacePath } from './file-ops'
 import { runProcess } from './shell'
 
+// grep/glob are global, read-only search tools (see resolveWorkspacePath in file-ops.ts): an
+// absolute `path`/`cwd` searches anywhere on the host, a relative one resolves against the open
+// workspace, and with neither given they default to the workspace root when one is open. Only
+// when there's no workspace AND no explicit path/cwd do we have nothing to search and error out.
 export async function grepTool(
   args: {
     pattern: string
@@ -17,9 +21,8 @@ export async function grepTool(
   signal?: AbortSignal
 ): Promise<ToolResultPayload> {
   const ws = getWorkspace()
-  if (!ws) return { ok: false, summary: 'No workspace', error: 'no_workspace' }
-  const searchPath = args.path ? resolveWorkspacePath(args.path) : ws
-  if (!assertInWorkspace(searchPath)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  if (!args.path && !ws) return { ok: false, summary: 'No workspace open — pass an absolute path to search', error: 'no_workspace' }
+  const searchPath = args.path ? resolveWorkspacePath(args.path) : (ws as string)
 
   const rgArgs = ['--json', '--max-count', '200', '-e', args.pattern, searchPath]
   const context = Math.max(0, Math.min(args.context ?? 0, 10))
@@ -28,7 +31,8 @@ export async function grepTool(
   if (args.glob) rgArgs.unshift('--glob', args.glob)
 
   try {
-    const output = await runProcess(getRgPath(), rgArgs, ws, 30_000, false, signal)
+    const cwd = ws ?? searchPath
+    const output = await runProcess(getRgPath(), rgArgs, cwd, 30_000, false, signal)
     // With context > 0, ripgrep's --json stream interleaves "match" lines with "context"
     // lines around them — both carry the same path/line_number/lines shape, so we tag each
     // with `match` to distinguish the actual hit from its surrounding context.
@@ -41,8 +45,9 @@ export async function grepTool(
           data?: { path?: { text: string }; line_number?: number; lines?: { text: string } }
         }
         if ((j.type === 'match' || j.type === 'context') && j.data?.path?.text) {
+          const raw = j.data.path.text
           hits.push({
-            file: j.data.path.text.replace(ws + '/', '').replace(ws + '\\', ''),
+            file: ws ? raw.replace(ws + '/', '').replace(ws + '\\', '') : raw,
             line: j.data.line_number ?? 0,
             text: (j.data.lines?.text ?? '').trimEnd(),
             match: j.type === 'match'
@@ -61,9 +66,8 @@ export async function grepTool(
 
 export async function globTool(args: { pattern: string; cwd?: string }): Promise<ToolResultPayload> {
   const ws = getWorkspace()
-  if (!ws) return { ok: false, summary: 'No workspace', error: 'no_workspace' }
-  const cwd = args.cwd ? resolveWorkspacePath(args.cwd) : ws
-  if (!assertInWorkspace(cwd)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  if (!args.cwd && !ws) return { ok: false, summary: 'No workspace open — pass an absolute cwd to search', error: 'no_workspace' }
+  const cwd = args.cwd ? resolveWorkspacePath(args.cwd) : (ws as string)
   const files = await fg(args.pattern, { cwd, absolute: false, dot: false, ignore: ['**/node_modules/**', '**/.git/**'] })
   return { ok: true, summary: `Found ${files.length} files`, data: { files: files.slice(0, 500) } }
 }

@@ -51,14 +51,8 @@ import {
 } from '../tools/index'
 import { browserTool, isBrowserActionMutating, buildBrowserApprovalPreview } from '../tools/browser'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
-import {
-  listProjectsTool,
-  readOtherProjectFileTool,
-  grepOtherProjectTool,
-  globOtherProjectTool,
-  readOtherProjectMemoryTool
-} from '../tools/otherProjects'
-import { writeMemory, readMemoryTopic } from '../memory/manager'
+import { listProjectsTool, resolveProjectOrError } from '../tools/otherProjects'
+import { writeMemory, readMemoryTopic, loadProjectMemory, loadAutoMemoryIndex, loadGlobalMemory, listMemoryTopics } from '../memory/manager'
 import { buildFullAssistantMemoryDigest } from '../memory/assistantMemory'
 import { listSkills, readSkill, writeSkill } from '../skills/manager'
 import { getSubagentType, writeSubagentType } from '../subagents/manager'
@@ -669,8 +663,17 @@ async function dispatchTool(
           data: { content }
         }
       }
+      // 'project' scope: an optional `project` name resolves to a DIFFERENT known project's
+      // memory (see otherProjects.ts) instead of the current workspace's — 'global' memory is
+      // shared everywhere so `project` is meaningless there.
+      let projectRoot: string | undefined
+      if (args.scope === 'project' && args.project) {
+        const resolved = await resolveProjectOrError(String(args.project))
+        if ('error' in resolved) return resolved.error
+        projectRoot = resolved.root
+      }
       try {
-        const content = await readMemoryTopic(args.scope as 'project' | 'global', String(args.topic))
+        const content = await readMemoryTopic(args.scope as 'project' | 'global', String(args.topic), projectRoot)
         return { ok: true, summary: `Read memory topic "${String(args.topic)}"`, data: { content } }
       } catch (e) {
         return {
@@ -681,8 +684,31 @@ async function dispatchTool(
       }
     }
     case 'write_memory':
+      // Writes stay scoped to the current workspace/global memory only — there is deliberately
+      // no `project` argument here, unlike read_memory/list_memory. Klenny should never write
+      // notes into a project it isn't currently open in.
       await writeMemory(args.scope as 'project' | 'global', String(args.topic), String(args.content))
       return { ok: true, summary: 'Memory saved' }
+    case 'list_memory': {
+      const scope = args.scope as 'project' | 'global'
+      let projectRoot: string | undefined
+      if (scope === 'project' && args.project) {
+        const resolved = await resolveProjectOrError(String(args.project))
+        if ('error' in resolved) return resolved.error
+        projectRoot = resolved.root
+      }
+      const [klennyMd, autoIndex, topics] = await Promise.all([
+        scope === 'global' ? loadGlobalMemory() : loadProjectMemory(projectRoot),
+        scope === 'global' ? Promise.resolve('') : loadAutoMemoryIndex(projectRoot),
+        listMemoryTopics(scope, projectRoot)
+      ])
+      const content = [klennyMd, autoIndex].filter(Boolean).join('\n\n')
+      return {
+        ok: true,
+        summary: `${scope === 'global' ? 'Global' : projectRoot ?? 'current project'} memory overview (${topics.length} auto-memory topic(s))`,
+        data: { project: projectRoot, content, topics }
+      }
+    }
     case 'write_skill': {
       try {
         await writeSkill(String(args.name), args.scope as 'project' | 'global', String(args.description), String(args.body))
@@ -716,25 +742,6 @@ async function dispatchTool(
     }
     case 'list_projects':
       return listProjectsTool()
-    case 'read_other_project_file':
-      return readOtherProjectFileTool(
-        args as { project: string; path: string; offset?: number; limit?: number }
-      )
-    case 'grep_other_project':
-      return grepOtherProjectTool(
-        args as {
-          project: string
-          pattern: string
-          path?: string
-          glob?: string
-          case_insensitive?: boolean
-          context?: number
-        }
-      )
-    case 'glob_other_project':
-      return globOtherProjectTool(args as { project: string; pattern: string; cwd?: string })
-    case 'read_other_project_memory':
-      return readOtherProjectMemoryTool(args as { project: string; scope: 'project' | 'global'; topic?: string })
     case 'save_plan': {
       const plan = await savePlan(String(args.slug), String(args.title), String(args.markdown))
       return { ok: true, summary: 'Plan saved', data: { plan } }
@@ -861,14 +868,8 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       return `Searching codebase for "${str(args.query) ?? ''}"`
     case 'list_projects':
       return 'Listing other known projects'
-    case 'read_other_project_file':
-      return `Reading ${str(args.path) ?? 'file'} from ${str(args.project) ?? 'another project'}`
-    case 'grep_other_project':
-      return `Searching "${str(args.pattern) ?? ''}" in ${str(args.project) ?? 'another project'}`
-    case 'glob_other_project':
-      return `Finding files matching "${str(args.pattern) ?? ''}" in ${str(args.project) ?? 'another project'}`
-    case 'read_other_project_memory':
-      return `Reading memory from ${str(args.project) ?? 'another project'}`
+    case 'list_memory':
+      return `Listing ${str(args.scope) ?? 'project'} memory${args.project ? ` for ${str(args.project)}` : ''}`
     case 'open_settings_panel':
       return `Opening Settings \u2192 ${str(args.section) ?? 'integrations'}`
     case 'gmail_list_messages':

@@ -38,20 +38,30 @@ describe('tool definitions', () => {
     expect(params.required).toEqual(['scope'])
   })
 
-  test('cross-project read-only tools are available in both plan and agent mode', () => {
-    const crossProjectTools = [
-      'list_projects',
-      'read_other_project_file',
-      'grep_other_project',
-      'glob_other_project',
-      'read_other_project_memory'
-    ]
+  test('list_projects and list_memory are available in both plan and agent mode', () => {
+    const names = ['list_projects', 'list_memory']
     const planTools = getToolDefinitions('plan').map((t) => t.function.name)
     const agentTools = getToolDefinitions('agent').map((t) => t.function.name)
-    for (const name of crossProjectTools) {
+    for (const name of names) {
       expect(planTools).toContain(name)
       expect(agentTools).toContain(name)
     }
+  })
+
+  test('read_other_project_file/grep_other_project/glob_other_project/read_other_project_memory no longer exist as tools', () => {
+    const planTools = getToolDefinitions('plan').map((t) => t.function.name)
+    const agentTools = getToolDefinitions('agent').map((t) => t.function.name)
+    for (const name of ['read_other_project_file', 'grep_other_project', 'glob_other_project', 'read_other_project_memory']) {
+      expect(planTools).not.toContain(name)
+      expect(agentTools).not.toContain(name)
+    }
+  })
+
+  test("read_memory's schema accepts an optional `project` argument for cross-project reads", () => {
+    const def = getToolDefinitions('agent').find((t) => t.function.name === 'read_memory')
+    expect(def).toBeDefined()
+    const params = def!.function.parameters as { properties: Record<string, unknown> }
+    expect(params.properties.project).toBeDefined()
   })
 
   test('restrictTo narrows the tool set for restricted subagents', () => {

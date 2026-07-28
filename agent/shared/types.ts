@@ -145,6 +145,7 @@ export type ToolName =
   | 'read_skill'
   | 'read_memory'
   | 'write_memory'
+  | 'list_memory'
   | 'write_skill'
   | 'write_subagent'
   | 'read_subagent'
@@ -153,10 +154,6 @@ export type ToolName =
   | 'save_plan'
   | 'codebase_search'
   | 'list_projects'
-  | 'read_other_project_file'
-  | 'grep_other_project'
-  | 'glob_other_project'
-  | 'read_other_project_memory'
   | 'open_settings_panel'
   | 'gmail_list_messages'
   | 'gmail_get_message'
@@ -172,11 +169,15 @@ export type ToolName =
  *  semantic code search). Gated off entirely on Assistant-kind tabs and whenever no workspace
  *  is open — see getToolDefinitions() in agent/tools/definitions.ts.
  *
- *  read_file/grep/glob are included even though they're read-only: they resolve paths against
- *  getWorkspace(), which is a single process-global singleton, not scoped per tab or window. If
- *  any window has a project open, those calls would otherwise silently succeed against that
- *  ambient project even from an Assistant-kind tab that has no workspace of its own — see the
- *  "Coding tools available inside an Assistant-kind tab" investigation/fix. */
+ *  read_file/grep/glob are included even though they're now global, read-only tools that can
+ *  reach any absolute path on the host (not sandboxed to a workspace — see file-ops.ts's
+ *  resolveWorkspacePath and search.ts): they still resolve *relative* paths against
+ *  getWorkspace(), a single process-global singleton not scoped per tab or window, and still
+ *  default to the workspace root when no path is given at all. If any window has a project
+ *  open, a relative-path or no-path call would otherwise silently succeed against that ambient
+ *  project even from an Assistant-kind tab that has no workspace of its own — see the
+ *  "Coding tools available inside an Assistant-kind tab" investigation/fix. Assistant tabs
+ *  simply never get these tools offered at all, absolute-path global reach included. */
 export const CODING_ONLY_TOOLS: ToolName[] = [
   'read_file',
   'write_file',
@@ -203,12 +204,9 @@ export const ASSISTANT_TOOLS: ToolName[] = [
   'web_search',
   'fetch_url',
   'list_projects',
-  'read_other_project_file',
-  'grep_other_project',
-  'glob_other_project',
-  'read_other_project_memory',
   'read_memory',
   'write_memory',
+  'list_memory',
   'write_skill',
   'write_subagent',
   'read_subagent',
@@ -241,14 +239,11 @@ export const READ_ONLY_TOOLS: ToolName[] = [
   'list_skills',
   'read_skill',
   'read_memory',
+  'list_memory',
   'read_subagent',
   'ask_question',
   'codebase_search',
-  'list_projects',
-  'read_other_project_file',
-  'grep_other_project',
-  'glob_other_project',
-  'read_other_project_memory'
+  'list_projects'
 ]
 
 export const MUTATING_TOOLS: ToolName[] = [

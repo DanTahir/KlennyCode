@@ -20,14 +20,19 @@ export function resolveWorkspacePath(relOrAbs: string): string {
     // rather than an unhandled exception that kills the whole agent turn.
     throw new Error(`Invalid path: expected a non-empty string, got ${JSON.stringify(relOrAbs)}`)
   }
+  if (isAbsolute(relOrAbs)) return resolve(relOrAbs)
   const ws = getWorkspace()
-  if (!ws) throw new Error('No workspace open.')
-  return isAbsolute(relOrAbs) ? resolve(relOrAbs) : resolve(ws, relOrAbs)
+  if (!ws) throw new Error('No workspace open. Pass an absolute path to reach a file outside a workspace.')
+  return resolve(ws, relOrAbs)
 }
 
+// read_file (and grep/glob, see search.ts) are deliberately NOT sandboxed to the workspace —
+// per user request, they're global, read-only tools that can see anything the OS user running
+// Klenny can see (any absolute path on the host, or a path relative to the open workspace).
+// write_file/edit_file/multi_edit/delete_file remain workspace-only (see assertInWorkspace below)
+// since mutation is the operation that actually needs the safety rail.
 export async function readFileTool(args: { path: string; offset?: number; limit?: number }): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path)
-  if (!assertInWorkspace(abs)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   const raw = await readFile(abs, 'utf8')
   const content = toLf(raw)
   const st = await stat(abs)

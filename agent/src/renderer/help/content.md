@@ -20,12 +20,12 @@ Read-only tools only. Klenny Code will ask clarifying questions, research your c
 
 | Tool | What it does |
 |------|--------------|
-| `read_file` | Read file contents (supports offset/limit) |
-| `write_file` | Create or overwrite a file |
-| `edit_file` | Replace a unique string in a file |
-| `delete_file` | Delete a file |
-| `grep` | Regex search via ripgrep |
-| `glob` | Find files by pattern |
+| `read_file` | Read file contents (supports offset/limit) — global: any absolute path on the host, not just the open project |
+| `write_file` | Create or overwrite a file (sandboxed to the current project) |
+| `edit_file` | Replace a unique string in a file (sandboxed to the current project) |
+| `delete_file` | Delete a file (sandboxed to the current project) |
+| `grep` | Regex search via ripgrep — global, same as `read_file` |
+| `glob` | Find files by pattern — global, same as `read_file` |
 | `run_command` | Run shell commands (with approval) |
 | `read_terminal` | Read the persistent log of the Terminal panel below, including past sessions |
 | `web_search` / `fetch_url` | Look up docs and references |
@@ -33,10 +33,11 @@ Read-only tools only. Klenny Code will ask clarifying questions, research your c
 | `task` | Spawn an isolated subagent |
 | `read_skill` / `write_skill` | Load or author a Cursor-style skill |
 | `read_subagent` / `write_subagent` | Inspect or author a custom subagent type |
-| `read_memory` | Load the full content of an auto-memory topic note |
-| `write_memory` | Persist notes for future sessions |
+| `read_memory` | Load the full content of an auto-memory topic note (optional `project` to read a different known project's memory) |
+| `write_memory` | Persist notes for future sessions (always the current project or global — never another project) |
+| `list_memory` | Overview of a memory scope: KLENNY.md + auto-memory index + topic list (optional `project`) |
 | `codebase_search` | Semantic search across the codebase (only available if enabled in Settings) |
-| `list_projects` / `read_other_project_file` / `grep_other_project` / `glob_other_project` / `read_other_project_memory` | Read-only access to *other* projects you've previously opened |
+| `list_projects` | List other projects you've previously opened, to pass to read_file/grep/glob/read_memory/list_memory |
 | `gmail_list_messages` / `gmail_get_message` / `gmail_send_message` | Read (and, if enabled, send) email via your connected Gmail account |
 | `discord_post_message` | Post to a Discord channel or DM via your connected bot |
 | `scheduler_create_task` / `scheduler_update_task` / `scheduler_delete_task` | Manage recurring background tasks |

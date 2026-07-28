@@ -88,7 +88,7 @@ export async function buildSystemPrompt(
     globalMem && `Global memory:\n${globalMem}`,
     autoMem && `Auto-memory index:\n${autoMem}`,
     otherProjects.length > 0 &&
-      `Other known projects (read-only — use read_other_project_file/grep_other_project/glob_other_project/read_other_project_memory to reference or port things from these; never write to them):\n${otherProjects.map((p) => `- ${p}`).join('\n')}`,
+      `Other known projects (read-only — use read_file/grep/glob with an absolute path into one of these to reference or port things from it, or read_memory/list_memory with \`project\` set to its path to look at its memory notes; never write to them):\n${otherProjects.map((p) => `- ${p}`).join('\n')}`,
     skillsCatalogPrompt(skills),
     `Subagents:\n${subagentsCatalog(subagents)}`
   ].filter(Boolean)

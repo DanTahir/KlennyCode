@@ -214,12 +214,13 @@ export function getToolDefinitions(
       function: {
         name: 'read_memory',
         description:
-          'Read the full content of one auto-memory topic note by its exact title, as shown in the Auto-memory index in the system prompt (e.g. "Shell selection feature"). Do NOT use read_file for this — memory notes live outside the workspace tree, not in the project filesystem. Pass scope "assistant" (topic not needed) to read the full shared Assistant-window memory digest on demand, including this tab\'s own entry (the version auto-injected into Assistant-tab prompts each turn excludes the tab\'s own entry; this on-demand read does not).',
+          'Read the full content of one auto-memory topic note by its exact title, as shown in the Auto-memory index in the system prompt (e.g. "Shell selection feature"). Do NOT use read_file for this — memory notes live outside the workspace tree, not in the project filesystem. Pass scope "assistant" (topic not needed) to read the full shared Assistant-window memory digest on demand, including this tab\'s own entry (the version auto-injected into Assistant-tab prompts each turn excludes the tab\'s own entry; this on-demand read does not). For scope "project", pass `project` (a path/name from list_projects) to read a DIFFERENT known project\'s memory instead of the current workspace\'s — omit it to mean the current project. `project` is meaningless for scope "global" (shared everywhere) or "assistant".',
         parameters: {
           type: 'object',
           properties: {
             scope: { type: 'string', enum: ['project', 'global', 'assistant'] },
-            topic: { type: 'string' }
+            topic: { type: 'string' },
+            project: { type: 'string', description: 'Only for scope "project": path/name of a DIFFERENT known project (from list_projects). Omit for the current project.' }
           },
           required: ['scope']
         }
@@ -229,7 +230,7 @@ export function getToolDefinitions(
       type: 'function',
       function: {
         name: 'write_memory',
-        description: 'Persist a memory note (topic + content).',
+        description: 'Persist a memory note (topic + content). Always writes to the current workspace (scope "project") or the shared global store (scope "global") — there is no cross-project write; you can only ever write memory for the project you currently have open.',
         parameters: {
           type: 'object',
           properties: {
@@ -242,6 +243,22 @@ export function getToolDefinitions(
             content: { type: 'string' }
           },
           required: ['scope', 'topic', 'content']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'list_memory',
+        description:
+          'Get a memory overview for a scope: the canonical KLENNY.md content plus the auto-memory index and the full list of auto-memory topic titles (use read_memory to load one topic\'s full content). For scope "project", pass `project` (a path/name from list_projects) to look at a DIFFERENT known project\'s memory instead of the current workspace\'s — omit it to mean the current project.',
+        parameters: {
+          type: 'object',
+          properties: {
+            scope: { type: 'string', enum: ['project', 'global'] },
+            project: { type: 'string', description: 'Only for scope "project": path/name of a DIFFERENT known project (from list_projects). Omit for the current project.' }
+          },
+          required: ['scope']
         }
       }
     },
@@ -376,78 +393,8 @@ export function getToolDefinitions(
       function: {
         name: 'list_projects',
         description:
-          'List other projects Klenny has previously opened on this machine (read-only, excludes the current workspace). Use this to discover exact project paths before calling read_other_project_file / grep_other_project / glob_other_project / read_other_project_memory — e.g. when the user says "port feature X from my other project Y".',
+          'List other projects Klenny has previously opened on this machine (read-only, excludes the current workspace). Use this to discover exact project paths — e.g. before calling read_file/grep/glob with an absolute path into another project, or list_memory/read_memory with a `project` name — when the user says "port feature X from my other project Y".',
         parameters: { type: 'object', properties: {} }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'read_other_project_file',
-        description:
-          'Read a file from a DIFFERENT project Klenny has previously opened (read-only — there is no write/edit equivalent). "project" must be an exact path from list_projects (or an unambiguous folder name). Never use this on the current workspace — use read_file for that.',
-        parameters: {
-          type: 'object',
-          properties: {
-            project: { type: 'string', description: 'Path (or unique folder name) of the other project, as returned by list_projects.' },
-            path: { type: 'string', description: 'File path relative to that project\'s root (or absolute, inside it).' },
-            offset: { type: 'number' },
-            limit: { type: 'number' }
-          },
-          required: ['project', 'path']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'grep_other_project',
-        description: 'Search files with regex (ripgrep) inside a DIFFERENT known project. Same semantics as grep, scoped to that project.',
-        parameters: {
-          type: 'object',
-          properties: {
-            project: { type: 'string', description: 'Path (or unique folder name) of the other project, as returned by list_projects.' },
-            pattern: { type: 'string' },
-            path: { type: 'string' },
-            glob: { type: 'string' },
-            case_insensitive: { type: 'boolean' },
-            context: { type: 'number', description: 'Lines of context before/after each match, 0-10 (default 0).' }
-          },
-          required: ['project', 'pattern']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'glob_other_project',
-        description: 'Find files by glob pattern inside a DIFFERENT known project. Same semantics as glob, scoped to that project.',
-        parameters: {
-          type: 'object',
-          properties: {
-            project: { type: 'string', description: 'Path (or unique folder name) of the other project, as returned by list_projects.' },
-            pattern: { type: 'string' },
-            cwd: { type: 'string' }
-          },
-          required: ['project', 'pattern']
-        }
-      }
-    },
-    {
-      type: 'function',
-      function: {
-        name: 'read_other_project_memory',
-        description:
-          'Read memory from a DIFFERENT known project: its KLENNY.md/auto-memory index and topic list (omit "topic"), or one specific auto-memory topic note (set "topic" to its exact title). Only "scope": "project" is meaningful here — global memory is shared everywhere, so use read_memory for that instead.',
-        parameters: {
-          type: 'object',
-          properties: {
-            project: { type: 'string', description: 'Path (or unique folder name) of the other project, as returned by list_projects.' },
-            scope: { type: 'string', enum: ['project', 'global'] },
-            topic: { type: 'string', description: 'Optional — exact auto-memory topic title. Omit to get the overview + topic list.' }
-          },
-          required: ['project', 'scope']
-        }
       }
     },
     {
@@ -681,16 +628,13 @@ export function getToolDefinitions(
     'list_skills',
     'read_skill',
     'read_memory',
+    'list_memory',
     'read_subagent',
     'ask_question',
     'task',
     'save_plan',
     'codebase_search',
-    'list_projects',
-    'read_other_project_file',
-    'grep_other_project',
-    'glob_other_project',
-    'read_other_project_memory'
+    'list_projects'
   ])
 
   const agentAllowed = new Set<ToolName>([
@@ -709,6 +653,7 @@ export function getToolDefinitions(
     'read_skill',
     'read_memory',
     'write_memory',
+    'list_memory',
     'write_skill',
     'write_subagent',
     'read_subagent',
@@ -716,10 +661,6 @@ export function getToolDefinitions(
     'ask_question',
     'codebase_search',
     'list_projects',
-    'read_other_project_file',
-    'grep_other_project',
-    'glob_other_project',
-    'read_other_project_memory',
     'open_settings_panel',
     'gmail_list_messages',
     'gmail_get_message',

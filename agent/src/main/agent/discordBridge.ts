@@ -7,7 +7,8 @@
  * main/index.ts wires to this function at startup).
  *
  * Natural-language project selection for requests like "review project X" reuses the existing
- * read-only cross-project reference tools (list_projects, read_other_project_file, etc.) rather
+ * cross-project reference tools (list_projects to discover a path, then read_file/grep/glob
+ * with that absolute path) rather
  * than opening the named project as the active workspace — per the plan, ambiguous project name
  * matches should make the subagent ask for clarification in the reply rather than guessing.
  */

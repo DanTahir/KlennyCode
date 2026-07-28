@@ -22,12 +22,9 @@ const BUILT_IN: SubagentTypeSummary[] = [
       'web_search',
       'fetch_url',
       'read_memory',
+      'list_memory',
       'codebase_search',
-      'list_projects',
-      'read_other_project_file',
-      'grep_other_project',
-      'glob_other_project',
-      'read_other_project_memory'
+      'list_projects'
     ],
     builtIn: true
   },
@@ -41,12 +38,9 @@ const BUILT_IN: SubagentTypeSummary[] = [
       'web_search',
       'fetch_url',
       'read_memory',
+      'list_memory',
       'codebase_search',
-      'list_projects',
-      'read_other_project_file',
-      'grep_other_project',
-      'glob_other_project',
-      'read_other_project_memory'
+      'list_projects'
     ],
     builtIn: true
   }

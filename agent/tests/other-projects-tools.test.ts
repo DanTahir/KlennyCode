@@ -48,7 +48,7 @@ afterAll(async () => {
   await rm(currentWorkspaceDir, { recursive: true, force: true })
 })
 
-describe('cross-project read-only tools', () => {
+describe('cross-project reference (list_projects + global read_file/grep/glob + memory project arg)', () => {
   test('listProjectsTool surfaces the other project but not the current workspace', async () => {
     const { listProjectsTool } = await import('../src/main/agent/tools/otherProjects')
     const result = await listProjectsTool()
@@ -58,65 +58,52 @@ describe('cross-project read-only tools', () => {
     expect(projects).not.toContain(currentWorkspaceDir.replace(/\\/g, '/').toLowerCase())
   })
 
-  test('readOtherProjectFileTool reads a file from a known other project', async () => {
-    const { readOtherProjectFileTool } = await import('../src/main/agent/tools/otherProjects')
-    const result = await readOtherProjectFileTool({ project: otherProjectDir, path: 'src/widget.ts' })
+  test('read_file reads a file from a DIFFERENT project via an absolute path, with a current workspace open', async () => {
+    const { readFileTool } = await import('../src/main/agent/tools/file-ops')
+    const result = await readFileTool({ path: join(otherProjectDir, 'src', 'widget.ts') })
     expect(result.ok).toBe(true)
     const data = result.data as { content: string }
     expect(data.content).toContain('renderWidget')
   })
 
-  test('readOtherProjectFileTool rejects an unknown project', async () => {
-    const { readOtherProjectFileTool } = await import('../src/main/agent/tools/otherProjects')
-    const result = await readOtherProjectFileTool({ project: 'nonexistent-project-abc', path: 'src/widget.ts' })
-    expect(result.ok).toBe(false)
-    expect(result.error).toBe('unknown_project')
-  })
-
-  test('readOtherProjectFileTool rejects path traversal outside the resolved project root', async () => {
-    const { readOtherProjectFileTool } = await import('../src/main/agent/tools/otherProjects')
-    const result = await readOtherProjectFileTool({ project: otherProjectDir, path: '../../../etc/passwd' })
-    expect(result.ok).toBe(false)
-    expect(result.error).toBe('sandbox')
-  })
-
-  test('globOtherProjectTool finds files inside the other project', async () => {
-    const { globOtherProjectTool } = await import('../src/main/agent/tools/otherProjects')
-    const result = await globOtherProjectTool({ project: otherProjectDir, pattern: '**/*.ts' })
+  test('glob finds files inside another project via an absolute cwd', async () => {
+    const { globTool } = await import('../src/main/agent/tools/search')
+    const result = await globTool({ pattern: '**/*.ts', cwd: otherProjectDir })
     expect(result.ok).toBe(true)
     const data = result.data as { files: string[] }
     expect(data.files.some((f) => f.includes('widget.ts'))).toBe(true)
   })
 
-  test('grepOtherProjectTool finds matches inside the other project', async () => {
-    const { grepOtherProjectTool } = await import('../src/main/agent/tools/otherProjects')
-    const result = await grepOtherProjectTool({ project: otherProjectDir, pattern: 'renderWidget' })
+  test('grep finds matches inside another project via an absolute path', async () => {
+    const { grepTool } = await import('../src/main/agent/tools/search')
+    const result = await grepTool({ pattern: 'renderWidget', path: otherProjectDir })
     expect(result.ok).toBe(true)
     const data = result.data as { hits: Array<{ file: string; match: boolean }> }
     expect(data.hits.some((h) => h.match && h.file.includes('widget.ts'))).toBe(true)
   })
 
-  test('readOtherProjectMemoryTool returns the overview + topic list when no topic is given', async () => {
-    const { readOtherProjectMemoryTool } = await import('../src/main/agent/tools/otherProjects')
-    const result = await readOtherProjectMemoryTool({ project: otherProjectDir, scope: 'project' })
-    expect(result.ok).toBe(true)
-    const data = result.data as { content: string; topics: string[] }
-    expect(data.content).toContain('Other Project')
-    expect(data.topics).toContain('Widget feature')
+  test('resolveProjectOrError resolves a known project and rejects an unknown one', async () => {
+    const { resolveProjectOrError } = await import('../src/main/agent/tools/otherProjects')
+    const ok = await resolveProjectOrError(otherProjectDir)
+    expect('root' in ok).toBe(true)
+    const bad = await resolveProjectOrError('nonexistent-project-abc')
+    expect('error' in bad).toBe(true)
+    if ('error' in bad) expect(bad.error.error).toBe('unknown_project')
   })
 
-  test('readOtherProjectMemoryTool returns a specific topic note when given one', async () => {
-    const { readOtherProjectMemoryTool } = await import('../src/main/agent/tools/otherProjects')
-    const result = await readOtherProjectMemoryTool({ project: otherProjectDir, scope: 'project', topic: 'Widget feature' })
-    expect(result.ok).toBe(true)
-    const data = result.data as { content: string }
-    expect(data.content).toContain('reusable widget renderer')
+  test('listMemoryTopics/loadProjectMemory/loadAutoMemoryIndex accept an explicit other-project workspace path', async () => {
+    const { loadProjectMemory, loadAutoMemoryIndex, listMemoryTopics } = await import('../src/main/agent/memory/manager')
+    const content = await loadProjectMemory(otherProjectDir)
+    expect(content).toContain('Other Project')
+    const autoIndex = await loadAutoMemoryIndex(otherProjectDir)
+    expect(autoIndex).toContain('Widget feature')
+    const topics = await listMemoryTopics('project', otherProjectDir)
+    expect(topics).toContain('Widget feature')
   })
 
-  test('readOtherProjectMemoryTool rejects scope "global" (not project-specific)', async () => {
-    const { readOtherProjectMemoryTool } = await import('../src/main/agent/tools/otherProjects')
-    const result = await readOtherProjectMemoryTool({ project: otherProjectDir, scope: 'global' })
-    expect(result.ok).toBe(false)
-    expect(result.error).toBe('use_read_memory')
+  test('readMemoryTopic reads a specific topic from another project when given its workspace path', async () => {
+    const { readMemoryTopic } = await import('../src/main/agent/memory/manager')
+    const content = await readMemoryTopic('project', 'Widget feature', otherProjectDir)
+    expect(content).toContain('reusable widget renderer')
   })
 })
