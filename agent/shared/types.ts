@@ -135,6 +135,9 @@ export type ToolName =
   | 'edit_file'
   | 'multi_edit'
   | 'delete_file'
+  | 'read_docx'
+  | 'write_docx'
+  | 'edit_docx'
   | 'grep'
   | 'glob'
   | 'run_command'
@@ -205,6 +208,9 @@ export const ASSISTANT_TOOLS: ToolName[] = [
   'edit_file',
   'multi_edit',
   'delete_file',
+  'read_docx',
+  'write_docx',
+  'edit_docx',
   'grep',
   'glob',
   'web_search',
@@ -242,6 +248,7 @@ export interface ToolResultPayload {
 
 export const READ_ONLY_TOOLS: ToolName[] = [
   'read_file',
+  'read_docx',
   'grep',
   'glob',
   'read_terminal',
@@ -262,6 +269,8 @@ export const MUTATING_TOOLS: ToolName[] = [
   'edit_file',
   'multi_edit',
   'delete_file',
+  'write_docx',
+  'edit_docx',
   'run_command',
   'write_memory',
   'write_skill',
@@ -272,7 +281,15 @@ export const MUTATING_TOOLS: ToolName[] = [
 
 // ---------- Approvals ----------
 
-export type PendingActionKind = 'write_file' | 'edit_file' | 'multi_edit' | 'delete_file' | 'run_command' | 'browser_act'
+export type PendingActionKind =
+  | 'write_file'
+  | 'edit_file'
+  | 'multi_edit'
+  | 'delete_file'
+  | 'write_docx'
+  | 'edit_docx'
+  | 'run_command'
+  | 'browser_act'
 
 export interface PendingAction {
   id: string

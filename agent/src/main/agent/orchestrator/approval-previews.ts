@@ -8,6 +8,9 @@ import { makeDiff } from '../tools/diff'
 import { resolveEditMatch } from '../tools/edit-match'
 import { getDailySpend } from '../spend'
 import { emitToAll } from './state'
+import { loadDocxPackage } from '../docx/package'
+import { buildDocxModel } from '../docx/model'
+import { applyEditOp, type DocxEditOp } from '../docx/ops'
 
 export async function previewMutatingTool(
   name: string,
@@ -46,6 +49,48 @@ export async function previewMutatingTool(
       return { title: `Edit ${path}`, extra: { filePath: path, diff: makeDiff(content, updated, path) } }
     } catch {
       return { title: `Edit ${path}`, extra: { filePath: path } }
+    }
+  }
+  if (name === 'write_docx') {
+    // .docx is a binary zip — there's no meaningful text diff for a from-scratch write, so the
+    // preview is just a structural summary of what will be generated.
+    const children = Array.isArray(args.children) ? (args.children as Array<{ type?: string }>) : []
+    const counts: Record<string, number> = {}
+    for (const c of children) {
+      const t = c?.type ?? 'paragraph'
+      counts[t] = (counts[t] ?? 0) + 1
+    }
+    const partsDesc = Object.entries(counts)
+      .map(([t, n]) => `${n} ${t}${n === 1 ? '' : 's'}`)
+      .join(', ')
+    return {
+      title: `Write ${path}`,
+      extra: { filePath: path, command: `New .docx with ${partsDesc || 'no content'}` }
+    }
+  }
+  if (name === 'edit_docx') {
+    // Dry-run the ops against an in-memory copy of the package (never written to disk here) so
+    // the approval dialog can show a real before/after plaintext diff alongside the plain-English
+    // operation descriptions — mirrors edit_docx's own diff generation in docx/edit.ts.
+    const ops = Array.isArray(args.ops) ? (args.ops as DocxEditOp[]) : []
+    const opsDesc = ops.map((o) => (o && typeof o === 'object' && 'op' in o ? String((o as { op: unknown }).op) : 'op')).join(', ')
+    try {
+      const abs = resolveWorkspacePath(path, root)
+      const buf = await readFile(abs)
+      const pkg = await loadDocxPackage(buf)
+      const beforeText = (await buildDocxModel(pkg)).plainText
+      for (const op of ops) await applyEditOp(pkg, op)
+      const afterText = (await buildDocxModel(pkg)).plainText
+      return {
+        title: `Edit ${path} (${ops.length} op${ops.length === 1 ? '' : 's'})`,
+        extra: {
+          filePath: path,
+          command: opsDesc,
+          diff: beforeText !== afterText ? makeDiff(beforeText, afterText, path) : undefined
+        }
+      }
+    } catch {
+      return { title: `Edit ${path} (${ops.length} op${ops.length === 1 ? '' : 's'})`, extra: { filePath: path, command: opsDesc } }
     }
   }
   if (name === 'multi_edit') {

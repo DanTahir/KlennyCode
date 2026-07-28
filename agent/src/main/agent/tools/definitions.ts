@@ -113,6 +113,72 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'read_docx',
+        description:
+          'Read a Word .docx file into structured JSON: paragraphs (with per-run text/formatting), tables, headers/footers, images, comments, and tracked changes. Always read_docx before edit_docx on a given file so paraIndex/runIndex values line up with the current contents of the file.',
+        parameters: {
+          type: 'object',
+          properties: { path: { type: 'string' } },
+          required: ['path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'write_docx',
+        description:
+          'Create a brand-new Word .docx from a structured spec (paragraphs, headings, runs with formatting, tables, images, page breaks, headers/footers). Overwrites path if it already exists — use edit_docx instead to modify an existing document while preserving everything not explicitly touched (comments, images, revisions, unknown formatting).',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            orientation: { type: 'string', enum: ['portrait', 'landscape'] },
+            header: {
+              type: 'array',
+              description: 'Paragraphs shown in the page header on every page.',
+              items: { type: 'object' }
+            },
+            footer: {
+              type: 'array',
+              description: 'Paragraphs shown in the page footer on every page.',
+              items: { type: 'object' }
+            },
+            children: {
+              type: 'array',
+              description:
+                'Document body blocks in order. Each item is one of: {type:"paragraph", text|runs, heading (1-6), alignment, bullet, numbered, indentLevel, spacingBeforePt, spacingAfterPt}, {type:"image", path, widthPx, heightPx, alignment}, {type:"pageBreak"}, {type:"table", rows: [[{text|runs, colSpan, shading}]], headerRow, columnWidthsPct}. Runs are {text, bold, italic, underline, strike, font, sizePt, color, highlight, break}.',
+              items: { type: 'object' }
+            }
+          },
+          required: ['path', 'children']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'edit_docx',
+        description:
+          'Apply one or more surgical edits to an existing Word .docx by directly patching its underlying XML — every paragraph/run/table/image/comment not explicitly touched survives byte-for-byte (unlike write_docx, which generates a whole new file). Always read_docx first so paraIndex/runIndex addressing matches the current contents of the file; if the file changed on disk since the last read_docx, edit_docx fails with a "stale" error and read_docx must be called again before retrying.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            ops: {
+              type: 'array',
+              description:
+                'Each item is one of: {op:"setRunText", paraIndex, runIndex, text}, {op:"setRunFormat", paraIndex, runIndex, format:{bold,italic,underline,strike,font,sizePt,color,highlight}}, {op:"setParagraphFormat", paraIndex, alignment, style}, {op:"insertParagraph", afterParaIndex, text|runs, heading, alignment}, {op:"deleteParagraph", paraIndex}, {op:"insertTable", afterParaIndex, rows: [[{text|runs, colSpan}]], headerRow}, {op:"insertImage", afterParaIndex, path, widthPx, heightPx, description}, {op:"addComment", paraIndex, runIndexStart, runIndexEnd, text, author}. All ops accept an optional `part` (a header:/footer: key from read_docx, or omitted for the main document) to target headers/footers instead of the body.',
+              items: { type: 'object' }
+            }
+          },
+          required: ['path', 'ops']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'grep',
         description:
           'Search files with regex using ripgrep. Set context to include surrounding lines (like grep -C) — use it instead of a follow-up read_file when the match lines alone are enough to decide what to do or to see what to pass as old_string in edit_file.',

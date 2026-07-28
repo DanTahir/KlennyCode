@@ -52,6 +52,7 @@ import {
 } from '../tools/index'
 import { browserTool, isBrowserActionMutating, buildBrowserApprovalPreview } from '../tools/browser'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
+import { readDocxTool, writeDocxTool, editDocxTool } from '../docx/index'
 import { listProjectsTool, resolveProjectOrError } from '../tools/otherProjects'
 import { writeMemory, readMemoryTopic, loadProjectMemory, loadAutoMemoryIndex, loadGlobalMemory, listMemoryTopics } from '../memory/manager'
 import { buildFullAssistantMemoryDigest } from '../memory/assistantMemory'
@@ -526,7 +527,7 @@ async function executeTool(
     }
   }
 
-  if (['write_file', 'edit_file', 'multi_edit', 'delete_file', 'run_command'].includes(name)) {
+  if (['write_file', 'edit_file', 'multi_edit', 'delete_file', 'write_docx', 'edit_docx', 'run_command'].includes(name)) {
     // 'manual': everything needs review. 'command': only run_command needs review — file edits
     // are auto-applied like 'auto' mode. 'auto': nothing needs review.
     const needsApproval = approvalMode === 'manual' || (approvalMode === 'command' && name === 'run_command')
@@ -648,6 +649,12 @@ async function dispatchTool(
       return multiEditFileTool(args as unknown as { edits: MultiEditOp[] }, fileRoot)
     case 'delete_file':
       return deleteFileTool(args as { path: string }, fileRoot)
+    case 'read_docx':
+      return readDocxTool(args as { path: string }, fileRoot)
+    case 'write_docx':
+      return writeDocxTool(args as any, fileRoot)
+    case 'edit_docx':
+      return editDocxTool(args as any, fileRoot)
     case 'grep':
       return grepTool(
         args as { pattern: string; path?: string; glob?: string; case_insensitive?: boolean; context?: number },
@@ -859,6 +866,12 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
     }
     case 'delete_file':
       return `Deleting ${str(args.path) ?? 'file'}`
+    case 'read_docx':
+      return `Reading ${str(args.path) ?? 'docx file'}`
+    case 'write_docx':
+      return `Writing ${str(args.path) ?? 'docx file'}`
+    case 'edit_docx':
+      return `Editing ${str(args.path) ?? 'docx file'}`
     case 'grep':
       return `Searching for "${str(args.pattern) ?? ''}"`
     case 'glob':
