@@ -26,6 +26,13 @@ export interface ToolGatingOptions {
   /** AppSettings.discordAvailableInCoding — only matters on project-kind tabs; the Assistant tab
    *  is gated purely on discordConnected/discordPostAllowed above. */
   discordAvailableInCoding?: boolean
+  /** (browserAutomation.policy ?? 'off') !== 'off' — every browser action is hard-blocked at
+   *  dispatch time when the policy is 'off' (see loop.ts), so the tool is guaranteed to fail;
+   *  hide it from the schema in that case rather than let the model call something that can
+   *  only ever return an error. Applies identically to project and Assistant tabs — there is no
+   *  isAssistant-specific override like docx's, since browser automation isn't scoped to a
+   *  workspace either way. */
+  browserAutomationAvailable?: boolean
 }
 
 export function getToolDefinitions(
@@ -104,7 +111,7 @@ export function getToolDefinitions(
       function: {
         name: 'multi_edit',
         description:
-          'Batch multiple edit_file-style replacements, across one file or several, into a single call that needs only one approval. Prefer this over several separate edit_file calls whenever you already know all the changes you want to make (for example updating the same file in 3 places, or making a coordinated change across multiple files) - it cuts down on repeated round-trips and approval prompts. Edits are validated as one all-or-nothing batch: if any old_string fails to match, nothing is written. Edits are applied in order, so a later edit can target text produced by an earlier edit to the same file. Each edit follows the same rules as edit_file: old_string must match file contents exactly (read_file first, no line-number prefixes), and replace_all replaces every occurrence of the old_string within that edit. If every edit in the batch targets the same file, you may pass the top-level `path` instead of repeating it on each edit entry — any entry that omits its own `path` inherits the top-level one; entries that do specify their own `path` are left as-is, so a batch can still span multiple files by giving those entries their own `path`.',
+          'Batch multiple edit_file-style replacements, across one file or several, into a single call needing only one approval. Prefer this over separate edit_file calls whenever you already know all the changes you want to make. Validated as one all-or-nothing batch (if any old_string fails to match, nothing is written); edits apply in order, so a later edit can target text an earlier one just produced. Each edit follows edit_file\'s own rules: old_string must match file contents exactly (read_file first, no line-number prefixes). Top-level `path` is an optional default for any edit entry that omits its own `path`, so a batch can still span multiple files by giving those entries their own.',
         parameters: {
           type: 'object',
           properties: {
@@ -277,7 +284,7 @@ export function getToolDefinitions(
       function: {
         name: 'read_terminal',
         description:
-          'Read the persistent log of the user\'s interactive terminal panel for this project — plain text, ANSI colors stripped, capped to a reasonable size with older output auto-trimmed. Unlike run_command (which only sees its own output), this shows what the USER has actually typed/run in their terminal, including in past app sessions (marked with "=== Terminal session started/ended ===" lines). Use it to see context for a command the user mentioned or errors they saw, without asking them to paste it.',
+          'Read the user\'s interactive terminal panel log (plain text, ANSI stripped) — shows what the USER actually typed/ran, including past sessions (marked "=== Terminal session started/ended ==="), unlike run_command which only sees its own output. Use it to see context for a command or error the user mentioned without asking them to paste it.',
         parameters: {
           type: 'object',
           properties: {
@@ -335,7 +342,7 @@ export function getToolDefinitions(
       function: {
         name: 'read_memory',
         description:
-          'Read the full content of one auto-memory topic note by its exact title, as shown in the Auto-memory index in the system prompt (e.g. "Shell selection feature"). Do NOT use read_file for this — memory notes live outside the workspace tree, not in the project filesystem. Pass scope "assistant" (topic not needed) to read the full shared Assistant-window memory digest on demand, including this tab\'s own entry (the version auto-injected into Assistant-tab prompts each turn excludes the tab\'s own entry; this on-demand read does not). For scope "project", pass `project` (a path/name from list_projects) to read a DIFFERENT known project\'s memory instead of the current workspace\'s — omit it to mean the current project. `project` is meaningless for scope "global" (shared everywhere) or "assistant".',
+          'Read the full content of one auto-memory topic note by its exact title (as shown in the Auto-memory index). Not a file — memory notes live outside the workspace tree, so don\'t use read_file for this. Scope "assistant" (no topic needed) returns the full shared Assistant-window digest including this tab\'s own entry, unlike the auto-injected version which excludes it. For scope "project", pass `project` (a path/name from list_projects) to read a different project\'s memory instead of the current one; `project` is meaningless for scope "global"/"assistant".',
         parameters: {
           type: 'object',
           properties: {
@@ -444,7 +451,7 @@ export function getToolDefinitions(
       function: {
         name: 'task',
         description:
-          "Delegate a self-contained chunk of work to a subagent that runs in its own isolated context window and reports back only a final summary. Use it proactively, before doing the work yourself, when a step is open-ended or likely to take many tool calls — broad codebase exploration, multi-file research, hunting for where something is handled, verifying a hypothesis across many files — so that exploration noise (file reads, grep hits, dead ends) stays out of your own context instead of bloating it. Also use it to fan out independent, parallelizable lookups by issuing multiple task calls in the same turn (e.g. researching several unrelated libraries at once). Do NOT delegate a single small, well-scoped edit or lookup you could finish yourself in 1-2 tool calls — the round-trip isn't worth it there. Pick agent_type from the Subagents catalog in the system prompt. Write `prompt` as a fully self-contained brief: the subagent sees nothing else from this conversation, so include all relevant context, files, and the exact question or outcome you need back.",
+          "Delegate a self-contained chunk of work to a subagent that runs in its own isolated context window and reports back only a final summary — keeps that exploration's tool calls and dead ends out of your own context. Pick agent_type from the Subagents catalog in the system prompt. Write `prompt` as a fully self-contained brief: the subagent sees nothing else from this conversation, so include all relevant context, files, and the exact question or outcome you need back.",
         parameters: {
           type: 'object',
           properties: {
@@ -616,12 +623,7 @@ export function getToolDefinitions(
       function: {
         name: 'scheduler_create_task',
         description:
-          'Create a background task that runs as an unattended subagent on a cron schedule (e.g. "0 8 * * *" for every day at 8am). ' +
-          'IMPORTANT — one-time vs. recurring: if the user names a single moment ("at 8pm", "in 10 minutes", "tomorrow morning") without ' +
-          'saying it should repeat, treat it as a ONE-TIME task: set `schedule` to the cron expression for that single next occurrence and ' +
-          'set `maxRuns: 1` so it fires once and deletes itself. Only omit `maxRuns` (unlimited/indefinite) or set it >1 when the user explicitly ' +
-          'asks for repetition ("every day", "every 10 minutes", "three times in a row", "each Monday", etc.) — in the "N times" case, set ' +
-          '`maxRuns` to that N so the task self-deletes after its last run. When in doubt about which the user means, ask.',
+          'Create a background task that runs as an unattended subagent on a cron schedule (e.g. "0 8 * * *" for every day at 8am). See the "Scheduling tasks" note elsewhere in this system prompt for the one-time-vs-recurring rule governing `maxRuns`.',
         parameters: {
           type: 'object',
           properties: {
@@ -633,9 +635,7 @@ export function getToolDefinitions(
             maxRuns: {
               type: 'number',
               description:
-                'Optional cap on total number of firings before the task automatically deletes itself. Use 1 for a one-time task ' +
-                '("at 8pm", "in 10 minutes"), or N for "run N times" ("every 10 minutes, 3 times in a row"). Omit for a task that should ' +
-                'recur indefinitely on its schedule until the user deletes it.'
+                'Cap on total firings before the task self-deletes — 1 for one-time, N for "run N times", omitted for indefinite recurrence. See the "Scheduling tasks" note for the full rule.'
             }
           },
           required: ['name', 'prompt', 'schedule']
@@ -688,7 +688,7 @@ export function getToolDefinitions(
       function: {
         name: 'browser',
         description:
-          "Local Playwright-driven browser automation, multiplexed by `action`. Gated by Settings -> Automation -> Browser automation: policy 'off' blocks every action, 'ask' queues mutating actions (click/type/fill/select/press_key/scroll/drag/submit/evaluate) for user approval with a screenshot preview, 'auto' executes them immediately. Read-only actions (open/close/list_tabs/navigate/snapshot/screenshot/inspect/wait_for/wait) never need approval as long as the policy isn't 'off'. Workflow: open a tab, navigate, then snapshot before acting — the snapshot returns an accessibility-tree-like list of interactive elements each tagged with a stable ref like 'e3'; pass that ref (not a CSS selector) to click/type/fill/select/press_key/scroll/drag/submit. Re-snapshot after any navigation or significant DOM change before reusing old refs, since they can go stale. Use screenshot sparingly (it costs real tokens) — prefer snapshot for deciding what to do next, and screenshot mainly to visually confirm a result or read something not well captured as text. When snapshot's role/name text isn't enough to tell elements apart (e.g. several similar-looking buttons), use `inspect` to run read-only JavaScript in the page and reason your way to the right one — call `klenny.ref(el)` on any element you find (or just return it/a NodeList directly, which auto-refs) to get back a ref string, then act on that ref with click/fill/etc. exactly like a snapshot ref; inspect can never itself click, submit, navigate, or write anything — mutation attempts are rejected. inspect works in subagents/scheduled tasks too. To pause while something runs on the page: prefer `wait_for` (polls for a ref/selector to appear, or falls back to waiting for the page's load state) since it returns as soon as its condition is met; use the plain `wait` action (fixed-duration sleep, e.g. duration_ms: 120000 for two minutes, capped at 5 minutes) only when there's nothing concrete to poll for, such as a server-side job with no visible DOM change. evaluate (raw, unrestricted JS in the page — can mutate/submit/navigate) is disabled by default and never available to subagents; prefer `inspect` for understanding a page and the ref-based actions for acting on it, and only reach for evaluate when the user has enabled it and no other action can do the job. For logins, 2FA, or anything requiring a human's judgment, stop and use ask_question rather than trying to power through. If a CAPTCHA appears in an interactive session (the browser window is visible to the user), don't fail — use ask_question to have the user solve it in the visible window, then re-snapshot and continue; in a headless subagent/scheduled run there's no one to solve it, so report it as a blocking failure instead.",
+          "Local Playwright-driven browser automation, multiplexed by `action`. Mutating actions (click/type/fill/select/press_key/scroll/drag/submit/evaluate) are queued for user approval with a screenshot preview under policy 'ask', or execute immediately under 'auto'; read-only actions (open/close/list_tabs/navigate/snapshot/screenshot/inspect/wait_for/wait) never need approval. Workflow: open a tab, navigate, then snapshot before acting — the snapshot returns interactive elements each tagged with a stable ref like 'e3'; pass that ref (not a CSS selector) to click/type/fill/select/press_key/scroll/drag/submit, and re-snapshot after any navigation or significant DOM change since old refs can go stale. Use screenshot sparingly (costs real tokens) — prefer snapshot, and screenshot mainly to visually confirm a result. When snapshot's role/name text isn't enough to tell similar elements apart, use `inspect` to run read-only JavaScript and call `klenny.ref(el)` on an element (or return it/a NodeList directly) to get back a usable ref; inspect can never itself click, submit, navigate, or mutate, and works in subagents too. Prefer `wait_for` (polls for a ref/selector, returns as soon as met) over `wait` (fixed-duration sleep, capped at 5 minutes) — only use `wait` when there's nothing concrete to poll for, like a server-side job with no visible DOM change. `evaluate` (unrestricted JS — can mutate/navigate) is disabled by default and never available to subagents; prefer `inspect` plus ref-based actions, and only reach for evaluate when the user has enabled it and nothing else can do the job. For logins, 2FA, or anything requiring a human's judgment, stop and use ask_question. If a CAPTCHA appears in an interactive session, use ask_question to have the user solve it in the visible window then re-snapshot and continue; in a headless subagent/scheduled run, report it as a blocking failure instead.",
         parameters: {
           type: 'object',
           properties: {
@@ -727,7 +727,7 @@ export function getToolDefinitions(
             code: {
               type: 'string',
               description:
-                'JavaScript to run in the page. Used by both `inspect` (read-only — reads/queries only; mutation attempts like fetch/click()/innerHTML=/etc. are rejected, available everywhere including subagents) and `evaluate` (unrestricted — can mutate the page; disabled by default, never available to subagents, needs "Allow JavaScript evaluation" in Settings). Prefer `inspect` for figuring out which element is which; call klenny.ref(el) or just return the element/NodeList to get back a ref usable with click/fill/etc.'
+                'JavaScript to run in the page. Used by `inspect` (read-only; mutation attempts like fetch/click()/innerHTML=/etc. are rejected) and `evaluate` (unrestricted — see the tool description for its gating). Call klenny.ref(el) or return the element/NodeList directly to get back a ref usable with click/fill/etc.'
             },
             selector: { type: 'string', description: 'Optional CSS selector used by wait_for instead of a ref.' },
             timeout_ms: { type: 'number', description: 'Timeout for wait_for, in milliseconds (default 5000, capped at 300000/5 minutes).' },
@@ -871,6 +871,13 @@ export function getToolDefinitions(
   const discordOk = Boolean(gating.discordConnected && gating.discordPostAllowed) && (isAssistant || Boolean(gating.discordAvailableInCoding))
   if (!discordOk) {
     defs = defs.filter((t) => !(DISCORD_TOOLS as string[]).includes(t.function.name))
+  }
+
+  // Browser automation: hidden from both project and Assistant tabs whenever the policy is
+  // 'off' (the default) — see browserAutomationAvailable's doc comment above. Plan mode never
+  // included 'browser' in planAllowed in the first place, so this is a no-op there.
+  if (!gating.browserAutomationAvailable) {
+    defs = defs.filter((t) => t.function.name !== 'browser')
   }
 
   return defs

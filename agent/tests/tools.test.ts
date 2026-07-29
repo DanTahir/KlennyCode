@@ -316,8 +316,17 @@ describe('docx/Gmail/Discord tool gating (default-closed, per-option opt-in)', (
     expect(withCodingFlag).toContain('discord_post_message')
   })
 
-  test('browser automation is never gated by docx/Gmail/Discord options — stays available on a project tab with no gating passed', () => {
-    const agentTools = getToolDefinitions('agent').map((t) => t.function.name)
+  test('browser automation is never gated by docx/Gmail/Discord options — stays available on a project tab once browserAutomationAvailable is true, independent of the others', () => {
+    const agentTools = getToolDefinitions('agent', undefined, false, true, false, { browserAutomationAvailable: true }).map(
+      (t) => t.function.name
+    )
     expect(agentTools).toContain('browser')
+  })
+
+  test('browser automation is hidden by default (browserAutomationAvailable defaults to false, matching browserAutomation.policy === \"off\")', () => {
+    const agentTools = getToolDefinitions('agent').map((t) => t.function.name)
+    const assistantTools = getToolDefinitions('agent', undefined, false, false, true).map((t) => t.function.name)
+    expect(agentTools).not.toContain('browser')
+    expect(assistantTools).not.toContain('browser')
   })
 })

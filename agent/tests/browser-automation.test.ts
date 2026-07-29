@@ -21,28 +21,43 @@ describe('browser automation defaults', () => {
 })
 
 describe('browser tool definition + allowlisting', () => {
-  test('agent mode includes the browser tool', () => {
-    const tools = getToolDefinitions('agent').map((t) => t.function.name)
+  test('agent mode includes the browser tool when browserAutomationAvailable is true', () => {
+    const tools = getToolDefinitions('agent', undefined, false, true, false, { browserAutomationAvailable: true }).map(
+      (t) => t.function.name
+    )
     expect(tools).toContain('browser')
   })
 
-  test('plan mode excludes the browser tool (mutating-capable, agent-mode only)', () => {
-    const tools = getToolDefinitions('plan').map((t) => t.function.name)
+  test('browser tool is hidden by default (browserAutomationAvailable defaults to false/absent, matching policy=off)', () => {
+    const tools = getToolDefinitions('agent').map((t) => t.function.name)
+    expect(tools).not.toContain('browser')
+  })
+
+  test('plan mode excludes the browser tool regardless of browserAutomationAvailable (mutating-capable, agent-mode only)', () => {
+    const tools = getToolDefinitions('plan', undefined, false, true, false, { browserAutomationAvailable: true }).map(
+      (t) => t.function.name
+    )
     expect(tools).not.toContain('browser')
   })
 
   test('browser tool is available with no workspace open (Assistant tab) since it needs no file I/O', () => {
-    const tools = getToolDefinitions('agent', 'all', false, false).map((t) => t.function.name)
+    const tools = getToolDefinitions('agent', 'all', false, false, false, { browserAutomationAvailable: true }).map(
+      (t) => t.function.name
+    )
     expect(tools).toContain('browser')
   })
 
-  test('restrictTo can exclude browser for a restricted subagent type', () => {
-    const tools = getToolDefinitions('agent', ['read_file', 'grep']).map((t) => t.function.name)
+  test('restrictTo can exclude browser for a restricted subagent type even when browserAutomationAvailable is true', () => {
+    const tools = getToolDefinitions('agent', ['read_file', 'grep'], false, true, false, { browserAutomationAvailable: true }).map(
+      (t) => t.function.name
+    )
     expect(tools).not.toContain('browser')
   })
 
-  test("restrictTo 'all' keeps browser available", () => {
-    const tools = getToolDefinitions('agent', 'all').map((t) => t.function.name)
+  test("restrictTo 'all' keeps browser available when browserAutomationAvailable is true", () => {
+    const tools = getToolDefinitions('agent', 'all', false, true, false, { browserAutomationAvailable: true }).map(
+      (t) => t.function.name
+    )
     expect(tools).toContain('browser')
   })
 })
@@ -109,7 +124,7 @@ describe("browser 'inspect' action (read-only JS evaluation)", () => {
 
 describe('browser tool definition includes inspect', () => {
   test('the inspect action is a valid enum value on the browser tool schema', () => {
-    const tools = getToolDefinitions('agent')
+    const tools = getToolDefinitions('agent', undefined, false, true, false, { browserAutomationAvailable: true })
     const browserDef = tools.find((t) => t.function.name === 'browser')
     const actionEnum = (browserDef?.function.parameters as { properties: { action: { enum: string[] } } }).properties.action.enum
     expect(actionEnum).toContain('inspect')

@@ -185,7 +185,8 @@ export async function agentLoop(
       docx: true,
       gmailRead: Boolean(settings.hasGmailToken) && settings.automationPermissions['gmail.read'] === 'auto',
       gmailSend: Boolean(settings.hasGmailToken) && settings.automationPermissions['gmail.send'] === 'auto',
-      discord: Boolean(settings.hasDiscordToken) && settings.automationPermissions['discord.post'] === 'auto'
+      discord: Boolean(settings.hasDiscordToken) && settings.automationPermissions['discord.post'] === 'auto',
+      browser: (settings.browserAutomation?.policy ?? 'off') !== 'off'
     }
   )
   const orMessages = toORMessages(
@@ -263,7 +264,8 @@ export async function agentLoop(
         gmailAvailableInCoding: settings.gmailAvailableInCoding,
         discordConnected: settings.hasDiscordToken,
         discordPostAllowed: settings.automationPermissions['discord.post'] === 'auto',
-        discordAvailableInCoding: settings.discordAvailableInCoding
+        discordAvailableInCoding: settings.discordAvailableInCoding,
+        browserAutomationAvailable: (settings.browserAutomation?.policy ?? 'off') !== 'off'
       }
     ).filter(
       (t) => !subagentCtx || t.function.name !== 'task'

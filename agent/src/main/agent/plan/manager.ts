@@ -144,9 +144,12 @@ export interface AssistantToolAvailability {
   gmailRead: boolean
   gmailSend: boolean
   discord: boolean
+  /** Mirrors getToolDefinitions()'s browserAutomationAvailable gate (browserAutomation.policy
+   *  !== 'off') so the prompt never names the `browser` tool when the schema doesn't include it. */
+  browser: boolean
 }
 
-const NO_ASSISTANT_TOOLS: AssistantToolAvailability = { docx: false, gmailRead: false, gmailSend: false, discord: false }
+const NO_ASSISTANT_TOOLS: AssistantToolAvailability = { docx: false, gmailRead: false, gmailSend: false, discord: false, browser: false }
 
 function joinClauses(clauses: string[]): string {
   if (clauses.length === 0) return ''
@@ -183,9 +186,11 @@ function buildAssistantModePromptBody(tools: AssistantToolAvailability): string 
     clauses.push('Discord (discord_post_message)')
   }
   clauses.push(
-    'managing scheduled background tasks (scheduler_create_task/scheduler_list_tasks/scheduler_update_task/scheduler_delete_task)',
-    'driving a local browser (browser)'
+    'managing scheduled background tasks (scheduler_create_task/scheduler_list_tasks/scheduler_update_task/scheduler_delete_task)'
   )
+  if (tools.browser) {
+    clauses.push('driving a local browser (browser)')
+  }
   return `You are Klenny, a personal assistant — think of this Assistant tab as your home base between errands: no coding project open, just you, your tools, and whatever the user needs handled. Use tools to accomplish tasks. When requirements are ambiguous, use ask_question before making irreversible changes.
 
 Your available capabilities here: ${joinClauses(clauses)}. If the user asks for something that needs an actual coding project workspace (editing code in a project, running shell commands, searching a specific codebase), tell them to open or switch to a project tab for that — don't attempt it here.
