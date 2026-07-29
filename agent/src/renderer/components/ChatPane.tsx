@@ -32,6 +32,23 @@ export function ChatPane() {
   const tabError = tabErrors[tab.id]
   const visibleMessages = tab.messages.filter((m) => m.role !== 'tool')
 
+  // compactedThroughMessageId marks the cutoff in the FULL message list (which includes tool
+  // messages), so it may point at a message that's filtered out of visibleMessages above. Resolve
+  // it to the last visible message at or before that cutoff so the banner lands in the right spot
+  // instead of silently never matching.
+  let compactionBoundaryMessageId: string | undefined
+  if (tab.compactedThroughMessageId) {
+    const cutoffIdx = tab.messages.findIndex((m) => m.id === tab.compactedThroughMessageId)
+    if (cutoffIdx >= 0) {
+      for (let i = cutoffIdx; i >= 0; i--) {
+        if (tab.messages[i].role !== 'tool') {
+          compactionBoundaryMessageId = tab.messages[i].id
+          break
+        }
+      }
+    }
+  }
+
   const send = () => {
     if (!canSend) return
     if (!text.trim() && !images.length) return
@@ -73,19 +90,21 @@ export function ChatPane() {
               : 'Ask Klenny Code to explore, plan, or edit your project. Use Plan mode to research before making changes.'}
           </div>
         )}
-        {tab.compactedThroughMessageId && (
-          <div className="text-xs text-klenny-muted border border-klenny-border rounded px-2 py-1">
-            Earlier messages are still shown below, but were summarized for the AI to save context — it now sees a
-            summary of them instead of the originals.
-          </div>
-        )}
         {tabError && (
           <div className="text-sm text-red-400 bg-red-400/10 border border-red-400/30 rounded px-3 py-2">
             {tabError}
           </div>
         )}
         {visibleMessages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
+          <div key={m.id}>
+            <MessageBubble message={m} />
+            {compactionBoundaryMessageId === m.id && (
+              <div className="text-xs text-klenny-muted border border-klenny-border rounded px-2 py-1 mt-4">
+                Messages above this point were summarized for the AI to save context — it now sees a summary of them
+                instead of the originals.
+              </div>
+            )}
+          </div>
         ))}
         {tabPendingActions.map((a) => (
           <ApprovalCard key={a.id} action={a} />
