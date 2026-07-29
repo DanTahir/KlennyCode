@@ -1,5 +1,19 @@
 import { describe, expect, test } from 'bun:test'
-import { getToolDefinitions } from '../src/main/agent/tools/definitions'
+import { getToolDefinitions, type ToolGatingOptions } from '../src/main/agent/tools/definitions'
+
+// Fully-open gating fixture — connected + all relevant permissions allowed + available in
+// coding — used by tests that only care about *other* dimensions (mode/restrictTo/hasWorkspace/
+// isAssistant) and don't want docx/Gmail/Discord's own opt-in gates to interfere.
+const OPEN_GATING: ToolGatingOptions = {
+  docxAvailableInCoding: true,
+  gmailConnected: true,
+  gmailReadAllowed: true,
+  gmailSendAllowed: true,
+  gmailAvailableInCoding: true,
+  discordConnected: true,
+  discordPostAllowed: true,
+  discordAvailableInCoding: true
+}
 
 describe('tool definitions', () => {
   test('plan mode excludes mutating tools', () => {
@@ -79,8 +93,8 @@ describe('tool definitions', () => {
     expect(tools).toContain('task')
   })
 
-  test('assistant tools (Gmail/Discord/scheduler/settings-nav) are present in agent mode', () => {
-    const tools = getToolDefinitions('agent').map((t) => t.function.name)
+  test('assistant tools (Gmail/Discord/scheduler/settings-nav) are present in agent mode when Gmail/Discord are connected+permitted', () => {
+    const tools = getToolDefinitions('agent', undefined, false, true, false, OPEN_GATING).map((t) => t.function.name)
     expect(tools).toContain('open_settings_panel')
     expect(tools).toContain('gmail_list_messages')
     expect(tools).toContain('gmail_get_message')
@@ -93,7 +107,7 @@ describe('tool definitions', () => {
   })
 
   test('hasWorkspace=false on a project-kind tab (no project open, isAssistant not set) hides file tools and coding-only tools but keeps assistant tools', () => {
-    const tools = getToolDefinitions('agent', undefined, false, false).map((t) => t.function.name)
+    const tools = getToolDefinitions('agent', undefined, false, false, false, OPEN_GATING).map((t) => t.function.name)
     expect(tools).not.toContain('write_file')
     expect(tools).not.toContain('edit_file')
     expect(tools).not.toContain('multi_edit')
@@ -126,17 +140,19 @@ describe('tool definitions', () => {
   })
 
   test('hasWorkspace=false overrides restrictTo for file/coding-only tools on a project-kind tab', () => {
-    const tools = getToolDefinitions('agent', ['read_file', 'gmail_list_messages'], false, false).map((t) => t.function.name)
+    const tools = getToolDefinitions('agent', ['read_file', 'gmail_list_messages'], false, false, false, OPEN_GATING).map((t) => t.function.name)
     expect(tools).toEqual(['gmail_list_messages'])
   })
 
   test('hasWorkspace=false still respects restrictTo for workspace-independent tools', () => {
-    const tools = getToolDefinitions('agent', ['web_search', 'gmail_list_messages'], false, false).map((t) => t.function.name)
+    const tools = getToolDefinitions('agent', ['web_search', 'gmail_list_messages'], false, false, false, OPEN_GATING).map(
+      (t) => t.function.name
+    )
     expect(tools).toEqual(['web_search', 'gmail_list_messages'])
   })
 
   test('isAssistant=true offers exactly ASSISTANT_TOOLS regardless of mode/hasWorkspace — file tools included, coding-only tools excluded', () => {
-    const tools = getToolDefinitions('agent', undefined, false, false, true).map((t) => t.function.name)
+    const tools = getToolDefinitions('agent', undefined, false, false, true, OPEN_GATING).map((t) => t.function.name)
     // File tools ARE available on an Assistant tab now (scoped to documentsDirectory by the
     // caller — see documentsDir.ts), unlike a workspace-less project tab.
     expect(tools).toContain('read_file')
@@ -158,14 +174,150 @@ describe('tool definitions', () => {
   })
 
   test('isAssistant=true ignores hasWorkspace=true too — still no run_command/codebase_search', () => {
-    const tools = getToolDefinitions('agent', undefined, true, true, true).map((t) => t.function.name)
+    const tools = getToolDefinitions('agent', undefined, true, true, true, OPEN_GATING).map((t) => t.function.name)
     expect(tools).not.toContain('run_command')
     expect(tools).not.toContain('codebase_search')
     expect(tools).toContain('read_file')
   })
 
   test('isAssistant=true still respects restrictTo (subagent spawned from an Assistant tab)', () => {
-    const tools = getToolDefinitions('agent', ['read_file', 'gmail_list_messages'], false, false, true).map((t) => t.function.name)
+    const tools = getToolDefinitions('agent', ['read_file', 'gmail_list_messages'], false, false, true, OPEN_GATING).map(
+      (t) => t.function.name
+    )
     expect(tools).toEqual(['read_file', 'gmail_list_messages'])
+  })
+})
+
+describe('docx/Gmail/Discord tool gating (default-closed, per-option opt-in)', () => {
+  test('docx tools are hidden on a project-kind tab by default (docxAvailableInCoding defaults to false/absent)', () => {
+    const tools = getToolDefinitions('agent').map((t) => t.function.name)
+    expect(tools).not.toContain('read_docx')
+    expect(tools).not.toContain('write_docx')
+    expect(tools).not.toContain('edit_docx')
+  })
+
+  test('docx tools appear on a project-kind tab once docxAvailableInCoding is true', () => {
+    const tools = getToolDefinitions('agent', undefined, false, true, false, { docxAvailableInCoding: true }).map(
+      (t) => t.function.name
+    )
+    expect(tools).toContain('read_docx')
+    expect(tools).toContain('write_docx')
+    expect(tools).toContain('edit_docx')
+  })
+
+  test('docx tools are always available on the Assistant tab regardless of docxAvailableInCoding', () => {
+    const tools = getToolDefinitions('agent', undefined, false, false, true, { docxAvailableInCoding: false }).map(
+      (t) => t.function.name
+    )
+    expect(tools).toContain('read_docx')
+    expect(tools).toContain('write_docx')
+    expect(tools).toContain('edit_docx')
+  })
+
+  test('docx tools are hidden on a project-kind tab with no workspace open even if docxAvailableInCoding is true', () => {
+    const tools = getToolDefinitions('agent', undefined, false, false, false, { docxAvailableInCoding: true }).map(
+      (t) => t.function.name
+    )
+    expect(tools).not.toContain('read_docx')
+  })
+
+  test('gmail/discord tools are hidden everywhere (including Assistant) by default — no gating options passed', () => {
+    const agentTools = getToolDefinitions('agent').map((t) => t.function.name)
+    const assistantTools = getToolDefinitions('agent', undefined, false, false, true).map((t) => t.function.name)
+    for (const name of ['gmail_list_messages', 'gmail_get_message', 'gmail_send_message', 'discord_post_message']) {
+      expect(agentTools).not.toContain(name)
+      expect(assistantTools).not.toContain(name)
+    }
+  })
+
+  test('gmail read tools require both connection and gmail.read permission, even on the Assistant tab', () => {
+    const connectedOnly = getToolDefinitions('agent', undefined, false, false, true, {
+      gmailConnected: true,
+      gmailReadAllowed: false
+    }).map((t) => t.function.name)
+    expect(connectedOnly).not.toContain('gmail_list_messages')
+
+    const permittedOnly = getToolDefinitions('agent', undefined, false, false, true, {
+      gmailConnected: false,
+      gmailReadAllowed: true
+    }).map((t) => t.function.name)
+    expect(permittedOnly).not.toContain('gmail_list_messages')
+
+    const both = getToolDefinitions('agent', undefined, false, false, true, {
+      gmailConnected: true,
+      gmailReadAllowed: true
+    }).map((t) => t.function.name)
+    expect(both).toContain('gmail_list_messages')
+    expect(both).toContain('gmail_get_message')
+    // send still requires gmail.send separately
+    expect(both).not.toContain('gmail_send_message')
+  })
+
+  test('gmail_send_message requires gmailSendAllowed specifically, independent of gmailReadAllowed', () => {
+    const tools = getToolDefinitions('agent', undefined, false, false, true, {
+      gmailConnected: true,
+      gmailReadAllowed: true,
+      gmailSendAllowed: true
+    }).map((t) => t.function.name)
+    expect(tools).toContain('gmail_send_message')
+  })
+
+  test('gmail tools connected+permitted are still hidden on a project-kind tab unless gmailAvailableInCoding is true', () => {
+    const withoutCodingFlag = getToolDefinitions('agent', undefined, false, true, false, {
+      gmailConnected: true,
+      gmailReadAllowed: true,
+      gmailSendAllowed: true
+    }).map((t) => t.function.name)
+    expect(withoutCodingFlag).not.toContain('gmail_list_messages')
+    expect(withoutCodingFlag).not.toContain('gmail_send_message')
+
+    const withCodingFlag = getToolDefinitions('agent', undefined, false, true, false, {
+      gmailConnected: true,
+      gmailReadAllowed: true,
+      gmailSendAllowed: true,
+      gmailAvailableInCoding: true
+    }).map((t) => t.function.name)
+    expect(withCodingFlag).toContain('gmail_list_messages')
+    expect(withCodingFlag).toContain('gmail_send_message')
+  })
+
+  test('discord_post_message requires both connection and discord.post permission, even on the Assistant tab', () => {
+    const notConnected = getToolDefinitions('agent', undefined, false, false, true, {
+      discordConnected: false,
+      discordPostAllowed: true
+    }).map((t) => t.function.name)
+    expect(notConnected).not.toContain('discord_post_message')
+
+    const notPermitted = getToolDefinitions('agent', undefined, false, false, true, {
+      discordConnected: true,
+      discordPostAllowed: false
+    }).map((t) => t.function.name)
+    expect(notPermitted).not.toContain('discord_post_message')
+
+    const both = getToolDefinitions('agent', undefined, false, false, true, {
+      discordConnected: true,
+      discordPostAllowed: true
+    }).map((t) => t.function.name)
+    expect(both).toContain('discord_post_message')
+  })
+
+  test('discord_post_message connected+permitted is still hidden on a project-kind tab unless discordAvailableInCoding is true', () => {
+    const withoutCodingFlag = getToolDefinitions('agent', undefined, false, true, false, {
+      discordConnected: true,
+      discordPostAllowed: true
+    }).map((t) => t.function.name)
+    expect(withoutCodingFlag).not.toContain('discord_post_message')
+
+    const withCodingFlag = getToolDefinitions('agent', undefined, false, true, false, {
+      discordConnected: true,
+      discordPostAllowed: true,
+      discordAvailableInCoding: true
+    }).map((t) => t.function.name)
+    expect(withCodingFlag).toContain('discord_post_message')
+  })
+
+  test('browser automation is never gated by docx/Gmail/Discord options — stays available on a project tab with no gating passed', () => {
+    const agentTools = getToolDefinitions('agent').map((t) => t.function.name)
+    expect(agentTools).toContain('browser')
   })
 })

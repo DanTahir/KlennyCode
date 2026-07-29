@@ -7,7 +7,7 @@ import { resolveShell } from '../../shells'
 import { loadProjectMemory, loadGlobalMemory, loadAutoMemoryIndex } from '../memory/manager'
 import { listSkills, skillsCatalogPrompt } from '../skills/manager'
 import { listSubagentTypes, subagentsCatalog } from '../subagents/manager'
-import { buildAgentModePrompt, buildPlanModePrompt } from '../plan/manager'
+import { buildAgentModePrompt, buildPlanModePrompt, type AssistantToolAvailability } from '../plan/manager'
 import { readSoul } from '../soul/manager'
 import { buildAssistantMemoryDigestForTab } from '../memory/assistantMemory'
 import type { SubagentContext } from './state'
@@ -56,7 +56,13 @@ export async function buildSystemPrompt(
    *  would otherwise leak the ambient getWorkspace() singleton's project path/shell into an
    *  Assistant tab that has no workspace of its own. See "Assistant tool schema/prompt leak"
    *  investigation. */
-  kind: 'project' | 'assistant' = 'project'
+  kind: 'project' | 'assistant' = 'project',
+  /** Only meaningful when kind === 'assistant' — see AssistantToolAvailability's doc comment.
+   *  Computed by the caller (loop.ts) from the same settings passed to getToolDefinitions()'s
+   *  gating option, so the prompt text and the actual tool schema always agree on what's
+   *  available. Omitted entirely for project-kind tabs/plan mode, where the prompt never names
+   *  these tools by name regardless. */
+  assistantTools?: AssistantToolAvailability
 ): Promise<string> {
   const isAssistant = kind === 'assistant'
   const ws = isAssistant ? null : getWorkspace()
@@ -73,7 +79,7 @@ export async function buildSystemPrompt(
   const shell = resolveShell(shellId)
 
   const parts = [
-    mode === 'plan' ? buildPlanModePrompt(soul) : buildAgentModePrompt(soul, kind),
+    mode === 'plan' ? buildPlanModePrompt(soul) : buildAgentModePrompt(soul, kind, assistantTools),
     // A custom subagent's own instructions (the write_subagent-authored body) take priority over
     // — and go right after — the generic persona/rules above: this is what actually makes a
     // custom subagent type behave as authored instead of degrading into a plain general-purpose

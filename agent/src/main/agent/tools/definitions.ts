@@ -1,6 +1,32 @@
 import type { ToolName } from '@shared/types'
-import { ASSISTANT_TOOLS, CODING_ONLY_TOOLS } from '@shared/types'
+import { ASSISTANT_TOOLS, CODING_ONLY_TOOLS, DOCX_TOOLS, GMAIL_READ_TOOLS, GMAIL_SEND_TOOLS, DISCORD_TOOLS } from '@shared/types'
 import type { ToolDef } from '../../openrouter/client'
+
+/** Gating inputs for the option-dependent tool families (docx/Gmail/Discord) — everything here
+ *  defaults "closed" (undefined ~= false/not-connected) so a caller that forgets to pass one of
+ *  these never accidentally over-shares a tool the user hasn't actually enabled/connected. See
+ *  DOCX_TOOLS/GMAIL_TOOLS/DISCORD_TOOLS doc comments in shared/types.ts for the exact rules. */
+export interface ToolGatingOptions {
+  /** AppSettings.docxAvailableInCoding — only matters on project-kind tabs; Assistant tabs
+   *  always get docx tools (as part of ASSISTANT_TOOLS) regardless of this flag. */
+  docxAvailableInCoding?: boolean
+  /** AppSettings.hasGmailToken */
+  gmailConnected?: boolean
+  /** settings.automationPermissions['gmail.read'] === 'auto' */
+  gmailReadAllowed?: boolean
+  /** settings.automationPermissions['gmail.send'] === 'auto' */
+  gmailSendAllowed?: boolean
+  /** AppSettings.gmailAvailableInCoding — only matters on project-kind tabs; the Assistant tab
+   *  is gated purely on gmailConnected/gmailRead|SendAllowed above. */
+  gmailAvailableInCoding?: boolean
+  /** AppSettings.hasDiscordToken */
+  discordConnected?: boolean
+  /** settings.automationPermissions['discord.post'] === 'auto' */
+  discordPostAllowed?: boolean
+  /** AppSettings.discordAvailableInCoding — only matters on project-kind tabs; the Assistant tab
+   *  is gated purely on discordConnected/discordPostAllowed above. */
+  discordAvailableInCoding?: boolean
+}
 
 export function getToolDefinitions(
   mode: 'agent' | 'plan',
@@ -18,7 +44,10 @@ export function getToolDefinitions(
    *  agent/plan set, so Assistant tabs only ever see exactly the tools ASSISTANT_TOOLS lists
    *  (file tools included, scoped to documentsDirectory; run_command/read_terminal/
    *  codebase_search/save_plan excluded) regardless of `restrictTo`/`hasWorkspace`. */
-  isAssistant = false
+  isAssistant = false,
+  /** docx/Gmail/Discord gating — see ToolGatingOptions. Every field defaults to false/absent
+   *  when omitted, so existing callers (and tests) that don't pass this get none of those tools. */
+  gating: ToolGatingOptions = {}
 ): ToolDef[] {
   const all: ToolDef[] = [
     {
@@ -737,6 +766,9 @@ export function getToolDefinitions(
     'multi_edit',
     'delete_file',
     'read_image',
+    'read_docx',
+    'write_docx',
+    'edit_docx',
     'grep',
     'glob',
     'run_command',
@@ -793,6 +825,7 @@ export function getToolDefinitions(
   if (!isAssistant && !hasWorkspace) {
     const needsWorkspace = new Set<ToolName>([
       ...CODING_ONLY_TOOLS,
+      ...DOCX_TOOLS,
       'read_file',
       'write_file',
       'edit_file',
@@ -810,6 +843,34 @@ export function getToolDefinitions(
   // call that's guaranteed to fail because the caller forgot to check availability first.
   if (!codebaseSearchAvailable) {
     defs = defs.filter((t) => t.function.name !== 'codebase_search')
+  }
+
+  // Word .docx tools: always fine on the Assistant tab (already scoped to exactly
+  // ASSISTANT_TOOLS above). On a project-kind tab, additionally require
+  // AppSettings.docxAvailableInCoding — most coding projects have no use for Word documents,
+  // so keep the tool off the model's radar there unless the user explicitly opts in.
+  if (!isAssistant && !gating.docxAvailableInCoding) {
+    defs = defs.filter((t) => !(DOCX_TOOLS as string[]).includes(t.function.name))
+  }
+
+  // Gmail tools: gated everywhere (Assistant tab included) on being connected and on the
+  // relevant automation permission — a tool that's guaranteed to fail should never be offered.
+  // On a project-kind tab, additionally require AppSettings.gmailAvailableInCoding.
+  const gmailReadOk = Boolean(gating.gmailConnected && gating.gmailReadAllowed) && (isAssistant || Boolean(gating.gmailAvailableInCoding))
+  const gmailSendOk = Boolean(gating.gmailConnected && gating.gmailSendAllowed) && (isAssistant || Boolean(gating.gmailAvailableInCoding))
+  if (!gmailReadOk) {
+    defs = defs.filter((t) => !(GMAIL_READ_TOOLS as string[]).includes(t.function.name))
+  }
+  if (!gmailSendOk) {
+    defs = defs.filter((t) => !(GMAIL_SEND_TOOLS as string[]).includes(t.function.name))
+  }
+
+  // Discord tools: same pattern as Gmail — gated everywhere on being connected and on
+  // automationPermissions['discord.post'], plus AppSettings.discordAvailableInCoding on a
+  // project-kind tab.
+  const discordOk = Boolean(gating.discordConnected && gating.discordPostAllowed) && (isAssistant || Boolean(gating.discordAvailableInCoding))
+  if (!discordOk) {
+    defs = defs.filter((t) => !(DISCORD_TOOLS as string[]).includes(t.function.name))
   }
 
   return defs

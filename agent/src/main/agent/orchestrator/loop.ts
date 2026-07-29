@@ -27,7 +27,7 @@ import type {
   ToolCallBlock,
   ToolResultPayload
 } from '@shared/types'
-import { DEFAULT_BROWSER_AUTOMATION, CODING_ONLY_TOOLS } from '@shared/types'
+import { DEFAULT_BROWSER_AUTOMATION, CODING_ONLY_TOOLS, DOCX_TOOLS } from '@shared/types'
 import { loadSettings } from '../../settings'
 import { resolveDocumentsDirectory } from '../../documentsDir'
 import { getWorkspace } from '../../workspace'
@@ -175,7 +175,18 @@ export async function agentLoop(
     tab.mode,
     settings.shellId,
     subagentCtx,
-    tab.kind === 'assistant' ? 'assistant' : 'project'
+    tab.kind === 'assistant' ? 'assistant' : 'project',
+    // Mirrors exactly the gating passed to getToolDefinitions() below, so the Assistant-tab
+    // prompt text never names a docx/Gmail/Discord tool the schema doesn't actually include.
+    // (docx has no coding-toggle gate here since it's only relevant for kind === 'assistant',
+    // where docx tools are always on regardless of docxAvailableInCoding — that setting only
+    // gates docx tools on project tabs.)
+    {
+      docx: true,
+      gmailRead: Boolean(settings.hasGmailToken) && settings.automationPermissions['gmail.read'] === 'auto',
+      gmailSend: Boolean(settings.hasGmailToken) && settings.automationPermissions['gmail.send'] === 'auto',
+      discord: Boolean(settings.hasDiscordToken) && settings.automationPermissions['discord.post'] === 'auto'
+    }
   )
   const orMessages = toORMessages(
     messagesForWire(tab.messages, tab.compactedThroughMessageId),
@@ -243,7 +254,17 @@ export async function agentLoop(
       subagentCtx?.allowedTools,
       isIndexActive(),
       Boolean(getWorkspace()),
-      tab.kind === 'assistant'
+      tab.kind === 'assistant',
+      {
+        docxAvailableInCoding: settings.docxAvailableInCoding,
+        gmailConnected: settings.hasGmailToken,
+        gmailReadAllowed: settings.automationPermissions['gmail.read'] === 'auto',
+        gmailSendAllowed: settings.automationPermissions['gmail.send'] === 'auto',
+        gmailAvailableInCoding: settings.gmailAvailableInCoding,
+        discordConnected: settings.hasDiscordToken,
+        discordPostAllowed: settings.automationPermissions['discord.post'] === 'auto',
+        discordAvailableInCoding: settings.discordAvailableInCoding
+      }
     ).filter(
       (t) => !subagentCtx || t.function.name !== 'task'
     ),
@@ -401,7 +422,8 @@ export async function agentLoop(
         assistantId,
         subagentCtx,
         settings.shellId,
-        settings.browserAutomation
+        settings.browserAutomation,
+        settings.docxAvailableInCoding
       )
     )
   )
@@ -477,7 +499,8 @@ async function executeTool(
   assistantMessageId: string,
   subagentCtx?: SubagentContext,
   shellId?: string | null,
-  browserAutomation?: BrowserAutomationSettings
+  browserAutomation?: BrowserAutomationSettings,
+  docxAvailableInCoding?: boolean
 ): Promise<{ payload: ToolResultPayload; status: ToolCallBlock['status'] }> {
   let args: Record<string, unknown> = {}
   try {
@@ -501,6 +524,21 @@ async function executeTool(
         ok: false,
         summary: `${name} is not available in an Assistant tab (no project workspace).`,
         error: 'no_workspace'
+      },
+      status: 'error'
+    }
+  }
+
+  // Same defense-in-depth idea as the CODING_ONLY_TOOLS gate above, for the docx tools' own
+  // opt-in flag (AppSettings.docxAvailableInCoding, default off) — independent of
+  // getToolDefinitions() only hiding these from the model on project tabs where the setting is
+  // off. Assistant tabs are unaffected (docx is always part of ASSISTANT_TOOLS there).
+  if (tab.kind !== 'assistant' && !docxAvailableInCoding && (DOCX_TOOLS as string[]).includes(name)) {
+    return {
+      payload: {
+        ok: false,
+        summary: `${name} is disabled on coding tabs. Enable it in Settings \u2192 Integrations \u2192 Word documents (.docx) if you want the agent to use it here.`,
+        error: 'docx_disabled_in_coding'
       },
       status: 'error'
     }

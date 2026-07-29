@@ -187,8 +187,31 @@ export const CODING_ONLY_TOOLS: ToolName[] = ['run_command', 'read_terminal', 'c
  *  click/etc — see agent/tools/browser.ts). Doesn't fit CODING_ONLY_TOOLS (no file/workspace
  *  I/O) or ASSISTANT_TOOLS (needs per-tab session/process state, unlike stateless tools such as
  *  web_search) — gets its own bucket. Agent-mode only (see getToolDefinitions()); available in
- *  both project and Assistant-tab contexts since browsing doesn't require a workspace. */
+ *  both project and Assistant-tab contexts since browsing doesn't require a workspace.
+ *  Deliberately never gated by AppSettings.*AvailableInCoding — browser automation stays fully
+ *  available on project tabs in both Plan and Agent mode, unlike docx/Gmail/Discord below. */
 export const BROWSER_TOOLS: ToolName[] = ['browser']
+
+/** Word .docx tools. Always available on an Assistant tab (part of ASSISTANT_TOOLS below). On a
+ *  project-kind tab they're additionally gated on AppSettings.docxAvailableInCoding (default
+ *  false) — see getToolDefinitions()'s docx gate — since most coding projects have no use for
+ *  Word documents and the model shouldn't be offered a tool most users never want there. */
+export const DOCX_TOOLS: ToolName[] = ['read_docx', 'write_docx', 'edit_docx']
+
+/** Gmail tools. Gated everywhere (Assistant tabs included) on being connected
+ *  (AppSettings.hasGmailToken) and on the relevant AutomationPermissions entry
+ *  ('gmail.read' for list/get, 'gmail.send' for send) — a tool that's guaranteed to fail should
+ *  never be offered to the model. On a project-kind tab they're additionally gated on
+ *  AppSettings.gmailAvailableInCoding (default false) — see getToolDefinitions()'s gmail gate. */
+export const GMAIL_READ_TOOLS: ToolName[] = ['gmail_list_messages', 'gmail_get_message']
+export const GMAIL_SEND_TOOLS: ToolName[] = ['gmail_send_message']
+export const GMAIL_TOOLS: ToolName[] = [...GMAIL_READ_TOOLS, ...GMAIL_SEND_TOOLS]
+
+/** Discord tools. Gated everywhere (Assistant tabs included) on being connected
+ *  (AppSettings.hasDiscordToken) and on the 'discord.post' AutomationPermissions entry. On a
+ *  project-kind tab they're additionally gated on AppSettings.discordAvailableInCoding (default
+ *  false) — see getToolDefinitions()'s discord gate. */
+export const DISCORD_TOOLS: ToolName[] = ['discord_post_message']
 
 /** Canonical, authoritative list of every tool available on an Assistant-kind tab (kind ===
  *  'assistant') — consumed directly by getToolDefinitions() to build its `assistantAllowed` set
@@ -495,12 +518,30 @@ export interface AppSettings {
   gmailClientSecret: string | null
   /** set when a token refresh fails (revoked/expired); cleared on next successful connect */
   lastGmailRefreshError: string | null
+  /** Off by default (opt-in). Whether the Gmail tools (gmail_list_messages/gmail_get_message/
+   *  gmail_send_message — see GMAIL_TOOLS) are offered on regular project (coding) tabs at all,
+   *  in both Plan and Agent mode. Always additionally gated on hasGmailToken and the relevant
+   *  automationPermissions entry regardless of this flag; this flag only controls whether a
+   *  connected+permitted tool is also surfaced outside the Assistant tab, which always gets it
+   *  (subject to the same connection/permission gate). See getToolDefinitions(). */
+  gmailAvailableInCoding: boolean
 
   /** boolean flag only — actual bot token is encrypted separately and never round-trips to the renderer */
   hasDiscordToken: boolean
   /** cached for display once connected, e.g. "Klenny#1234" */
   discordBotTag: string | null
   lastDiscordConnectionError: string | null
+  /** Off by default (opt-in). Whether discord_post_message (see DISCORD_TOOLS) is offered on
+   *  regular project (coding) tabs at all, in both Plan and Agent mode. Always additionally
+   *  gated on hasDiscordToken and automationPermissions['discord.post'] regardless of this flag.
+   *  See getToolDefinitions(). */
+  discordAvailableInCoding: boolean
+
+  /** Off by default (opt-in). Whether the Word .docx tools (read_docx/write_docx/edit_docx —
+   *  see DOCX_TOOLS) are offered on regular project (coding) tabs at all, in both Plan and Agent
+   *  mode. Always available on the Assistant tab regardless of this flag (see ASSISTANT_TOOLS).
+   *  See getToolDefinitions(). */
+  docxAvailableInCoding: boolean
 
   automationPermissions: AutomationPermissions
 
