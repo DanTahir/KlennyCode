@@ -948,6 +948,40 @@ export function SettingsPanel() {
           </section>
 
           <section className="mb-6 space-y-2">
+            <h3 className="font-medium">Tools available in coding windows</h3>
+            <p className="text-xs text-klenny-muted">
+              Word document, Gmail, and Discord tools are always available in the Assistant tab. They're hidden from
+              regular project (Plan/Agent mode) chats by default — turn any of these on to also offer that tool's
+              schema there. Gmail/Discord still additionally require the relevant integration to be connected and
+              its automation permission above to be enabled.
+            </p>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.docxAvailableInCoding}
+                onChange={(e) => void patch({ docxAvailableInCoding: e.target.checked })}
+              />
+              Word document (.docx) tools
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.gmailAvailableInCoding}
+                onChange={(e) => void patch({ gmailAvailableInCoding: e.target.checked })}
+              />
+              Gmail tools
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={settings.discordAvailableInCoding}
+                onChange={(e) => void patch({ discordAvailableInCoding: e.target.checked })}
+              />
+              Discord tools
+            </label>
+          </section>
+
+          <section className="mb-6 space-y-2">
             <h3 className="font-medium">Scheduled tasks</h3>
             <p className="text-xs text-klenny-muted">
               Recurring background tasks that run as unattended agents on a cron schedule, even while the app is
