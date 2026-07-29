@@ -43,6 +43,18 @@ export interface ModelInfo {
   pinned?: boolean
 }
 
+/** Result of one "Compact memory" run (see agent/main/agent/memory/compaction.ts) — surfaced in
+ *  the Memory panel after the run completes. */
+export interface MemoryCompactionResult {
+  scope: 'project' | 'global'
+  beforeCount: number
+  afterCount: number
+  beforeChars: number
+  afterChars: number
+  passes: number
+  backupPath: string | null
+}
+
 // ---------- Message content blocks ----------
 
 export interface TextBlock {

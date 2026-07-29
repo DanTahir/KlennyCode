@@ -1,19 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from 'bun:test'
-import { mock } from 'bun:test'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 // Redirect the global Klenny dir (~/.klenny) to an isolated temp "home" so this test never
-// touches the real user home directory. Must be mocked before dataDir.ts (which calls
-// homedir() from node:os) is loaded anywhere in the process. Same pattern as
-// skills-seeding.test.ts.
-let fakeHome = ''
-
-mock.module('node:os', () => ({
-  homedir: () => fakeHome,
-  tmpdir
-}))
+// touches the real user home directory — see testHomeMock.ts for why the shared mock (not a
+// locally-declared one) must be used.
+import { homeMockState } from './testHomeMock'
 
 // Shared electron mock (getWorkspace() pulls in workspace.ts -> electron).
 import './testElectronMock'
@@ -58,7 +51,7 @@ describe('writeSkill manager guard + scoping', () => {
 
   beforeAll(async () => {
     tempRoot = await mkdtemp(join(tmpdir(), 'klenny-write-skill-'))
-    fakeHome = join(tempRoot, 'home')
+    homeMockState.homeDir = join(tempRoot, 'home')
     workspace = join(tempRoot, 'project')
     const { __resetSeedStateForTests } = await import('../src/main/agent/skills/manager')
     __resetSeedStateForTests()
@@ -81,7 +74,7 @@ describe('writeSkill manager guard + scoping', () => {
   test('writes a global skill under the global Klenny dir', async () => {
     const { writeSkill, listSkills } = await import('../src/main/agent/skills/manager')
     await writeSkill('my-global-skill', 'global', 'A global skill', 'Do the thing.')
-    const raw = await readFile(join(fakeHome, '.klenny', 'skills', 'my-global-skill', 'SKILL.md'), 'utf8')
+    const raw = await readFile(join(homeMockState.homeDir, '.klenny', 'skills', 'my-global-skill', 'SKILL.md'), 'utf8')
     expect(raw).toContain('name: my-global-skill')
     expect(raw).toContain('Do the thing.')
 
@@ -108,7 +101,7 @@ describe('writeSubagentType manager guard + scoping', () => {
 
   beforeAll(async () => {
     tempRoot = await mkdtemp(join(tmpdir(), 'klenny-write-subagent-'))
-    fakeHome = join(tempRoot, 'home')
+    homeMockState.homeDir = join(tempRoot, 'home')
     workspace = join(tempRoot, 'project')
   })
 
@@ -138,7 +131,7 @@ describe('writeSubagentType manager guard + scoping', () => {
   test('writes a global custom subagent under the global Klenny dir', async () => {
     const { writeSubagentType, listSubagentTypes } = await import('../src/main/agent/subagents/manager')
     await writeSubagentType('bug-hunter', 'global', 'Hunts bugs', ['read_file', 'grep'], undefined, 'Find bugs.')
-    const raw = await readFile(join(fakeHome, '.klenny', 'agents', 'bug-hunter.md'), 'utf8')
+    const raw = await readFile(join(homeMockState.homeDir, '.klenny', 'agents', 'bug-hunter.md'), 'utf8')
     expect(raw).toContain('name: bug-hunter')
     expect(raw).toContain('Find bugs.')
 
@@ -196,7 +189,7 @@ describe('buildSystemPrompt injects a custom subagent\'s body into its own run',
 
   beforeAll(async () => {
     tempRoot = await mkdtemp(join(tmpdir(), 'klenny-system-prompt-'))
-    fakeHome = tempRoot
+    homeMockState.homeDir = tempRoot
   })
 
   afterAll(async () => {

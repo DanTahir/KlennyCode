@@ -6,6 +6,7 @@ import type {
   AssistantMemoryPool,
   CostReport,
   IndexStatus,
+  MemoryCompactionResult,
   ModelInfo,
   PlanArtifact,
   QuestionAnswer,
@@ -75,6 +76,7 @@ export const IPC = {
 
   memoryRead: 'memory:read',
   memoryWrite: 'memory:write',
+  memoryCompact: 'memory:compact',
 
   assistantMemoryList: 'assistantMemory:list',
   assistantMemoryDeleteSlot: 'assistantMemory:deleteSlot',
@@ -205,6 +207,10 @@ export interface KlennyApi {
 
   readMemory: (scope: 'project' | 'global') => Promise<string>
   writeMemory: (scope: 'project' | 'global', content: string) => Promise<void>
+  /** Runs the multi-pass "Compact memory" pipeline (see agent/memory/compaction.ts) for the given
+   *  scope's auto-memory notes, using the utility model. Rewrites/prunes notes on disk in place;
+   *  returns a before/after summary. Throws (leaving disk untouched) if any pass fails. */
+  compactMemory: (scope: 'project' | 'global') => Promise<MemoryCompactionResult>
 
   /** Assistant-window shared, auto-compacting memory pool (see AssistantMemoryPool) — a single
    *  workspace-independent pool viewed/managed from the Memory panel. */

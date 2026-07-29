@@ -101,6 +101,15 @@ export function appendTerminalLogMarker(workspace: string, label: string): void 
   appendTerminalLog(workspace, `\n=== ${label} ===\n`)
 }
 
+/** Resolves once every write queued so far for this workspace (via `appendTerminalLog`) has
+ *  actually landed on disk. `appendTerminalLog` is intentionally fire-and-forget for real
+ *  callers (the live PTY session must never block on log I/O), but tests need a deterministic
+ *  way to wait for pending writes instead of guessing with a fixed sleep — exposed only for
+ *  that purpose, not used by any production code path. */
+export async function _flushTerminalLogForTests(workspace: string): Promise<void> {
+  await (writeChains.get(workspace) ?? Promise.resolve())
+}
+
 /** Reads the last `lines` lines of this workspace's persistent terminal log, across app
  *  restarts and past sessions (up to whatever rotation has kept). Returns '' if none exists yet. */
 export async function readTerminalLog(workspace: string, lines = 200): Promise<string> {

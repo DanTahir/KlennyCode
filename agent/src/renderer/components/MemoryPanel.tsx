@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { AssistantMemoryPool } from '@shared/types'
+import type { AssistantMemoryPool, MemoryCompactionResult } from '@shared/types'
 
 type Scope = 'project' | 'global' | 'soul' | 'assistant'
 
@@ -10,6 +10,10 @@ export function MemoryPanel() {
   const [restoring, setRestoring] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  const [compacting, setCompacting] = useState(false)
+  const [compactResult, setCompactResult] = useState<MemoryCompactionResult | null>(null)
+  const [compactError, setCompactError] = useState<string | null>(null)
 
   const [pool, setPool] = useState<AssistantMemoryPool | null>(null)
   const [poolBusy, setPoolBusy] = useState(false)
@@ -26,8 +30,25 @@ export function MemoryPanel() {
   useEffect(() => {
     setSavedAt(null)
     setError(null)
+    setCompactResult(null)
+    setCompactError(null)
     void load(scope)
   }, [scope, load])
+
+  const handleCompactMemory = async () => {
+    if (scope !== 'project' && scope !== 'global') return
+    setCompacting(true)
+    setCompactError(null)
+    setCompactResult(null)
+    try {
+      const result = await window.klenny.compactMemory(scope)
+      setCompactResult(result)
+    } catch (err) {
+      setCompactError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setCompacting(false)
+    }
+  }
 
   const handleSave = async () => {
     setSaving(true)
@@ -105,6 +126,50 @@ export function MemoryPanel() {
           editable) always keeps personality from affecting reasoning, plans, or code quality —
           no matter what you write here.
         </p>
+      )}
+      {(scope === 'project' || scope === 'global') && (
+        <div className="border border-klenny-border rounded p-3 space-y-2">
+          <div className="flex items-center gap-3">
+            <button
+              className="px-3 py-1 rounded border border-klenny-border text-sm disabled:opacity-50 flex items-center gap-2"
+              onClick={() => void handleCompactMemory()}
+              disabled={compacting}
+              title="Uses the utility model to rewrite this scope's auto-memory notes into a smaller, cleaner set — pruning outdated/redundant notes. A backup of the originals is saved to disk first."
+            >
+              {compacting && (
+                <span
+                  className="inline-block w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin"
+                  aria-hidden="true"
+                />
+              )}
+              {compacting ? 'Compacting memory…' : 'Compact memory'}
+              {!compacting && compactResult && !compactError && (
+                <span className="text-green-500" aria-hidden="true">
+                  ✓
+                </span>
+              )}
+            </button>
+            <span className="text-xs text-klenny-muted">
+              Rewrites the agent's own auto-memory notes for this scope — doesn't touch{' '}
+              <code>KLENNY.md</code> above.
+            </span>
+          </div>
+          {compactError && <p className="text-xs text-red-400">Compaction failed: {compactError}</p>}
+          {compactResult && !compactError && (
+            <p className="text-xs text-klenny-muted">
+              {compactResult.beforeCount === 0 ? (
+                'No auto-memory notes to compact yet.'
+              ) : (
+                <>
+                  {compactResult.beforeCount} notes ({compactResult.beforeChars.toLocaleString()} chars) →{' '}
+                  {compactResult.afterCount} notes ({compactResult.afterChars.toLocaleString()} chars) across{' '}
+                  {compactResult.passes} pass{compactResult.passes === 1 ? '' : 'es'}.
+                  {compactResult.backupPath && ' Originals backed up to disk before replacing.'}
+                </>
+              )}
+            </p>
+          )}
+        </div>
       )}
       {scope === 'assistant' ? (
         <AssistantMemoryViewer pool={pool} busy={poolBusy} error={error} runAction={runPoolAction} />

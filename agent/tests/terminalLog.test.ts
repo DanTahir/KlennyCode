@@ -5,9 +5,8 @@ import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-const { stripAnsi, appendTerminalLog, appendTerminalLogMarker, readTerminalLog } = await import(
-  '../src/main/terminalLog'
-)
+const { stripAnsi, appendTerminalLog, appendTerminalLogMarker, readTerminalLog, _flushTerminalLogForTests } =
+  await import('../src/main/terminalLog')
 const { projectDataDir } = await import('../src/main/dataDir')
 
 const tempDirs: string[] = []
@@ -24,10 +23,12 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((d) => rm(d, { recursive: true, force: true })))
 })
 
-// Waits for any pending queued writes for this workspace to flush, since appendTerminalLog is
-// fire-and-forget by design (never awaited by its callers, so tests must poll/settle instead).
-async function flush(): Promise<void> {
-  await new Promise((r) => setTimeout(r, 20))
+// Waits for any pending queued writes for this workspace to actually land on disk, since
+// appendTerminalLog is fire-and-forget by design (never awaited by its callers). Uses the
+// module's own write-chain promise rather than a fixed sleep, so it's deterministic regardless
+// of how loaded the machine/test run is.
+async function flush(ws: string = workspace): Promise<void> {
+  await _flushTerminalLogForTests(ws)
 }
 
 describe('stripAnsi', () => {
@@ -94,6 +95,7 @@ describe('appendTerminalLog / readTerminalLog', () => {
     appendTerminalLog(workspace, 'from workspace A\n')
     appendTerminalLog(otherWorkspace, 'from workspace B\n')
     await flush()
+    await flush(otherWorkspace)
 
     const a = await readTerminalLog(workspace)
     const b = await readTerminalLog(otherWorkspace)
@@ -110,9 +112,7 @@ describe('appendTerminalLog / readTerminalLog', () => {
     appendTerminalLog(workspace, bigChunk)
     appendTerminalLog(workspace, bigChunk) // now ~3MB total, over the 2MB cap
     appendTerminalLog(workspace, 'tail marker\n')
-    // Rotation involves reading/rewriting a couple of MB of data on top of several queued
-    // appends — give it more headroom than the default flush() before asserting on the result.
-    await new Promise((r) => setTimeout(r, 300))
+    await flush()
     const raw = await readFile(join(projectDataDir(workspace), 'terminal.log'), 'utf8')
     expect(Buffer.byteLength(raw, 'utf8')).toBeLessThan(2 * 1024 * 1024)
     expect(raw).toContain('tail marker')

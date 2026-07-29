@@ -346,6 +346,45 @@ export async function* streamChatCompletion(opts: {
   }
 }
 
+/**
+ * Generic one-off "system prompt + single user message -> full text response" call, run outside
+ * the normal agent turn loop (no tools, no multi-turn history). Used for mechanical, judgment-light
+ * tasks that still benefit from an LLM: chat-history summarization (`summarizeMessages` below) and
+ * memory-note compaction (see `agent/memory/compaction.ts`). Both callers route to the cheap
+ * utility model rather than the main chat model.
+ */
+export async function runUtilityPrompt(opts: {
+  apiKey: string
+  model: string
+  systemPrompt: string
+  userContent: string
+  signal?: AbortSignal
+  supportsExplicitCaching?: boolean
+  /** explicit output token cap for this call — see streamChatCompletion's maxTokens doc */
+  maxTokens?: number
+}): Promise<string> {
+  const messages: ChatMessage[] = [
+    { role: 'system', content: opts.systemPrompt },
+    { role: 'user', content: opts.userContent }
+  ]
+
+  let out = ''
+  for await (const chunk of streamChatCompletion({
+    apiKey: opts.apiKey,
+    model: opts.model,
+    messages,
+    signal: opts.signal,
+    supportsExplicitCaching: opts.supportsExplicitCaching,
+    maxTokens: opts.maxTokens,
+    // The user content (last message) is unique per call — only cache the static system instruction.
+    includeLastMessageCacheBreakpoint: false
+  })) {
+    if (chunk.type === 'text' && chunk.text) out += chunk.text
+    if (chunk.type === 'error') throw new Error(chunk.error)
+  }
+  return out.trim()
+}
+
 export async function summarizeMessages(
   apiKey: string,
   model: string,
@@ -353,37 +392,23 @@ export async function summarizeMessages(
   signal?: AbortSignal,
   supportsExplicitCaching?: boolean
 ): Promise<string> {
-  const messages: ChatMessage[] = [
-    {
-      role: 'system',
-      content:
-        'Summarize the following conversation history concisely, preserving key decisions, file paths, and open tasks. ' +
-        'This transcript already contains the literal, ground-truth record of every tool call that was actually made, ' +
-        'rendered as "[called toolName({...})]" markers and "tool result (toolName): ..." lines. Only ever report tool ' +
-        'calls, arguments, and outcomes that are literally present in this transcript, using their exact tool names and ' +
-        'argument keys as written — never invent, infer, paraphrase into a different schema, or assume a call succeeded ' +
-        '(or happened at all) beyond what the transcript explicitly shows. If a message merely proposes, plans, or ' +
-        'discusses an action (e.g. plan markdown describing a future edit) without a matching "[called ...]" marker, ' +
-        'summarize it as a proposal/plan — never as something that was executed. When genuinely unsure whether an action ' +
-        'happened, say so explicitly rather than filling in a plausible-sounding but unverified account.'
-    },
-    { role: 'user', content: text }
-  ]
-
-  let out = ''
-  for await (const chunk of streamChatCompletion({
+  return runUtilityPrompt({
     apiKey,
     model,
-    messages,
+    systemPrompt:
+      'Summarize the following conversation history concisely, preserving key decisions, file paths, and open tasks. ' +
+      'This transcript already contains the literal, ground-truth record of every tool call that was actually made, ' +
+      'rendered as "[called toolName({...})]" markers and "tool result (toolName): ..." lines. Only ever report tool ' +
+      'calls, arguments, and outcomes that are literally present in this transcript, using their exact tool names and ' +
+      'argument keys as written — never invent, infer, paraphrase into a different schema, or assume a call succeeded ' +
+      '(or happened at all) beyond what the transcript explicitly shows. If a message merely proposes, plans, or ' +
+      'discusses an action (e.g. plan markdown describing a future edit) without a matching "[called ...]" marker, ' +
+      'summarize it as a proposal/plan — never as something that was executed. When genuinely unsure whether an action ' +
+      'happened, say so explicitly rather than filling in a plausible-sounding but unverified account.',
+    userContent: text,
     signal,
-    supportsExplicitCaching,
-    // The transcript (last message) is unique per call — only cache the static system instruction, never the transcript.
-    includeLastMessageCacheBreakpoint: false
-  })) {
-    if (chunk.type === 'text' && chunk.text) out += chunk.text
-    if (chunk.type === 'error') throw new Error(chunk.error)
-  }
-  return out.trim()
+    supportsExplicitCaching
+  })
 }
 
 export interface EmbeddingsResult {

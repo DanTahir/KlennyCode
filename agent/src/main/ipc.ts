@@ -13,6 +13,7 @@ import { listSkills, readSkill, writeSkill } from './agent/skills/manager'
 import { listSubagentTypes, writeSubagentType } from './agent/subagents/manager'
 import { listPlans, readPlan } from './agent/plan/manager'
 import { readMemoryFile, writeMemoryFile } from './agent/memory/manager'
+import { compactProjectOrGlobalMemory } from './agent/memory/compaction'
 import {
   listAssistantMemory,
   deleteAssistantMemorySlot,
@@ -262,6 +263,21 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.memoryWrite, async (_e, scope: 'project' | 'global', content: string) =>
     writeMemoryFile(scope, content)
   )
+  ipcMain.handle(IPC.memoryCompact, async (_e, scope: 'project' | 'global') => {
+    const settings = await loadSettings()
+    const key = await getApiKey()
+    if (!key) throw new Error('No OpenRouter API key set — add one in Settings before compacting memory.')
+    const models = await fetchModels(key, false)
+    if (models.length === 0) throw new Error('No models available — check your OpenRouter API key / connection.')
+    return compactProjectOrGlobalMemory({
+      scope,
+      apiKey: key,
+      utilityModel: settings.utilityModel,
+      models,
+      workspace: scope === 'project' ? (getWorkspace() ?? undefined) : undefined,
+      promptCachingEnabled: settings.promptCachingEnabled
+    })
+  })
 
   ipcMain.handle(IPC.assistantMemoryList, async () => listAssistantMemory())
   ipcMain.handle(IPC.assistantMemoryDeleteSlot, async (_e, tabId: string) => deleteAssistantMemorySlot(tabId))

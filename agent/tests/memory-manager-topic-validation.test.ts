@@ -2,13 +2,20 @@ import { describe, expect, test, beforeAll, afterAll } from 'bun:test'
 import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+
+// This file exercises 'global' scope (~/.klenny) via the second test below — see testHomeMock.ts
+// for why the shared node:os home mock (not a locally-declared one) must be used.
+import { homeMockState } from './testHomeMock'
 import { electronMockState } from './testElectronMock' // registers the shared electron mock before workspace.ts (imports electron) loads anywhere
 
 let workspaceDir: string
+let fakeHomeDir: string
 
 beforeAll(async () => {
   const userDataDir = await mkdtemp(join(tmpdir(), 'klenny-userdata-memtopic-'))
   workspaceDir = await mkdtemp(join(tmpdir(), 'klenny-memtopic-'))
+  fakeHomeDir = await mkdtemp(join(tmpdir(), 'klenny-fakehome-memtopic-'))
+  homeMockState.homeDir = fakeHomeDir
   electronMockState.userDataDir = userDataDir
 
   const { setWorkspace } = await import('../src/main/workspace')
@@ -19,6 +26,7 @@ afterAll(async () => {
   const { setWorkspace } = await import('../src/main/workspace')
   setWorkspace(null) // avoid leaking workspace state into other test files sharing this process
   await rm(workspaceDir, { recursive: true, force: true })
+  await rm(fakeHomeDir, { recursive: true, force: true })
 })
 
 describe('writeMemory topic sanitization', () => {
