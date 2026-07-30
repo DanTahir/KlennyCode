@@ -4,12 +4,13 @@
 // streaming/tool-dispatch logic itself.
 import { BrowserWindow, Notification } from 'electron'
 import { nanoid } from 'nanoid'
-import type { ChatMessage, ContentBlock, PendingQuestion, QuestionAnswer, TabSession } from '@shared/types'
+import type { ChatMessage, ChecklistItem, ContentBlock, PendingQuestion, QuestionAnswer, TabSession } from '@shared/types'
 import { getApiKey, loadSettings } from '../../settings'
 import { sessionStore } from '../../session/store'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
 import { approvalManager } from '../approval/manager'
 import { updateAssistantMemoryForTab } from '../memory/assistantMemory'
+import { readPlan } from '../plan/manager'
 import { agentLoop } from './loop'
 import { checkSpendCap } from './approval-previews'
 import {
@@ -200,6 +201,63 @@ export async function runUserTurn(tabId: string, userText: string, images?: stri
     // freshly-renamed tab title never reaches the renderer's tab list until some other event
     // happens to refresh it. Broadcast the updated tab so the title change shows up immediately.
     if (titleChanged) emitToAll({ type: 'tab_upserted', tab })
+  })
+}
+
+/** Approves a saved plan into the given tab: switches it to Agent mode, sets up a fresh
+ *  TabSession.activeChecklist (+ its ChecklistBlock ChatMessage so the widget shows up
+ *  immediately), then kicks off the implementation turn.
+ *
+ *  Whether the *content* of that kick-off message needs the full plan text depends on whether
+ *  `tabId` is the same tab that originally ran save_plan (`plan.sourceTabId`) — that tab already
+ *  has the plan sitting in its own conversation history, so re-sending the whole markdown back
+ *  to it would just be redundant context bloat. A different/fallback tab (origin tab closed, or
+ *  no per-tab origin tracked for an older plan) has never seen the plan at all, so it gets the
+ *  full text. Either way the model gets the same instruction to work the checklist as it goes. */
+export async function approvePlan(slug: string, tabId: string): Promise<void> {
+  const tab = sessionStore.getTab(tabId)
+  if (!tab) return
+  const plan = await readPlan(slug)
+  if (!plan) return
+
+  const apiKey = await getApiKey()
+  if (!apiKey) {
+    emitToAll({ type: 'error', tabId, message: 'OpenRouter API key not set.' })
+    return
+  }
+
+  const settings = await loadSettings()
+  checkSpendCap(tab, settings.spendingCapUsd, settings.spendingCapPeriod)
+
+  const isSameTab = plan.sourceTabId === tabId
+  const approvalText = isSameTab
+    ? `Plan approved — proceed with implementation. Call update_checklist as you complete each checklist item, and once more right before your final summary.`
+    : `The following plan has been approved. Implement it now. Call update_checklist as you complete each checklist item, and once more right before your final summary.\n\n# ${plan.title}\n\n${plan.markdown}`
+
+  await launchAgentLoop(tab, apiKey, settings.subagentModel, emitToAll, async () => {
+    tab.mode = 'agent'
+
+    if (plan.checklist.length > 0) {
+      const items: ChecklistItem[] = plan.checklist.map((text, i) => ({ id: `item-${i + 1}`, text, done: false }))
+      const checklistMsg: ChatMessage = {
+        id: nanoid(),
+        role: 'assistant',
+        blocks: [{ type: 'checklist', title: plan.title, items }],
+        createdAt: Date.now()
+      }
+      tab.messages.push(checklistMsg)
+      tab.activeChecklist = { messageId: checklistMsg.id, title: plan.title, items }
+    }
+
+    const userMsg: ChatMessage = { id: nanoid(), role: 'user', blocks: [{ type: 'text', text: approvalText }], createdAt: Date.now() }
+    tab.messages.push(userMsg)
+
+    await sessionStore.updateTab(tab)
+    // One tab_upserted covers the mode switch, the new checklist message, and the new user
+    // message in a single UI update — cheaper than three separate targeted events, and safe
+    // here since nothing else is concurrently mutating tab.messages at this point (we're still
+    // inside launchAgentLoop's beforeStart, before agentLoop itself starts streaming).
+    emitToAll({ type: 'tab_upserted', tab })
   })
 }
 

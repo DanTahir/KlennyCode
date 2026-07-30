@@ -7,7 +7,7 @@ import { getWorkspace, pickWorkspace, setWorkspace } from './workspace'
 import { pickDocumentsDirectory } from './documentsDir'
 import { sessionStore } from './session/store'
 import { fetchModels } from './openrouter/client'
-import { runUserTurn, stopGeneration, resolveQuestion, continueTurn, clearTabState } from './agent/orchestrator'
+import { runUserTurn, approvePlan, stopGeneration, resolveQuestion, continueTurn, clearTabState } from './agent/orchestrator'
 import { approvalManager } from './agent/approval/manager'
 import { listSkills, readSkill, writeSkill } from './agent/skills/manager'
 import { listSubagentTypes, writeSubagentType } from './agent/subagents/manager'
@@ -258,6 +258,9 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle(IPC.plansList, async () => listPlans())
   ipcMain.handle(IPC.planRead, async (_e, slug: string) => readPlan(slug))
+  ipcMain.handle(IPC.planApprove, async (_e, slug: string, tabId: string) => {
+    void approvePlan(slug, tabId)
+  })
 
   ipcMain.handle(IPC.memoryRead, async (_e, scope: 'project' | 'global') => readMemoryFile(scope))
   ipcMain.handle(IPC.memoryWrite, async (_e, scope: 'project' | 'global', content: string) =>

@@ -11,6 +11,7 @@ import { buildAgentModePrompt, buildPlanModePrompt, type AssistantToolAvailabili
 import { readSoul } from '../soul/manager'
 import { buildAssistantMemoryDigestForTab } from '../memory/assistantMemory'
 import type { SubagentContext } from './state'
+import type { ChecklistItem } from '@shared/types'
 
 /**
  * The one genuinely per-request-dynamic piece of context the model needs (for computing relative
@@ -32,11 +33,28 @@ import type { SubagentContext } from './state'
  * it must live in the same never-cached tail slot described above. Excludes `assistantTabId`'s
  * own slot so a tab never "reads back" its own last update as if it were another window's
  * activity.
+ *
+ * `activeChecklist`, when given, folds the tab's live plan-progress checklist (see
+ * TabSession.activeChecklist) into this same uncached trailing note. It has to live here rather
+ * than in the cached system-prompt prefix for the same reason as the digest above: it mutates on
+ * every update_checklist call within a turn, so baking it into the "static" prefix would defeat
+ * prompt caching on every single call. It's also re-derived fresh from `activeChecklist` every
+ * turn rather than relied upon via chat history, so the model always has an accurate done/
+ * not-done view even once context compaction has folded away the ChatMessage that first
+ * displayed it (see the compaction gotcha this avoids in TabSession.activeChecklist's doc
+ * comment).
  */
-export async function buildCurrentTimeNote(assistantTabId?: string): Promise<string> {
+export async function buildCurrentTimeNote(
+  assistantTabId?: string,
+  activeChecklist?: { title: string; items: ChecklistItem[] }
+): Promise<string> {
   const now = new Date()
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  const timeNote = `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
+  let timeNote = `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
+  if (activeChecklist && activeChecklist.items.length > 0) {
+    const lines = activeChecklist.items.map((it, i) => `${i + 1}. [${it.done ? 'x' : ' '}] ${it.text}`)
+    timeNote += `\n\nCurrent plan checklist ("${activeChecklist.title}") — call update_checklist (by 1-based index) as you actually finish each item, not all at once at the end; make one final update_checklist call once everything is done, right before your closing summary:\n${lines.join('\n')}`
+  }
   if (!assistantTabId) return timeNote
   const digest = await buildAssistantMemoryDigestForTab(assistantTabId)
   // Framed as recollection ("Recently, in your other Assistant windows"), not as a labeled

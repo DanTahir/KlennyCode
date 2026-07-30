@@ -72,6 +72,7 @@ const api: KlennyApi = {
 
   listPlans: () => ipcRenderer.invoke(IPC.plansList),
   readPlan: (slug) => ipcRenderer.invoke(IPC.planRead, slug),
+  approvePlan: (slug, tabId) => ipcRenderer.invoke(IPC.planApprove, slug, tabId),
 
   readMemory: (scope) => ipcRenderer.invoke(IPC.memoryRead, scope),
   writeMemory: (scope, content) => ipcRenderer.invoke(IPC.memoryWrite, scope, content),

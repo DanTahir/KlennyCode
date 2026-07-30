@@ -17,6 +17,7 @@ import type {
   ApprovalMode,
   BrowserAutomationSettings,
   ChatMessage,
+  ChecklistBlock,
   ContentBlock,
   ModelInfo,
   PendingActionKind,
@@ -266,7 +267,8 @@ export async function agentLoop(
         discordPostAllowed: settings.automationPermissions['discord.post'] === 'auto',
         discordAvailableInCoding: settings.discordAvailableInCoding,
         browserAutomationAvailable: (settings.browserAutomation?.policy ?? 'off') !== 'off'
-      }
+      },
+      Boolean(tab.activeChecklist)
     ).filter(
       (t) => !subagentCtx || t.function.name !== 'task'
     ),
@@ -279,7 +281,10 @@ export async function agentLoop(
     includeLastMessageCacheBreakpoint,
     priorCacheBreakpointIdx,
     maxTokens: modelInfo.maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS,
-    currentTimeNote: await buildCurrentTimeNote(tab.kind === 'assistant' ? tab.id : undefined)
+    currentTimeNote: await buildCurrentTimeNote(
+      tab.kind === 'assistant' ? tab.id : undefined,
+      tab.activeChecklist
+    )
   })) {
     if (signal.aborted) break
     if (chunk.type === 'text' && chunk.text) {
@@ -832,8 +837,34 @@ async function dispatchTool(
     case 'list_projects':
       return listProjectsTool()
     case 'save_plan': {
-      const plan = await savePlan(String(args.slug), String(args.title), String(args.markdown))
+      const rawChecklist = Array.isArray(args.checklist) ? args.checklist : []
+      const checklist = rawChecklist.filter((x): x is string => typeof x === 'string').slice(0, 20)
+      const plan = await savePlan(String(args.slug), String(args.title), String(args.markdown), checklist, tab.id)
       return { ok: true, summary: 'Plan saved', data: { plan } }
+    }
+    case 'update_checklist': {
+      if (!tab.activeChecklist) {
+        return { ok: false, summary: 'No active checklist on this tab.', error: 'no_active_checklist' }
+      }
+      const rawUpdates = Array.isArray(args.updates) ? args.updates : []
+      const items = tab.activeChecklist.items.map((it) => ({ ...it }))
+      for (const u of rawUpdates) {
+        if (!u || typeof u !== 'object') continue
+        const { index, done } = u as { index?: unknown; done?: unknown }
+        const i = Number(index) - 1
+        if (!Number.isInteger(i) || i < 0 || i >= items.length || typeof done !== 'boolean') continue
+        items[i].done = done
+      }
+      tab.activeChecklist = { ...tab.activeChecklist, items }
+      // Mutate the same ChecklistBlock in place (by message id) rather than appending a new
+      // message — this is what makes the widget update live instead of piling up duplicates.
+      const msg = tab.messages.find((m) => m.id === tab.activeChecklist!.messageId)
+      const block = msg?.blocks.find((b) => b.type === 'checklist') as ChecklistBlock | undefined
+      if (block) block.items = items
+      await sessionStore.updateTab(tab)
+      emit({ type: 'tab_upserted', tab })
+      const doneCount = items.filter((it) => it.done).length
+      return { ok: true, summary: `Checklist updated (${doneCount}/${items.length} done)`, data: { items } }
     }
     case 'task':
       return runSubagent(tab, apiKey, subagentModel, args, emit, signal, subagentDepth)

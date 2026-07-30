@@ -54,7 +54,11 @@ export function getToolDefinitions(
   isAssistant = false,
   /** docx/Gmail/Discord gating — see ToolGatingOptions. Every field defaults to false/absent
    *  when omitted, so existing callers (and tests) that don't pass this get none of those tools. */
-  gating: ToolGatingOptions = {}
+  gating: ToolGatingOptions = {},
+  /** false (default) hides update_checklist entirely — it's only meaningful once a plan has
+   *  actually been approved into this tab (TabSession.activeChecklist is set); until then there's
+   *  nothing for it to update, so the model should never see a tool call guaranteed to fail. */
+  hasActiveChecklist = false
 ): ToolDef[] {
   const all: ToolDef[] = [
     {
@@ -510,9 +514,40 @@ export function getToolDefinitions(
               type: 'string',
               description:
                 'Full plan body in Markdown. Must start with a "# Title" heading, use "##" subheadings (e.g. Overview, Approach/Steps, Risks/Open questions), and use numbered/bulleted lists and tables where they aid clarity.'
+            },
+            checklist: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Ordered list of the plan\'s major milestones (roughly 3-10 short items, one per big step of the Approach/Steps section — not every tiny sub-action). Shown to the user as a live-updating checklist once the plan is approved: call update_checklist to mark each item done as you actually finish it during implementation, and once more right before your closing summary. Testing should be its own item if the plan involves writing/updating tests and that isn\'t already covered by another item.'
             }
           },
-          required: ['slug', 'title', 'markdown']
+          required: ['slug', 'title', 'markdown', 'checklist']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'update_checklist',
+        description:
+          "Mark items in the current plan's live-progress checklist as done/not-done, by 1-based index matching the order shown in the checklist widget. Call this as you actually finish each major milestone (not all at once at the end) so the user watches real progress, plus once more right before your final closing summary once everything is complete.",
+        parameters: {
+          type: 'object',
+          properties: {
+            updates: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  index: { type: 'number', description: '1-based position of the item in the checklist.' },
+                  done: { type: 'boolean' }
+                },
+                required: ['index', 'done']
+              }
+            }
+          },
+          required: ['updates']
         }
       }
     },
@@ -785,6 +820,7 @@ export function getToolDefinitions(
     'read_subagent',
     'task',
     'ask_question',
+    'update_checklist',
     'codebase_search',
     'list_projects',
     'open_settings_panel',
@@ -843,6 +879,14 @@ export function getToolDefinitions(
   // call that's guaranteed to fail because the caller forgot to check availability first.
   if (!codebaseSearchAvailable) {
     defs = defs.filter((t) => t.function.name !== 'codebase_search')
+  }
+
+  // update_checklist: only ever offered once this tab actually has an active checklist to
+  // update (see hasActiveChecklist's doc comment above) — never in plan mode (save_plan is what
+  // creates the checklist in the first place) and never on an Assistant tab (not part of
+  // ASSISTANT_TOOLS, same as save_plan).
+  if (!hasActiveChecklist) {
+    defs = defs.filter((t) => t.function.name !== 'update_checklist')
   }
 
   // Word .docx tools: always fine on the Assistant tab (already scoped to exactly

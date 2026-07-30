@@ -11,14 +11,24 @@ function plansDir(): string | null {
   return join(projectDataDir(ws), 'plans')
 }
 
-export async function savePlan(slug: string, title: string, markdown: string): Promise<PlanArtifact> {
+export async function savePlan(
+  slug: string,
+  title: string,
+  markdown: string,
+  checklist: string[] = [],
+  sourceTabId?: string
+): Promise<PlanArtifact> {
   const dir = plansDir()
   if (!dir) throw new Error('No workspace open')
   await mkdir(dir, { recursive: true })
   const path = join(dir, `${slug}.plan.md`)
-  const content = `---\ntitle: ${title}\nslug: ${slug}\ncreatedAt: ${Date.now()}\n---\n\n${markdown}`
+  const createdAt = Date.now()
+  // checklist/sourceTabId are JSON-encoded on a single frontmatter line each — JSON.stringify of
+  // a string array never contains a raw newline, so this can't collide with the `---` delimiters
+  // even if an item's text itself contains special characters.
+  const content = `---\ntitle: ${title}\nslug: ${slug}\ncreatedAt: ${createdAt}\nchecklist: ${JSON.stringify(checklist)}\nsourceTabId: ${sourceTabId ?? ''}\n---\n\n${markdown}`
   await writeFile(path, content, 'utf8')
-  return { slug, title, markdown, path, createdAt: Date.now() }
+  return { slug, title, markdown, path, createdAt, checklist, sourceTabId }
 }
 
 export async function listPlans(): Promise<PlanArtifact[]> {
@@ -47,13 +57,28 @@ export async function readPlan(slug: string): Promise<PlanArtifact | null> {
     const raw = await readFile(path, 'utf8')
     const titleMatch = raw.match(/^title:\s*(.+)$/m)
     const createdMatch = raw.match(/^createdAt:\s*(\d+)$/m)
+    const checklistMatch = raw.match(/^checklist:\s*(\[.*\])$/m)
+    const sourceTabIdMatch = raw.match(/^sourceTabId:\s*(.*)$/m)
     const body = raw.replace(/^---[\s\S]*?---\n*/, '')
+    let checklist: string[] = []
+    if (checklistMatch) {
+      try {
+        const parsed = JSON.parse(checklistMatch[1])
+        if (Array.isArray(parsed)) checklist = parsed.filter((x): x is string => typeof x === 'string')
+      } catch {
+        // Older plans (pre-checklist field) or a corrupted line — fall back to no checklist
+        // rather than failing the whole read.
+      }
+    }
+    const sourceTabId = sourceTabIdMatch?.[1]?.trim() || undefined
     return {
       slug,
       title: titleMatch?.[1] ?? slug,
       markdown: body.trim(),
       path,
-      createdAt: Number(createdMatch?.[1] ?? Date.now())
+      createdAt: Number(createdMatch?.[1] ?? Date.now()),
+      checklist,
+      sourceTabId
     }
   } catch {
     return null

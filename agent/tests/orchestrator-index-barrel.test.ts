@@ -10,6 +10,7 @@ describe('orchestrator/index.ts barrel completeness', () => {
   test('re-exports every turn-lifecycle function', async () => {
     const mod = await import('../src/main/agent/orchestrator/index')
     expect(typeof mod.runUserTurn).toBe('function')
+    expect(typeof mod.approvePlan).toBe('function')
     expect(typeof mod.continueTurn).toBe('function')
     expect(typeof mod.stopGeneration).toBe('function')
     expect(typeof mod.resolveQuestion).toBe('function')

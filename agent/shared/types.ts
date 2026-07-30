@@ -87,7 +87,27 @@ export interface ToolCallBlock {
   progressMessage?: string
 }
 
-export type ContentBlock = TextBlock | ThinkingBlock | ImageBlock | ToolCallBlock
+/** One major milestone in a plan's live progress checklist (see PlanArtifact.checklist /
+ *  TabSession.activeChecklist). `id` is a stable 1-based-index-derived string ("item-1", ...)
+ *  used by the update_checklist tool to target a specific item without relying on text
+ *  matching, which would break the moment the model paraphrases its own wording slightly. */
+export interface ChecklistItem {
+  id: string
+  text: string
+  done: boolean
+}
+
+/** Renders as a persistent "live progress" widget inside its own ChatMessage (see
+ *  ChecklistWidget.tsx) rather than a generic tool card — created once when a plan is approved,
+ *  then mutated in place (same message id) as update_checklist calls come in, so the user
+ *  watches items check off live instead of seeing a wall of repeated messages. */
+export interface ChecklistBlock {
+  type: 'checklist'
+  title: string
+  items: ChecklistItem[]
+}
+
+export type ContentBlock = TextBlock | ThinkingBlock | ImageBlock | ToolCallBlock | ChecklistBlock
 
 export interface ChatMessage {
   id: string
@@ -168,6 +188,7 @@ export type ToolName =
   | 'task'
   | 'ask_question'
   | 'save_plan'
+  | 'update_checklist'
   | 'codebase_search'
   | 'list_projects'
   | 'open_settings_panel'
@@ -433,6 +454,16 @@ export interface PlanArtifact {
   markdown: string
   path: string
   createdAt: number
+  /** Major milestones from the plan, shown to the user as a live-updating checklist once the
+   *  plan is approved and work begins (see TabSession.activeChecklist / ChecklistBlock). Always
+   *  present for plans saved by the current save_plan tool; may be empty for plans saved by an
+   *  older build that predates this field. */
+  checklist: string[]
+  /** id of the tab whose save_plan call created this plan — lets plan approval tell whether
+   *  it's returning to the same tab (which already has the plan in its own context, so only a
+   *  short approval message is needed) or a different/fallback tab (which needs the full plan
+   *  text). Undefined for plans saved before this field existed. */
+  sourceTabId?: string
 }
 
 // ---------- Sessions / Tabs ----------
@@ -457,6 +488,17 @@ export interface TabSession {
   /** rolling summary text covering all messages up to and including `compactedThroughMessageId`.
    *  Sent to the model as a system message in place of the real (older) messages. */
   compactionSummary?: string
+  /** The live progress checklist for the plan currently being implemented in this tab, if any —
+   *  set once by approvePlan() and mutated in place by the update_checklist tool. Re-injected
+   *  fresh into the system prompt every turn (see buildCurrentTimeNote) so the model always has
+   *  an accurate view of done/not-done state even after context compaction has folded away the
+   *  ChatMessage that first displayed it. `messageId` is the ChatMessage (role: 'assistant',
+   *  single ChecklistBlock) that the UI keeps mutating in place as items complete — never
+   *  compacted away from the UI's perspective since it's addressed directly by id, not by
+   *  position in the recent-messages window. Cleared to undefined only by starting a *new*
+   *  plan's approval (never automatically on completion — the finished checklist stays visible
+   *  as a record of what was done). */
+  activeChecklist?: { messageId: string; title: string; items: ChecklistItem[] }
   /** 'project' (default, omitted on old persisted tabs): a normal workspace-scoped coding tab.
    *  'assistant': a tab opened via the sidebar "Open Assistant" button — has no workspace, only
    *  assistant tools (Gmail/Discord/scheduler/web/cross-project/memory). Workspace-independent:

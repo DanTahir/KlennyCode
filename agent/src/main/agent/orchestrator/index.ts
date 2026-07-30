@@ -5,5 +5,5 @@
 // and scheduled-and-discord.ts (unattended scheduled-task and Discord-bridge entry points) — see
 // each file for details. This file re-exports everything so existing imports
 // (`from './agent/orchestrator'` / `from './orchestrator'`) keep working unchanged.
-export { runUserTurn, continueTurn, stopGeneration, resolveQuestion, clearTabState, getPendingQuestions } from './turn-lifecycle'
+export { runUserTurn, approvePlan, continueTurn, stopGeneration, resolveQuestion, clearTabState, getPendingQuestions } from './turn-lifecycle'
 export { runScheduledTask, runDiscordSubagent } from './scheduled-and-discord'

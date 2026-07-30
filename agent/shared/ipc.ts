@@ -73,6 +73,7 @@ export const IPC = {
 
   plansList: 'plans:list',
   planRead: 'plans:read',
+  planApprove: 'plans:approve',
 
   memoryRead: 'memory:read',
   memoryWrite: 'memory:write',
@@ -204,6 +205,11 @@ export interface KlennyApi {
 
   listPlans: () => Promise<PlanArtifact[]>
   readPlan: (slug: string) => Promise<PlanArtifact | null>
+  /** Approves a saved plan into `tabId`: switches it to Agent mode, sets up its live progress
+   *  checklist, and kicks off the implementation turn. Fire-and-forget from the renderer's
+   *  perspective — the resulting mode switch / checklist message / turn streaming all arrive via
+   *  the usual `agent:stream` events (tab_upserted, message_start, etc.), same as sendMessage. */
+  approvePlan: (slug: string, tabId: string) => Promise<void>
 
   readMemory: (scope: 'project' | 'global') => Promise<string>
   writeMemory: (scope: 'project' | 'global', content: string) => Promise<void>
