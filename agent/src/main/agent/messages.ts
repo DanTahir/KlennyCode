@@ -9,15 +9,23 @@ import type { ChatMessage as ORMessage } from '../openrouter/client'
  * compacted-away prefix removed by the caller) — see `messagesForWire` — while `compactionSummary`,
  * if given, is injected as its own system message standing in for that removed prefix.
  *
- * `justCompacted` should be true only on the turn where compaction actually just ran (i.e.
- * `maybeCompact` returned `compacted: true` this request) — NOT on every subsequent turn that
- * happens to carry a `compactionSummary` forward. When true, an extra instruction is appended
- * telling the model to briefly tell the user compaction happened and then keep working in the
- * same turn. Without this, models tend to treat the injected summary system message as a natural
- * wrap-up point and end the turn with a text-only reply and no tool calls — which the orchestrator
- * can't distinguish from a genuinely finished task, so the agent silently stops mid-task right
- * when compaction fires. See "orchestrator/loop.ts" call site and project memory for the bug this
- * fixes.
+ * Whenever `compactionSummary` is present, two distinct instructions can be attached to it, for
+ * two distinct problems:
+ *
+ * 1. A standing "don't forget older work" cue, appended on EVERY turn that carries a summary
+ *    forward (regardless of `justCompacted`). Without this, models tend to write a final wrap-up
+ *    message describing only the vivid, detailed messages still visible verbatim in the wire
+ *    history, silently ignoring the terser summary block above them — even though that summary is
+ *    genuinely present on the turn where the task finishes, possibly many turns after compaction
+ *    ran. See project memory for the bug this fixes.
+ *
+ * 2. A one-time "this just happened, don't stop" cue, appended only when `justCompacted` is true
+ *    (i.e. `maybeCompact` returned `compacted: true` this request) — NOT on every subsequent turn
+ *    that happens to carry a `compactionSummary` forward. Without this, models tend to treat the
+ *    injected summary system message as a natural wrap-up point and end the turn with a text-only
+ *    reply and no tool calls — which the orchestrator can't distinguish from a genuinely finished
+ *    task, so the agent silently stops mid-task right when compaction fires. See
+ *    "orchestrator/loop.ts" call site and project memory for the bug this fixes.
  *
  * Deliberately does NOT take a "current time" note as a parameter: a live, per-request value
  * like that must never be folded into the system prompt or placed ahead of the conversation —
@@ -33,6 +41,7 @@ export function toORMessages(
   const out: ORMessage[] = [{ role: 'system', content: systemPrompt }]
   if (compactionSummary) {
     let summaryMsg = `Summary of earlier conversation (older messages were omitted to save context):\n\n${compactionSummary}`
+    summaryMsg += `\n\nWhen you eventually write a final wrap-up message summarizing the whole task for the user, make sure it covers everything — including the earlier work captured in this summary above, not just the more recent messages below. Don't let older work get lost just because it's terser or less detailed than recent messages.`
     if (justCompacted) {
       summaryMsg += `\n\nNote: this compaction just happened as part of your current turn, purely to manage context size — it is routine background maintenance, not a stopping point. In your next reply, briefly mention in one short sentence that you compacted/summarized earlier context to save space, then immediately continue the task exactly where you left off, using tool calls as needed. Do not end the turn with just that acknowledgment and no tool calls unless the task was already fully complete before compaction occurred.`
     }

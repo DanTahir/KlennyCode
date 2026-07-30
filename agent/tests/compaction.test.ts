@@ -252,4 +252,24 @@ describe('messagesForWire + toORMessages (history untouched, summary injected on
     const or = toORMessages(messages, 'SYSTEM PROMPT', undefined, true)
     expect(or.filter((m) => m.role === 'system').length).toBe(1)
   })
+
+  test('toORMessages always appends a standing instruction to cover the full task in any eventual final wrap-up, whenever a summary is present', () => {
+    const messages = buildMessages(1)
+
+    const withoutFlag = toORMessages(messages, 'SYSTEM PROMPT', 'earlier stuff happened')
+    expect(String(withoutFlag[1].content)).toContain('final wrap-up')
+    expect(String(withoutFlag[1].content)).toContain('earlier stuff happened')
+
+    const withFlag = toORMessages(messages, 'SYSTEM PROMPT', 'earlier stuff happened', true)
+    expect(String(withFlag[1].content)).toContain('final wrap-up')
+  })
+
+  test('toORMessages includes both the standing final-wrap-up instruction and the one-time continue-working instruction together when justCompacted is true', () => {
+    const messages = buildMessages(1)
+    const or = toORMessages(messages, 'SYSTEM PROMPT', 'earlier stuff happened', true)
+    const content = String(or[1].content)
+    expect(content).toContain('final wrap-up')
+    expect(content).toContain('routine background maintenance')
+    expect(content).toContain('continue')
+  })
 })

@@ -1,10 +1,11 @@
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import type { ChatMessage, ToolCallBlock } from '@shared/types'
+import type { ChatMessage, ChecklistBlock, ToolCallBlock } from '@shared/types'
 import { DEFAULT_BRAND_NAME } from '@shared/types'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallCard } from './ToolCallCard'
 import { DiffViewer } from './DiffViewer'
+import { ChecklistWidget } from './ChecklistWidget'
 import klennyGif from '../assets/klenny.gif'
 import { useAppStore } from '../store/useAppStore'
 
@@ -22,6 +23,17 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           alt={`${brandName} is working…`}
           className="h-12 w-12 rounded-md object-cover"
         />
+      </div>
+    )
+  }
+
+  // A message whose sole block is a checklist is the live plan-progress widget (created by
+  // approvePlan, mutated in place by update_checklist) — render it standalone, not as a chat
+  // bubble.
+  if (!isUser && message.blocks.length === 1 && message.blocks[0].type === 'checklist') {
+    return (
+      <div className="w-full">
+        <ChecklistWidget block={message.blocks[0] as ChecklistBlock} />
       </div>
     )
   }
@@ -50,6 +62,9 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           }
           if (block.type === 'tool_call') {
             const tc = block as ToolCallBlock
+            // update_checklist mutates the standalone checklist widget in place; showing a tool
+            // card for it too would be redundant noise in the transcript.
+            if (tc.toolName === 'update_checklist') return null
             const diff = (tc.result?.data as { diff?: string })?.diff
             return (
               <div key={i} className="mt-2 space-y-2">

@@ -8,6 +8,7 @@ import type { PlanArtifact } from '@shared/types'
 export function PlanTabView({ slug }: { slug: string }) {
   const { plans, upsertPlan, openPlanTabs, tabs, activeTabId, setTabs, setActiveTab, closePlanTab } = useAppStore()
   const [loading, setLoading] = useState(false)
+  const [approving, setApproving] = useState(false)
 
   const plan = plans.find((p) => p.slug === slug)
   const openTab = openPlanTabs.find((t) => t.slug === slug)
@@ -35,14 +36,16 @@ export function PlanTabView({ slug }: { slug: string }) {
   const originTabId = openTab?.originTabId && tabs.some((t) => t.id === openTab.originTabId) ? openTab.originTabId : activeTabId
 
   const approve = async () => {
-    if (!originTabId) return
-    await window.klenny.setTabMode(originTabId, 'agent')
-    setTabs(await window.klenny.listTabs())
-    setActiveTab(originTabId)
-    await window.klenny.sendMessage({
-      tabId: originTabId,
-      text: `The following plan has been approved. Implement it now.\n\n# ${plan.title}\n\n${plan.markdown}`
-    })
+    if (!originTabId || approving) return
+    setApproving(true)
+    try {
+      await window.klenny.approvePlan(slug, originTabId)
+      setTabs(await window.klenny.listTabs())
+      setActiveTab(originTabId)
+      closePlanTab(slug)
+    } finally {
+      setApproving(false)
+    }
   }
 
   return (
@@ -54,11 +57,11 @@ export function PlanTabView({ slug }: { slug: string }) {
         <div className="flex gap-2">
           <button
             className="px-3 py-1.5 rounded-md bg-klenny-accent text-black text-sm font-medium hover:bg-klenny-accent2 disabled:opacity-50"
-            disabled={!originTabId}
+            disabled={!originTabId || approving}
             title={originTabId ? undefined : 'No chat tab to switch to'}
             onClick={() => void approve()}
           >
-            Approve &amp; switch to Agent mode
+            {approving ? 'Approving…' : 'Approve & switch to Agent mode'}
           </button>
           <button
             className="px-3 py-1.5 rounded-md border border-klenny-border text-sm hover:bg-klenny-panel2"
