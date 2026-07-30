@@ -857,9 +857,20 @@ async function dispatchTool(
       tab.activeChecklist = { ...tab.activeChecklist, items }
       // Mutate the same ChecklistBlock in place (by message id) rather than appending a new
       // message — this is what makes the widget update live instead of piling up duplicates.
-      const msg = tab.messages.find((m) => m.id === tab.activeChecklist!.messageId)
+      const msgIdx = tab.messages.findIndex((m) => m.id === tab.activeChecklist!.messageId)
+      const msg = msgIdx >= 0 ? tab.messages[msgIdx] : undefined
       const block = msg?.blocks.find((b) => b.type === 'checklist') as ChecklistBlock | undefined
       if (block) block.items = items
+      // Also relocate the message to the end of the transcript. Mutating in place keeps the
+      // widget from appearing where it was first created (right after plan approval) even as
+      // later tool calls and assistant text get appended below it — from the user's perspective
+      // it looks "stuck" up in the scroll history instead of tracking the work currently
+      // happening at the bottom. Moving it on every update makes it resurface right after
+      // whatever just triggered this call, exactly where the user's eyes already are.
+      if (msg && msgIdx >= 0 && msgIdx !== tab.messages.length - 1) {
+        tab.messages.splice(msgIdx, 1)
+        tab.messages.push(msg)
+      }
       await sessionStore.updateTab(tab)
       emit({ type: 'tab_upserted', tab })
       const doneCount = items.filter((it) => it.done).length
