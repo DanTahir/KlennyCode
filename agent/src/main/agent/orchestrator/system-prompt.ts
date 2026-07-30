@@ -34,26 +34,41 @@ import type { ChecklistItem } from '@shared/types'
  * own slot so a tab never "reads back" its own last update as if it were another window's
  * activity.
  *
- * `activeChecklist`, when given, folds the tab's live plan-progress checklist (see
- * TabSession.activeChecklist) into this same uncached trailing note. It has to live here rather
- * than in the cached system-prompt prefix for the same reason as the digest above: it mutates on
- * every update_checklist call within a turn, so baking it into the "static" prefix would defeat
- * prompt caching on every single call. It's also re-derived fresh from `activeChecklist` every
- * turn rather than relied upon via chat history, so the model always has an accurate done/
- * not-done view even once context compaction has folded away the ChatMessage that first
- * displayed it (see the compaction gotcha this avoids in TabSession.activeChecklist's doc
- * comment).
+ * `activeChecklist`, when given, folds the tab's live progress checklist (see
+ * TabSession.activeChecklist — set by either approvePlan() or the create_checklist tool) into
+ * this same uncached trailing note. It has to live here rather than in the cached system-prompt
+ * prefix for the same reason as the digest above: it mutates on every update_checklist call
+ * within a turn, so baking it into the "static" prefix would defeat prompt caching on every
+ * single call. It's also re-derived fresh from `activeChecklist` every turn rather than relied
+ * upon via chat history, so the model always has an accurate done/not-done view (including any
+ * `evidence` justification — see ChecklistItem's doc comment) even once context compaction has
+ * folded away the ChatMessage that first displayed it (see the compaction gotcha this avoids in
+ * TabSession.activeChecklist's doc comment).
+ *
+ * `justCompacted`, when true, adds one extra sentence IF the checklist has at least one already-
+ * done item: those items are self-reported and were never independently re-verified, so they're
+ * worth spot-checking before being relied on to decide what still needs doing. Deliberately only
+ * fires the turn compaction actually ran (not merely "compaction is possible") and only mentions
+ * *pre-existing* done items — anything marked done or updated with fresh evidence this same turn
+ * is already right there in the model's own immediate context, so reminding it again would just
+ * be redundant noise on an otherwise ordinary turn.
  */
 export async function buildCurrentTimeNote(
   assistantTabId?: string,
-  activeChecklist?: { title: string; items: ChecklistItem[] }
+  activeChecklist?: { title: string; items: ChecklistItem[] },
+  justCompacted?: boolean
 ): Promise<string> {
   const now = new Date()
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
   let timeNote = `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
   if (activeChecklist && activeChecklist.items.length > 0) {
-    const lines = activeChecklist.items.map((it, i) => `${i + 1}. [${it.done ? 'x' : ' '}] ${it.text}`)
-    timeNote += `\n\nCurrent plan checklist ("${activeChecklist.title}") — call update_checklist (by 1-based index) as you actually finish each item, not all at once at the end; make one final update_checklist call once everything is done, right before your closing summary:\n${lines.join('\n')}`
+    const lines = activeChecklist.items.map(
+      (it, i) => `${i + 1}. [${it.done ? 'x' : ' '}] ${it.text}${it.evidence ? ` — verified: ${it.evidence}` : ''}`
+    )
+    timeNote += `\n\nCurrent live checklist ("${activeChecklist.title}") — call update_checklist (by 1-based index) as you actually finish each item, not all at once at the end; make one final update_checklist call once everything is done, right before your closing summary:\n${lines.join('\n')}`
+    if (justCompacted && activeChecklist.items.some((it) => it.done)) {
+      timeNote += `\n\nNote: the items already checked off above are self-reported (from a prior turn, before this compaction) and were never independently re-verified — spot-check them if you're about to rely on "already done" to decide what still needs doing, rather than assuming they're correct.`
+    }
   }
   if (!assistantTabId) return timeNote
   const digest = await buildAssistantMemoryDigestForTab(assistantTabId)

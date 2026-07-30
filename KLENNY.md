@@ -66,6 +66,19 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   skills and custom subagent types (`write_skill`/`read_skill`, `write_subagent`/`read_subagent`).
 - **Checkpoint-based long tasks**: configurable auto-pause every N steps (`turnCheckpointSteps`)
   with a one-click Continue, preventing runaway turns while avoiding premature stopping.
+- **Generalized live-progress checklists** (`create_checklist`/`update_checklist`): not just for
+  approved plans — the agent can proactively start a live checklist for any multi-step task via
+  `create_checklist` (refuses to clobber an existing one unless `replace: true`), sharing the same
+  underlying `buildChecklist()` helper (`orchestrator/checklist.ts`) and widget/reinjection
+  machinery as plan checklists. `update_checklist` accepts an optional per-item `evidence` string
+  (~300 chars, truncated at write time) describing what was actually verified; this is a **soft,
+  self-reported mitigation only** (friction + a human-inspectable trail, not a structural proof —
+  nothing checks the evidence text against reality) rendered in both `ChecklistWidget.tsx` and the
+  fresh-every-turn reinjection note. A `CHECKLIST_HONESTY_NOTE` guardrail (`plan/manager.ts`)
+  instructs the model to only mark items done after in-turn verification and to prefer supplying
+  evidence; a post-compaction skepticism sentence (`buildCurrentTimeNote()`'s `justCompacted` arg)
+  additionally flags pre-existing done items as unverified right after a compaction pass, since
+  they weren't re-checked this turn.
 - **Word .docx support**: `read_docx`/`write_docx`/`edit_docx` for structured document edits.
 - **Image viewing**: `read_image` for viewing arbitrary png/jpg/gif/webp files inline.
 - **SOUL.md personality**: user-editable personality (default: playful corgi) layered under
@@ -114,6 +127,9 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   gotcha below).
 - Message wiring: `agent/messages.ts` → `toORMessages()` — flattens `ChatMessage[]` to OpenRouter
   wire format, batches tool-result images into one trailing synthetic user message.
+- Live checklists: `orchestrator/checklist.ts` → `buildChecklist()` (shared by `approvePlan()` in
+  turn-lifecycle.ts and the `create_checklist` dispatch case in loop.ts); rendering/reinjection in
+  `orchestrator/system-prompt.ts` → `buildCurrentTimeNote()`; UI in `ChecklistWidget.tsx`.
 - IPC surface (main ↔ renderer): `src/main/ipc.ts` and `shared/ipcChannels.ts` (channel names)
 - Settings persistence: `src/main/settings.ts` and the `Settings` panel in renderer (category
   sidebar with 8 sections + scrollspy/deep-linking).
@@ -124,21 +140,32 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   turn's last-message cache breakpoint must be explicitly re-marked in the *current* wire
   payload, or Anthropic's lookback misses it when routed through OpenRouter. Verify with `[cache]`
   debug logs (breakpointsAt vs. cachedTokens trend) — implicit behavior is unreliable here.
-- **Compaction-summary poisoning — fixed, three layers deep**: if the model narrates a tool call
-  as done without actually calling it, that fabrication could get folded into
-  `compactionSummary` and trusted forever after (replayed verbatim on every later turn). Fixed at
-  three levels: (1) upstream prevention — the `TRUTHFUL_NARRATION_NOTE` guardrail
-  (`plan/manager.ts`) tells the model never to narrate an action as done without a real tool
-  call; (2) downstream mitigation — `summarizeMessages()`'s prompt (`openrouter/client.ts`) tells
-  the summarizer to trust only literal `"[called toolName(...)]"` markers, never prose that
-  merely claims something happened; (3) structural enforcement — `transcriptLineForMessage()`
-  (`compaction/compactor.ts`) runs `sanitizeFabricatedMarkers()` over free-text/thinking content
-  before it's rendered, rewriting any `"[called "` substring the model wrote as prose into
-  `"[not-a-real-call: "` so a fabricated marker can never be visually indistinguishable from a
-  real, structurally-generated one even if layer (1) fails. Covered by
-  `compaction.test.ts` ("sanitizes fabricated ... markers"). A user-facing manual reset button
-  to force re-summarization from scratch is still open follow-up work (not yet built) — belt-and-
-  suspenders recovery UX, not required for the poisoning fix itself.
+- **Compaction-summary poisoning — fixed, three layers deep (now also covering tool-call
+  args/results, not just free-text)**: if the model narrates a tool call as done without actually
+  calling it, that fabrication could get folded into `compactionSummary` and trusted forever after
+  (replayed verbatim on every later turn). Fixed at three levels: (1) upstream prevention — the
+  `TRUTHFUL_NARRATION_NOTE` guardrail (`plan/manager.ts`) tells the model never to narrate an
+  action as done without a real tool call; (2) downstream mitigation — `summarizeMessages()`'s
+  prompt (`openrouter/client.ts`) tells the summarizer to trust only literal
+  `"[called toolName(...)]"` markers, never prose that merely claims something happened; (3)
+  structural enforcement — `transcriptLineForMessage()` (`compaction/compactor.ts`) runs
+  `sanitizeFabricatedMarkers()` over free-text/thinking content, and **also over the
+  JSON-stringified tool-call `args` and tool-result `result` payloads** (a fetched page, a file's
+  own contents, or an `old_string`/`new_string` argument can just as easily contain the literal
+  `"[called "` substring), rewriting any match as prose into `"[not-a-real-call: "` so a
+  fabricated marker can never be visually indistinguishable from a real, structurally-generated
+  one even if layer (1) fails — only the surrounding `[called toolName(...)]` wrapper syntax
+  itself is left untouched, since that's the one reliable, unforgeable signal. Covered by
+  `compaction.test.ts` ("sanitizes fabricated ... markers", including the args/result-specific
+  regression test). A user-facing manual reset button to force re-summarization from scratch is
+  still open follow-up work (not yet built) — belt-and-suspenders recovery UX, not required for
+  the poisoning fix itself.
+- **Checklist `evidence` is a soft mitigation, not a hard guarantee**: nothing structurally
+  verifies an `update_checklist` call's `evidence` string actually reflects real work — it's
+  self-reported, and its value is entirely the friction of having to articulate a concrete
+  justification plus the human-inspectable trail it leaves, not a verification mechanism. Don't
+  build anything downstream that treats a present `evidence` string as proof; treat it the same
+  way you'd treat any other unverified model claim.
 - **Fuzzy edit matching** (`edit-match.ts`): handles CRLF, escaped chars, em-dash/hyphen variants
   — but line-number prefixes from `read_file` output are NOT in real file bytes, never include
   them in `old_string`.

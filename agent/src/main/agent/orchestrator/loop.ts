@@ -61,6 +61,7 @@ import { buildFullAssistantMemoryDigest } from '../memory/assistantMemory'
 import { listSkills, readSkill, writeSkill } from '../skills/manager'
 import { getSubagentType, writeSubagentType } from '../subagents/manager'
 import { savePlan } from '../plan/manager'
+import { buildChecklist } from './checklist'
 import { approvalManager } from '../approval/manager'
 import { maybeCompact } from '../compaction/compactor'
 import { resolveReasoningEffort } from '../reasoning'
@@ -283,7 +284,8 @@ export async function agentLoop(
     maxTokens: modelInfo.maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS,
     currentTimeNote: await buildCurrentTimeNote(
       tab.kind === 'assistant' ? tab.id : undefined,
-      tab.activeChecklist
+      tab.activeChecklist,
+      compacted.compacted
     )
   })) {
     if (signal.aborted) break
@@ -841,6 +843,26 @@ async function dispatchTool(
       const plan = await savePlan(String(args.slug), String(args.title), String(args.markdown), checklist, tab.id)
       return { ok: true, summary: 'Plan saved', data: { plan } }
     }
+    case 'create_checklist': {
+      const title = String(args.title ?? '').trim()
+      const itemTexts = coerceArrayArg(args.items).filter((x): x is string => typeof x === 'string' && x.trim().length > 0)
+      if (!title || itemTexts.length === 0) {
+        return { ok: false, summary: 'create_checklist requires a non-empty title and at least one item.', error: 'invalid_args' }
+      }
+      if (tab.activeChecklist && args.replace !== true) {
+        return {
+          ok: false,
+          summary: `A checklist ("${tab.activeChecklist.title}") is already active on this tab. Pass replace: true to intentionally discard it and start a new one, or keep using update_checklist against the existing one.`,
+          error: 'checklist_already_active'
+        }
+      }
+      const { message: checklistMsg, activeChecklist } = buildChecklist(title, itemTexts.slice(0, 20))
+      tab.messages.push(checklistMsg)
+      tab.activeChecklist = activeChecklist
+      await sessionStore.updateTab(tab)
+      emit({ type: 'tab_upserted', tab })
+      return { ok: true, summary: `Checklist "${title}" created with ${activeChecklist.items.length} item(s).`, data: { activeChecklist } }
+    }
     case 'update_checklist': {
       if (!tab.activeChecklist) {
         return { ok: false, summary: 'No active checklist on this tab.', error: 'no_active_checklist' }
@@ -849,10 +871,16 @@ async function dispatchTool(
       const items = tab.activeChecklist.items.map((it) => ({ ...it }))
       for (const u of rawUpdates) {
         if (!u || typeof u !== 'object') continue
-        const { index, done } = u as { index?: unknown; done?: unknown }
+        const { index, done, evidence } = u as { index?: unknown; done?: unknown; evidence?: unknown }
         const i = Number(index) - 1
         if (!Number.isInteger(i) || i < 0 || i >= items.length || typeof done !== 'boolean') continue
         items[i].done = done
+        // Store the truncated value at write time so every downstream reader (widget,
+        // buildCurrentTimeNote reinjection, compaction transcript) can use it as-is without ever
+        // needing to re-truncate or risk diverging from what's actually persisted.
+        if (typeof evidence === 'string' && evidence.trim()) {
+          items[i].evidence = evidence.trim().slice(0, 300)
+        }
       }
       tab.activeChecklist = { ...tab.activeChecklist, items }
       // Mutate the same ChecklistBlock in place (by message id) rather than appending a new

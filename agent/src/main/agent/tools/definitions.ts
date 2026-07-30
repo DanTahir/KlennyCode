@@ -529,9 +529,33 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'create_checklist',
+        description:
+          'Start a live-progress checklist for any multi-step task — not just approved plans. Recommended whenever a task has several distinct, meaningful steps: the user watches items check off live, and the checklist status is re-injected into your own context fresh every turn (surviving context compaction), so it also helps you keep track of what\'s actually done. Call update_checklist (never this tool again) to mark items done as you actually finish them. Fails if a checklist is already active on this tab unless replace: true is passed — pass that explicitly to intentionally discard the current one and start fresh.',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Short human-readable title for the checklist.' },
+            items: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Ordered list of major milestones (roughly 3-10 short items, one per big step — not every tiny sub-action).'
+            },
+            replace: {
+              type: 'boolean',
+              description: 'Set true to intentionally replace an already-active checklist on this tab. Omit/false when none is active yet.'
+            }
+          },
+          required: ['title', 'items']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'update_checklist',
         description:
-          "Mark items in the current plan's live-progress checklist as done/not-done, by 1-based index matching the order shown in the checklist widget. Call this as you actually finish each major milestone (not all at once at the end) so the user watches real progress, plus once more right before your final closing summary once everything is complete.",
+          "Mark items in the current live-progress checklist (from an approved plan, or from create_checklist) as done/not-done, by 1-based index matching the order shown in the checklist widget. Call this as you actually finish each major milestone (not all at once at the end) so the user watches real progress, plus once more right before your final closing summary once everything is complete. Only mark an item done after actually completing and verifying the underlying work in this same turn — optionally supply `evidence`, a short note on what you actually verified (e.g. \"read file X, confirmed line Y\"; \"ran tests, N passed\"); when unsure, leave the item undone rather than guess.",
         parameters: {
           type: 'object',
           properties: {
@@ -541,7 +565,11 @@ export function getToolDefinitions(
                 type: 'object',
                 properties: {
                   index: { type: 'number', description: '1-based position of the item in the checklist.' },
-                  done: { type: 'boolean' }
+                  done: { type: 'boolean' },
+                  evidence: {
+                    type: 'string',
+                    description: 'Optional short justification (max ~300 chars) of what was actually verified before marking this item done. Self-reported, not independently checked — only worth writing if it\'s true.'
+                  }
                 },
                 required: ['index', 'done']
               }
@@ -820,6 +848,7 @@ export function getToolDefinitions(
     'read_subagent',
     'task',
     'ask_question',
+    'create_checklist',
     'update_checklist',
     'codebase_search',
     'list_projects',
@@ -882,9 +911,12 @@ export function getToolDefinitions(
   }
 
   // update_checklist: only ever offered once this tab actually has an active checklist to
-  // update (see hasActiveChecklist's doc comment above) — never in plan mode (save_plan is what
-  // creates the checklist in the first place) and never on an Assistant tab (not part of
-  // ASSISTANT_TOOLS, same as save_plan).
+  // update (see hasActiveChecklist's doc comment above) — never in plan mode (save_plan/
+  // approvePlan is what creates the plan-checklist in the first place). create_checklist (its
+  // sibling entry point for non-plan work) is deliberately NOT gated here — it's always offered
+  // in agent mode (project or Assistant tab, since it's part of both agentAllowed and
+  // ASSISTANT_TOOLS) regardless of whether a checklist already exists; its own dispatch handler
+  // (loop.ts) enforces the replace-gate instead of hiding the tool entirely.
   if (!hasActiveChecklist) {
     defs = defs.filter((t) => t.function.name !== 'update_checklist')
   }

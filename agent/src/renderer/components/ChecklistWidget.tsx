@@ -26,9 +26,12 @@ export function ChecklistWidget({ block }: { block: ChecklistBlock }) {
               readOnly
               className="mt-0.5 rounded cursor-default accent-klenny-accent"
             />
-            <span className={`flex-1 ${item.done ? 'line-through text-klenny-muted' : 'text-klenny-text'}`}>
-              {item.text}
-            </span>
+            <div className="flex-1 flex flex-col">
+              <span className={item.done ? 'line-through text-klenny-muted' : 'text-klenny-text'}>{item.text}</span>
+              {item.evidence && (
+                <span className="text-xs text-klenny-muted italic mt-0.5">Verified: {item.evidence}</span>
+              )}
+            </div>
           </div>
         ))}
       </div>

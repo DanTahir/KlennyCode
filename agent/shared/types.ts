@@ -95,6 +95,16 @@ export interface ChecklistItem {
   id: string
   text: string
   done: boolean
+  /** Optional self-reported justification for why this item was marked done (e.g. "read file
+   *  X, confirmed line Y" / "ran tests, N passed"), supplied via update_checklist's `evidence`
+   *  argument and truncated to ~300 chars at write time (see loop.ts's update_checklist case).
+   *  This is a SOFT mitigation only — a self-report, not a structural proof. Nothing verifies
+   *  the evidence text actually reflects real work; it exists to add friction (the model must
+   *  articulate a concrete justification) and a human-inspectable trail, not a hard guarantee.
+   *  Rendered in both the live ChecklistWidget and the fresh-every-turn reinjection note (see
+   *  buildCurrentTimeNote in orchestrator/system-prompt.ts) so it survives compaction the same
+   *  way done/not-done state does. */
+  evidence?: string
 }
 
 /** Renders as a persistent "live progress" widget inside its own ChatMessage (see
@@ -188,6 +198,7 @@ export type ToolName =
   | 'task'
   | 'ask_question'
   | 'save_plan'
+  | 'create_checklist'
   | 'update_checklist'
   | 'codebase_search'
   | 'list_projects'
@@ -271,6 +282,8 @@ export const ASSISTANT_TOOLS: ToolName[] = [
   'read_image',
   'grep',
   'glob',
+  'create_checklist',
+  'update_checklist',
   'web_search',
   'fetch_url',
   'list_projects',

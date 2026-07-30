@@ -4,7 +4,7 @@
 // streaming/tool-dispatch logic itself.
 import { BrowserWindow, Notification } from 'electron'
 import { nanoid } from 'nanoid'
-import type { ChatMessage, ChecklistItem, ContentBlock, PendingQuestion, QuestionAnswer, TabSession } from '@shared/types'
+import type { ChatMessage, ContentBlock, PendingQuestion, QuestionAnswer, TabSession } from '@shared/types'
 import { getApiKey, loadSettings } from '../../settings'
 import { sessionStore } from '../../session/store'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
@@ -13,6 +13,7 @@ import { updateAssistantMemoryForTab } from '../memory/assistantMemory'
 import { readPlan } from '../plan/manager'
 import { agentLoop } from './loop'
 import { checkSpendCap } from './approval-previews'
+import { buildChecklist } from './checklist'
 import {
   type Emit,
   type LoopStopReason,
@@ -238,15 +239,9 @@ export async function approvePlan(slug: string, tabId: string): Promise<void> {
     tab.mode = 'agent'
 
     if (plan.checklist.length > 0) {
-      const items: ChecklistItem[] = plan.checklist.map((text, i) => ({ id: `item-${i + 1}`, text, done: false }))
-      const checklistMsg: ChatMessage = {
-        id: nanoid(),
-        role: 'assistant',
-        blocks: [{ type: 'checklist', title: plan.title, items }],
-        createdAt: Date.now()
-      }
+      const { message: checklistMsg, activeChecklist } = buildChecklist(plan.title, plan.checklist)
       tab.messages.push(checklistMsg)
-      tab.activeChecklist = { messageId: checklistMsg.id, title: plan.title, items }
+      tab.activeChecklist = activeChecklist
     }
 
     const userMsg: ChatMessage = { id: nanoid(), role: 'user', blocks: [{ type: 'text', text: approvalText }], createdAt: Date.now() }
