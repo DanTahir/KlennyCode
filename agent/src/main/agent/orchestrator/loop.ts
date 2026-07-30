@@ -837,8 +837,7 @@ async function dispatchTool(
     case 'list_projects':
       return listProjectsTool()
     case 'save_plan': {
-      const rawChecklist = Array.isArray(args.checklist) ? args.checklist : []
-      const checklist = rawChecklist.filter((x): x is string => typeof x === 'string').slice(0, 20)
+      const checklist = coerceArrayArg(args.checklist).filter((x): x is string => typeof x === 'string').slice(0, 20)
       const plan = await savePlan(String(args.slug), String(args.title), String(args.markdown), checklist, tab.id)
       return { ok: true, summary: 'Plan saved', data: { plan } }
     }
@@ -846,7 +845,7 @@ async function dispatchTool(
       if (!tab.activeChecklist) {
         return { ok: false, summary: 'No active checklist on this tab.', error: 'no_active_checklist' }
       }
-      const rawUpdates = Array.isArray(args.updates) ? args.updates : []
+      const rawUpdates = coerceArrayArg(args.updates)
       const items = tab.activeChecklist.items.map((it) => ({ ...it }))
       for (const u of rawUpdates) {
         if (!u || typeof u !== 'object') continue
@@ -936,6 +935,24 @@ async function dispatchTool(
     default:
       return { ok: false, summary: `Unknown tool ${name}`, error: 'unknown' }
   }
+}
+
+/** Coerces a tool argument that the schema declares as an array into a real array, tolerating
+ *  the common case (see repo gotchas) where a model sends a JSON-encoded string instead of a
+ *  native array for a nested-array parameter. Returns [] for anything else (missing, wrong type,
+ *  or a string that fails to parse / doesn't parse to an array) rather than throwing, since both
+ *  call sites treat "no items" as a valid (if unhelpful) input. */
+export function coerceArrayArg(raw: unknown): unknown[] {
+  if (Array.isArray(raw)) return raw
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) return parsed
+    } catch {
+      // fall through to []
+    }
+  }
+  return []
 }
 
 /** Short, human-readable label for what a subagent tool call is doing, shown live in the Subagents panel while status === 'running'. */
