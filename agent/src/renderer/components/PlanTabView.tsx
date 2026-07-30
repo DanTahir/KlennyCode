@@ -6,7 +6,7 @@ import type { PlanArtifact } from '@shared/types'
 
 /** Full-page view of a single plan, rendered as its own tab in the main tab bar. */
 export function PlanTabView({ slug }: { slug: string }) {
-  const { plans, upsertPlan, openPlanTabs, tabs, activeTabId, setTabs, setActiveTab, closePlanTab } = useAppStore()
+  const { plans, upsertPlan, openPlanTabs, tabs, activeTabId, setActiveTab, closePlanTab } = useAppStore()
   const [loading, setLoading] = useState(false)
   const [approving, setApproving] = useState(false)
 
@@ -40,9 +40,13 @@ export function PlanTabView({ slug }: { slug: string }) {
     setApproving(true)
     try {
       await window.klenny.approvePlan(slug, originTabId)
-      setTabs(await window.klenny.listTabs())
       setActiveTab(originTabId)
       closePlanTab(slug)
+      // Deliberately no setTabs(await listTabs()) here — the main process already emits a
+      // 'tab_upserted' event (with the new checklist + user messages, mode switched to agent)
+      // as part of approvePlan itself. Calling listTabs() again here would race against that
+      // event and could overwrite the fresh checklist data with a stale snapshot fetched before
+      // the emit landed in the store.
     } finally {
       setApproving(false)
     }
