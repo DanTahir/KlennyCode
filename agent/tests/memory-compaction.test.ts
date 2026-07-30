@@ -184,6 +184,108 @@ describe('compactProjectOrGlobalMemory', () => {
     // Every pass after the first should have included the running/prior-compacted marker text.
     const foldedPasses = promptCalls.filter((c) => c.userContent.includes('Already-compacted notes from earlier'))
     expect(foldedPasses.length).toBe(result.passes - 1)
+    // Every pass's prompt should surface the note-count target (1 = round(3 * 1/3)) explicitly,
+    // not just a byte-size target, so the model is nudged toward fewer notes throughout the run.
+    for (const call of promptCalls) {
+      expect(call.userContent).toContain('Progress:')
+      expect(call.userContent).toContain('target')
+      expect(call.userContent).toContain('about 1 notes')
+    }
+  })
+
+  test('squeeze pass: runs a follow-up consolidation call when the main loop under-reduces the note count, and accepts an improved result', async () => {
+    const { writeMemory, replaceMemoryTopics } = await import('../src/main/agent/memory/manager')
+    await replaceMemoryTopics('project', [], workspaceDir) // clear leftover topics from earlier tests in this file
+    for (let i = 1; i <= 9; i++) {
+      await writeMemory('project', `Topic ${i}`, `Content number ${i}`)
+    }
+
+    let call = 0
+    promptResponder = () => {
+      call++
+      if (call === 1) {
+        // Main loop pass barely reduces the count: 9 raw notes -> 8 output notes. With
+        // targetNoteCount = round(9/3) = 3, this is well over the 1.25x-over-target threshold
+        // and should trigger the safety-net squeeze pass.
+        return Array.from({ length: 8 }, (_, i) => `### TOPIC: Barely merged ${i + 1}\nContent ${i + 1}`).join('\n\n')
+      }
+      // Squeeze pass response: consolidate down to the target count.
+      return Array.from({ length: 3 }, (_, i) => `### TOPIC: Consolidated ${i + 1}\nMerged content ${i + 1}`).join('\n\n')
+    }
+
+    const { compactProjectOrGlobalMemory } = await import('../src/main/agent/memory/compaction')
+    const result = await compactProjectOrGlobalMemory({
+      scope: 'project',
+      apiKey: 'test-key',
+      utilityModel: baseModel.id,
+      models: [baseModel],
+      workspace: workspaceDir
+    })
+
+    expect(result.beforeCount).toBe(9)
+    expect(result.afterCount).toBe(3)
+    expect(result.passes).toBe(2) // one main-loop pass + one squeeze pass
+    expect(promptCalls.length).toBe(2)
+    expect(promptCalls[1].userContent).toContain('final consolidation pass')
+    expect(promptCalls[1].userContent).toContain('about 3 notes')
+  })
+
+  test('squeeze pass: skipped entirely when the main loop already lands close to the note-count target', async () => {
+    const { writeMemory, replaceMemoryTopics } = await import('../src/main/agent/memory/manager')
+    await replaceMemoryTopics('global', [], workspaceDir) // clear leftover topics from earlier tests in this file
+    for (let i = 1; i <= 9; i++) {
+      await writeMemory('global', `G-Topic ${i}`, `Content number ${i}`)
+    }
+
+    // Respond with exactly the target count (3) right away — no consolidation gap to close.
+    promptResponder = () => Array.from({ length: 3 }, (_, i) => `### TOPIC: Consolidated ${i + 1}\nMerged content ${i + 1}`).join('\n\n')
+
+    const { compactProjectOrGlobalMemory } = await import('../src/main/agent/memory/compaction')
+    const result = await compactProjectOrGlobalMemory({
+      scope: 'global',
+      apiKey: 'test-key',
+      utilityModel: baseModel.id,
+      models: [baseModel],
+      workspace: workspaceDir
+    })
+
+    expect(result.beforeCount).toBe(9)
+    expect(result.afterCount).toBe(3)
+    expect(result.passes).toBe(1) // no squeeze pass needed
+    expect(promptCalls.length).toBe(1)
+  })
+
+  test('squeeze pass: rejected (falls back to pre-squeeze result) if it makes the count worse instead of better', async () => {
+    const { writeMemory, replaceMemoryTopics } = await import('../src/main/agent/memory/manager')
+    await replaceMemoryTopics('project', [], workspaceDir) // clear leftover topics from earlier tests in this file
+    for (let i = 1; i <= 9; i++) {
+      await writeMemory('project', `Bad-Topic ${i}`, `Content number ${i}`)
+    }
+
+    let call = 0
+    promptResponder = () => {
+      call++
+      if (call === 1) {
+        // Main pass under-reduces (9 -> 8), triggering a squeeze attempt.
+        return Array.from({ length: 8 }, (_, i) => `### TOPIC: Barely merged ${i + 1}\nContent ${i + 1}`).join('\n\n')
+      }
+      // Misbehaving squeeze pass: grows the count instead of shrinking it (10 > 8).
+      return Array.from({ length: 10 }, (_, i) => `### TOPIC: Worse ${i + 1}\nExpanded content ${i + 1}`).join('\n\n')
+    }
+
+    const { compactProjectOrGlobalMemory } = await import('../src/main/agent/memory/compaction')
+    const result = await compactProjectOrGlobalMemory({
+      scope: 'project',
+      apiKey: 'test-key',
+      utilityModel: baseModel.id,
+      models: [baseModel],
+      workspace: workspaceDir
+    })
+
+    // The squeeze pass ran (2 model calls happened) but its worse-count result should have been
+    // discarded, leaving the main loop's 8-note result as the saved outcome.
+    expect(promptCalls.length).toBe(2)
+    expect(result.afterCount).toBe(8)
   })
 
   test('throws and leaves disk untouched if a pass returns no usable notes', async () => {
