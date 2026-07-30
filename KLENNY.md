@@ -109,7 +109,9 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
 - Context compaction: `compaction/compactor.ts` — `KEEP_RECENT = 12` messages are never folded;
   summarization uses the separate utility model; result is cached in `tab.compactionSummary` and
   re-injected every later turn without re-verification (full history is preserved for the UI,
-  never mutated in place).
+  never mutated in place). `transcriptLineForMessage()` sanitizes any fabricated `"[called ...]"`
+  marker text found in free-text/thinking blocks before it reaches the summarizer (see poisoning
+  gotcha below).
 - Message wiring: `agent/messages.ts` → `toORMessages()` — flattens `ChatMessage[]` to OpenRouter
   wire format, batches tool-result images into one trailing synthetic user message.
 - IPC surface (main ↔ renderer): `src/main/ipc.ts` and `shared/ipcChannels.ts` (channel names)
@@ -122,10 +124,21 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   turn's last-message cache breakpoint must be explicitly re-marked in the *current* wire
   payload, or Anthropic's lookback misses it when routed through OpenRouter. Verify with `[cache]`
   debug logs (breakpointsAt vs. cachedTokens trend) — implicit behavior is unreliable here.
-- **Compaction-summary poisoning**: if the model narrates a tool call as done without actually
-  calling it, that fabrication can get folded into `compactionSummary` and trusted forever after
-  (it's replayed verbatim on every later turn). The truthful-narration guardrail is the real fix;
-  a reset button to force re-summarization is still open follow-up work (not yet built).
+- **Compaction-summary poisoning — fixed, three layers deep**: if the model narrates a tool call
+  as done without actually calling it, that fabrication could get folded into
+  `compactionSummary` and trusted forever after (replayed verbatim on every later turn). Fixed at
+  three levels: (1) upstream prevention — the `TRUTHFUL_NARRATION_NOTE` guardrail
+  (`plan/manager.ts`) tells the model never to narrate an action as done without a real tool
+  call; (2) downstream mitigation — `summarizeMessages()`'s prompt (`openrouter/client.ts`) tells
+  the summarizer to trust only literal `"[called toolName(...)]"` markers, never prose that
+  merely claims something happened; (3) structural enforcement — `transcriptLineForMessage()`
+  (`compaction/compactor.ts`) runs `sanitizeFabricatedMarkers()` over free-text/thinking content
+  before it's rendered, rewriting any `"[called "` substring the model wrote as prose into
+  `"[not-a-real-call: "` so a fabricated marker can never be visually indistinguishable from a
+  real, structurally-generated one even if layer (1) fails. Covered by
+  `compaction.test.ts` ("sanitizes fabricated ... markers"). A user-facing manual reset button
+  to force re-summarization from scratch is still open follow-up work (not yet built) — belt-and-
+  suspenders recovery UX, not required for the poisoning fix itself.
 - **Fuzzy edit matching** (`edit-match.ts`): handles CRLF, escaped chars, em-dash/hyphen variants
   — but line-number prefixes from `read_file` output are NOT in real file bytes, never include
   them in `old_string`.
@@ -144,7 +157,9 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
 
 ## Known open follow-ups (not yet implemented)
 
-- Compaction-summary manual reset (UX + IPC) to recover from a corrupted/poisoned summary.
+- Compaction-summary manual reset (UX + IPC) — a user-facing "reset conversation summary" button
+  to recover if a summary ever ends up wrong for some other reason; not required for the
+  poisoning fix itself (that's now fixed, see gotchas above), just recovery UX.
 - Mac auto-update (needs code-signing/notarization in CI); Linux `.deb` has no update path by
   design (AppImage is fine).
 - Per-tab workspace tracking (currently a single global workspace singleton — see gotcha above).

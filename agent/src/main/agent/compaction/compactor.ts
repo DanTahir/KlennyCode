@@ -81,6 +81,19 @@ export async function maybeCompact(opts: {
   }
 }
 
+/** The literal marker syntax used below to render a *real*, structurally-verified tool call
+ *  (see `toolCallParts`) — the only thing the summarization prompt is told to trust as evidence
+ *  a call actually happened. If the model's own text/thinking prose ever contains this exact
+ *  pattern (whether from an intentional fabrication the truthful-narration guardrail failed to
+ *  stop, or an incidental echo/quote of it), it would be visually indistinguishable from a real
+ *  marker once joined onto the same line — silently defeating the "only trust `[called ...]`"
+ *  instruction. `sanitizeFabricatedMarkers` neutralizes that pattern in free-text content only,
+ *  never in the programmatically-generated `toolCallParts` themselves, so the marker stays a
+ *  reliable, unforgeable signal for the summarizer. */
+function sanitizeFabricatedMarkers(text: string): string {
+  return text.replace(/\[called\s+/gi, '[not-a-real-call: ')
+}
+
 /** Renders one message into a transcript line for the summarization prompt. Unlike a plain
  *  text/thinking dump, this also folds in tool calls and their results (fetched page text,
  *  file contents, search/grep hits) — otherwise that data vanishes the moment it scrolls past
@@ -97,6 +110,7 @@ function transcriptLineForMessage(m: ChatMessage): string | null {
   const textParts = m.blocks
     .filter((b) => b.type === 'text' || b.type === 'thinking')
     .map((b) => ('text' in b ? b.text : ''))
+    .map(sanitizeFabricatedMarkers)
   const toolCallParts = (m.blocks.filter((b) => b.type === 'tool_call') as ToolCallBlock[]).map(
     (tc) => `[called ${tc.toolName}(${JSON.stringify(tc.args)})]`
   )
