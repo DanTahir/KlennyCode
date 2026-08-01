@@ -123,10 +123,15 @@ custom subagents, global memory (`KLENNY.md` + auto-memory notes), and the agent
 on the host the way you, the logged-in user running Klenny Code, can (not limited to the open
 project). A relative path still resolves against the current workspace as before, and with no
 path at all grep/glob still default to the workspace root. `write_file`/`edit_file`/
-`multi_edit`/`delete_file` remain sandboxed to the currently open workspace only — mutation
-never reaches outside the project you have open. `read_docx` and `read_image` follow the same
-global, read-only rule; `write_docx`/`edit_docx` are sandboxed the same way as the other mutating
-file tools.
+`multi_edit`/`delete_file` are otherwise sandboxed to the currently open workspace (or an
+Assistant tab's Documents directory) — mutation doesn't reach outside the project/folder you
+have open — **except** for two always-allowed global directories: `~/.klenny/` (global
+memory/skills/subagents/`SOUL.md`) and Klenny Code's own Electron `userData` directory
+(settings, sessions, plans, per-project data). Those two stay mutable through the normal file
+tools no matter what workspace is open (or none at all), so the agent can maintain its own
+config/state directly instead of falling back on shell workarounds. `read_docx` and `read_image`
+follow the same global, read-only rule; `write_docx`/`edit_docx` are sandboxed the same way as
+the other mutating file tools (including the same two always-allowed exceptions).
 
 Because every project's memory/plans/index and chat sessions are keyed by path under Klenny
 Code's own `userData` directory (not inside the project itself — see above), Klenny Code
@@ -149,10 +154,11 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
   glob, plus `read_docx`/`write_docx`/`edit_docx` for Word documents specifically and `read_image`
   to actually see image files) — but no coding project needed and no
   shell/`run_command`/`codebase_search` access.
-  File-tool relative paths and every mutation are sandboxed to a **Documents directory**
+  File-tool relative paths and mutation are sandboxed to a **Documents directory**
   (Settings → Behavior → "Documents directory", default your OS Documents folder) instead of a
-  project workspace; absolute-path reads can still reach anywhere on the machine, same as in a
-  project tab. Every click creates a fresh, independent tab (no create-or-focus singleton
+  project workspace, with the same always-allowed exceptions for `~/.klenny/` and the Electron
+  `userData` directory described above; absolute-path reads can still reach anywhere on the
+  machine, same as in a project tab. Every click creates a fresh, independent tab (no create-or-focus singleton
   behavior), tagged with a 🐾 pawprint in the tab bar and automatically retitled from your first
   message, just like a regular chat tab. Assistant tabs are workspace-independent: they persist
   across app restarts, and closing one (once it has messages) archives it to the "🐾 Assistant"

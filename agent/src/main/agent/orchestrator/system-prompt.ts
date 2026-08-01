@@ -1,7 +1,7 @@
 // Assembles the full system prompt for a turn: memory (project/global KLENNY.md, auto-memory
 // index), the skills and subagent catalogs, other known projects, the mode-specific (agent vs.
 // plan) persona/instructions prompt, and shell context. Called once per agentLoop step.
-import { getWorkspace } from '../../workspace'
+import { getWorkspace, alwaysAllowedMutationRoots } from '../../workspace'
 import { listKnownProjects } from '../../projectsRegistry'
 import { resolveShell } from '../../shells'
 import { loadProjectMemory, loadGlobalMemory, loadAutoMemoryIndex } from '../memory/manager'
@@ -110,6 +110,7 @@ export async function buildSystemPrompt(
   ])
 
   const shell = resolveShell(shellId)
+  const globalRoots = alwaysAllowedMutationRoots()
 
   const parts = [
     mode === 'plan' ? buildPlanModePrompt(soul) : buildAgentModePrompt(soul, kind, assistantTools),
@@ -123,6 +124,8 @@ export async function buildSystemPrompt(
     !isAssistant && (ws ? `Workspace: ${ws}` : 'No workspace open.'),
     !isAssistant &&
       `run_command executes via ${shell.name} — write commands using that shell's syntax (quoting, path separators, env vars, chaining operators).`,
+    mode !== 'plan' &&
+      `write_file/edit_file/multi_edit/delete_file (and write_docx/edit_docx where available) can always mutate these paths too, regardless of the open workspace/documents folder — this is where your own global config and data live (SOUL.md, global skills/subagents/memory, settings, plans, sessions, etc), so edit them directly with these tools instead of shell workarounds:\n${globalRoots.map((r) => `- ${r}`).join('\n')}`,
     projMem && `Project memory:\n${projMem}`,
     globalMem && `Global memory:\n${globalMem}`,
     autoMem && `Auto-memory index:\n${autoMem}`,

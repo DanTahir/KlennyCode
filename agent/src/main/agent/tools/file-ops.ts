@@ -4,7 +4,7 @@ import type { ToolResultPayload } from '@shared/types'
 import { buildEditNotFoundHelp, countOccurrences, resolveEditMatch } from './edit-match'
 import { detectEol, fromLf, toLf, type Eol } from './eol'
 import { makeDiff } from './diff'
-import { assertInWorkspace, getWorkspace, isInsideDirectory } from '../../workspace'
+import { assertMutationAllowed, getWorkspace } from '../../workspace'
 
 // `content` in this cache is always normalized to LF, regardless of the file's on-disk
 // EOL style or the machine's `core.autocrlf` setting — see ./eol.ts. This keeps matching,
@@ -32,18 +32,12 @@ export function resolveWorkspacePath(relOrAbs: string, root?: string): string {
   return resolve(base, relOrAbs)
 }
 
-/** Sandbox check for a mutation's resolved absolute path: against `root` when given (Assistant
- *  tabs, scoped to documentsDirectory), otherwise falls back to the open-project workspace via
- *  assertInWorkspace, exactly like before `root` existed. */
-function assertInRoot(abs: string, root?: string): boolean {
-  return root ? isInsideDirectory(abs, root) : assertInWorkspace(abs)
-}
-
 // read_file (and grep/glob, see search.ts) are deliberately NOT sandboxed for absolute paths —
 // per user request, they're global, read-only tools that can see anything the OS user running
 // Klenny can see (any absolute path on the host, or a path relative to `root`/the open
 // workspace). write_file/edit_file/multi_edit/delete_file remain sandboxed to `root`/the
-// workspace (see assertInRoot above) since mutation is the operation that actually needs the
+// workspace, plus the always-allowed global `~/.klenny` and Electron userData directories (see
+// assertMutationAllowed in workspace.ts) since mutation is the operation that actually needs the
 // safety rail.
 export async function readFileTool(
   args: { path: string; offset?: number; limit?: number },
@@ -64,7 +58,7 @@ export async function readFileTool(
 
 export async function writeFileTool(args: { path: string; content: string }, root?: string): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path, root)
-  if (!assertInRoot(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   let oldRaw = ''
   let hadExisting = false
   try {
@@ -100,7 +94,7 @@ export async function editFileTool(
   root?: string
 ): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path, root)
-  if (!assertInRoot(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   const raw = await readFile(abs, 'utf8')
   const eol = detectEol(raw)
   const content = toLf(raw)
@@ -214,7 +208,7 @@ async function planMultiEdit(
     }
 
     const abs = resolveWorkspacePath(op.path, root)
-    if (!assertInRoot(abs, root)) {
+    if (!assertMutationAllowed(abs, root)) {
       return { ok: false, index: i, path: op.path, summary: 'Path outside workspace', error: 'sandbox' }
     }
 
@@ -393,7 +387,7 @@ export async function previewMultiEdit(edits: MultiEditOp[], root?: string): Pro
 
 export async function deleteFileTool(args: { path: string }, root?: string): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path, root)
-  if (!assertInRoot(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   let oldContent = ''
   try {
     oldContent = toLf(await readFile(abs, 'utf8'))

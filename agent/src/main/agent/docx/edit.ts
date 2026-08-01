@@ -7,7 +7,7 @@
 import { readFile, writeFile, stat } from 'node:fs/promises'
 import type { ToolResultPayload } from '@shared/types'
 import { resolveWorkspacePath } from '../tools/file-ops'
-import { assertInWorkspace, isInsideDirectory } from '../../workspace'
+import { assertMutationAllowed } from '../../workspace'
 import { makeDiff } from '../tools/diff'
 import { loadDocxPackage, saveDocxPackage } from './package'
 import { buildDocxModel } from './model'
@@ -22,10 +22,6 @@ export function noteDocxRead(absPath: string, mtimeMs: number): void {
   docxReadCache.set(absPath, { mtimeMs })
 }
 
-function assertInRoot(abs: string, root?: string): boolean {
-  return root ? isInsideDirectory(abs, root) : assertInWorkspace(abs)
-}
-
 export interface EditDocxArgs {
   path: string
   ops: DocxEditOp[]
@@ -33,7 +29,7 @@ export interface EditDocxArgs {
 
 export async function editDocxTool(args: EditDocxArgs, root?: string): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path, root)
-  if (!assertInRoot(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
 
   if (!Array.isArray(args.ops) || args.ops.length === 0) {
     return { ok: false, summary: 'edit_docx called with no ops', error: 'no_ops' }

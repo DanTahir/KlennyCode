@@ -23,7 +23,7 @@ import {
 } from 'docx'
 import type { ToolResultPayload } from '@shared/types'
 import { resolveWorkspacePath } from '../tools/file-ops'
-import { assertInWorkspace, isInsideDirectory } from '../../workspace'
+import { assertMutationAllowed } from '../../workspace'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
@@ -194,16 +194,9 @@ function buildTable(spec: TableSpec): Table {
   })
 }
 
-/** Sandbox check mirroring file-ops.ts's assertInRoot (not exported from there since it's a
- *  plain function, not a tool) — write_docx is a mutation so it must stay inside root/workspace
- *  the same way write_file does. */
-function assertInRoot(abs: string, root?: string): boolean {
-  return root ? isInsideDirectory(abs, root) : assertInWorkspace(abs)
-}
-
 export async function writeDocxTool(args: WriteDocxSpec, root?: string): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path, root)
-  if (!assertInRoot(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
 
   const children: (Paragraph | Table)[] = []
   try {
