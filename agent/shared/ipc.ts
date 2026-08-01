@@ -8,6 +8,7 @@ import type {
   IndexStatus,
   MemoryCompactionResult,
   ModelInfo,
+  PendingDocument,
   PlanArtifact,
   QuestionAnswer,
   ScheduledTask,
@@ -60,6 +61,7 @@ export const IPC = {
   sendMessage: 'chat:sendMessage',
   stopGeneration: 'chat:stop',
   continueTurn: 'chat:continue',
+  extractDocument: 'chat:extractDocument',
 
   resolveApproval: 'approval:resolve',
   resolveQuestion: 'question:resolve',
@@ -129,7 +131,18 @@ export interface SendMessagePayload {
   tabId: string
   text: string
   images?: string[] // data URLs
+  documents?: PendingDocument[]
 }
+
+/** Request body for the extractDocument IPC channel — the raw file bytes are always
+ *  base64-encoded over the wire since IPC structured-clone doesn't reliably preserve Buffer. */
+export interface ExtractDocumentRequest {
+  filename: string
+  mimeType: string
+  base64: string
+}
+
+export type ExtractDocumentResult = ({ ok: true } & PendingDocument) | { ok: false; error: string }
 
 export interface KlennyApi {
   getSettings: () => Promise<AppSettings>
@@ -185,6 +198,10 @@ export interface KlennyApi {
   /** Resumes a turn that emitted `turn_paused` (checkpoint reached or hard limit hit) — continues
    *  agentLoop from the existing message state, no new user-message bubble. */
   continueTurn: (tabId: string) => Promise<void>
+  /** Extracts a just-attached .md/.txt/.docx file into model-readable text at attach time (not
+   *  send time), so the pending-attachment UI can show size/parse errors immediately instead of
+   *  only failing once the user hits Send. */
+  extractDocument: (request: ExtractDocumentRequest) => Promise<ExtractDocumentResult>
 
   resolveApproval: (actionId: string, decision: ApprovalDecision) => Promise<void>
   resolveQuestion: (questionId: string, answers: QuestionAnswer[]) => Promise<void>

@@ -4,7 +4,7 @@
 // streaming/tool-dispatch logic itself.
 import { BrowserWindow, Notification } from 'electron'
 import { nanoid } from 'nanoid'
-import type { ChatMessage, ContentBlock, PendingQuestion, QuestionAnswer, TabSession } from '@shared/types'
+import type { ChatMessage, ContentBlock, PendingDocument, PendingQuestion, QuestionAnswer, TabSession } from '@shared/types'
 import { getApiKey, loadSettings } from '../../settings'
 import { sessionStore } from '../../session/store'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
@@ -185,6 +185,17 @@ export async function runUserTurn(tabId: string, userText: string, images?: stri
 
   await launchAgentLoop(tab, apiKey, settings.subagentModel, emitToAll, async () => {
     const userBlocks: ContentBlock[] = [{ type: 'text', text: userText }]
+    if (documents?.length) {
+      for (const doc of documents) {
+        userBlocks.push({
+          type: 'document',
+          filename: doc.filename,
+          mimeType: doc.mimeType,
+          extractedText: doc.extractedText,
+          truncated: doc.truncated
+        })
+      }
+    }
     if (images?.length) {
       for (const img of images) userBlocks.push({ type: 'image', dataUrl: img })
     }

@@ -73,6 +73,23 @@ export interface ImageBlock {
   dataUrl: string
 }
 
+/** A user-attached .md/.txt/.docx document, extracted to model-readable text at attach time
+ *  (not send time — see extractDocumentTool in agent/documents/extract.ts) so the pending-
+ *  attachment UI can show size/errors immediately. `extractedText` is either raw UTF-8 text
+ *  (.md/.txt, CRLF->LF normalized) or, for .docx, the same structured DocxModel JSON that
+ *  read_docx returns (JSON.stringify'd) — falling back to just DocxModel.plainText if the full
+ *  JSON would exceed MAX_DOCUMENT_TEXT_CHARS, since slicing serialized JSON at a fixed offset
+ *  could produce invalid/truncated structure. Folded into the outgoing message as a wrapped
+ *  text content part by wrapDocumentForModel() in messages.ts — never a provider-specific "file"
+ *  content-block type, since OpenRouter's cross-model support for that is unconfirmed. */
+export interface DocumentBlock {
+  type: 'document'
+  filename: string
+  mimeType: string
+  extractedText: string
+  truncated?: boolean
+}
+
 export interface ToolCallBlock {
   type: 'tool_call'
   id: string
@@ -117,7 +134,18 @@ export interface ChecklistBlock {
   items: ChecklistItem[]
 }
 
-export type ContentBlock = TextBlock | ThinkingBlock | ImageBlock | ToolCallBlock | ChecklistBlock
+export type ContentBlock = TextBlock | ThinkingBlock | ImageBlock | DocumentBlock | ToolCallBlock | ChecklistBlock
+
+/** Result of successfully extracting a user-attached document (see extractDocumentTool) —
+ *  shared shape for both the extractDocument IPC response and the renderer's pending-attachment
+ *  state array, so no re-extraction is needed between attach time and send time. */
+export interface PendingDocument {
+  filename: string
+  mimeType: string
+  extractedText: string
+  truncated: boolean
+  sizeBytes: number
+}
 
 export interface ChatMessage {
   id: string

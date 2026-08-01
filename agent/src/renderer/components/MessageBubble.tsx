@@ -60,6 +60,19 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           if (block.type === 'image') {
             return <img key={i} src={block.dataUrl} alt="uploaded" className="max-h-48 rounded mt-2" />
           }
+          if (block.type === 'document') {
+            return (
+              <div
+                key={i}
+                className="flex items-center gap-2 mt-2 px-3 py-2 rounded border border-klenny-border bg-klenny-panel text-xs"
+                title={block.filename}
+              >
+                <span className="text-base">📄</span>
+                <span className="truncate">{block.filename}</span>
+                {block.truncated && <span className="text-klenny-muted shrink-0">(truncated)</span>}
+              </div>
+            )
+          }
           if (block.type === 'tool_call') {
             const tc = block as ToolCallBlock
             // update_checklist mutates the standalone checklist widget in place; showing a tool

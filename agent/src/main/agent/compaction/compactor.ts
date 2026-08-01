@@ -1,4 +1,4 @@
-import type { ChatMessage, ModelInfo, ToolCallBlock } from '@shared/types'
+import type { ChatMessage, DocumentBlock, ModelInfo, ToolCallBlock } from '@shared/types'
 import { summarizeMessages } from '../../openrouter/client'
 import { modelSupportsCaching } from '../../openrouter/caching'
 import { compactToolResult } from '../messages'
@@ -128,6 +128,12 @@ function transcriptLineForMessage(m: ChatMessage): string | null {
     .filter((b) => b.type === 'text' || b.type === 'thinking')
     .map((b) => ('text' in b ? b.text : ''))
     .map(sanitizeFabricatedMarkers)
+  // Sanitize document attachment content too — a user-uploaded .md/.txt/.docx's extracted text
+  // is just as much arbitrary, attacker-or-accident-controllable text as a fetched web page or
+  // tool result is, and could equally contain the literal marker substring.
+  const documentParts = (m.blocks.filter((b) => b.type === 'document') as DocumentBlock[]).map(
+    (doc) => `[document: ${doc.filename}] ${sanitizeFabricatedMarkers(doc.extractedText).slice(0, MAX_TOOL_RESULT_CHARS_IN_TRANSCRIPT)}`
+  )
   // Sanitize the args payload too, same reasoning as the tool-result case above — a string
   // argument (e.g. a file's old_string/new_string, a command, a message body) could itself
   // contain the marker substring. Only the args payload is sanitized, never the surrounding
@@ -135,7 +141,7 @@ function transcriptLineForMessage(m: ChatMessage): string | null {
   const toolCallParts = (m.blocks.filter((b) => b.type === 'tool_call') as ToolCallBlock[]).map(
     (tc) => `[called ${tc.toolName}(${sanitizeFabricatedMarkers(JSON.stringify(tc.args))})]`
   )
-  const line = [...textParts, ...toolCallParts].join(' ').trim()
+  const line = [...textParts, ...documentParts, ...toolCallParts].join(' ').trim()
   return line ? `${m.role}: ${line}` : null
 }
 

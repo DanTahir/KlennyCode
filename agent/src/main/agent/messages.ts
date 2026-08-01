@@ -1,5 +1,14 @@
-import type { ChatMessage, ToolCallBlock, ToolResultPayload } from '@shared/types'
+import type { ChatMessage, DocumentBlock, ToolCallBlock, ToolResultPayload } from '@shared/types'
 import type { ChatMessage as ORMessage } from '../openrouter/client'
+
+/** Wraps a user-attached document's extracted text in clear delimiters so the model can tell
+ *  where the attachment starts/ends within the surrounding text content parts, and knows its
+ *  original filename. Kept as a plain text content part (not a provider-specific "file" block)
+ *  since cross-model support for that on OpenRouter is unconfirmed. */
+function wrapDocumentForModel(doc: DocumentBlock): string {
+  const truncNote = doc.truncated ? ' (truncated)' : ''
+  return `--- Attached document: ${doc.filename}${truncNote} ---\n${doc.extractedText}\n--- End of ${doc.filename} ---`
+}
 
 /**
  * Projects `tab.messages` (the persisted, UI-facing history) into the wire format sent to
@@ -73,12 +82,14 @@ export function toORMessages(
     if (m.role !== 'tool') flushPendingToolImages()
     if (m.role === 'user') {
       const textParts = m.blocks.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text)
+      const documents = m.blocks.filter((b) => b.type === 'document') as DocumentBlock[]
       const images = m.blocks.filter((b) => b.type === 'image') as Array<{ dataUrl: string }>
-      if (images.length) {
+      if (images.length || documents.length) {
         out.push({
           role: 'user',
           content: [
             ...textParts.map((t) => ({ type: 'text' as const, text: t })),
+            ...documents.map((doc) => ({ type: 'text' as const, text: wrapDocumentForModel(doc) })),
             ...images.map((img) => ({ type: 'image_url' as const, image_url: { url: img.dataUrl } }))
           ]
         })

@@ -1,12 +1,20 @@
 import { useState, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import type { PendingDocument } from '@shared/types'
 import { useAppStore, getActiveTab } from '../store/useAppStore'
 import { MessageBubble } from './MessageBubble'
 import { ApprovalCard } from './ApprovalCard'
 import { QuestionCard } from './QuestionCard'
 import { ModeToggle } from './ModeToggle'
 import { ApprovalModeSelect } from './ApprovalModeSelect'
+import { AttachMenu } from './AttachMenu'
+import { PendingAttachmentRow } from './PendingAttachmentRow'
+
+// Mirrors MAX_DOCUMENT_FILE_BYTES in agent/documents/extract.ts — checked client-side too so an
+// oversized file is rejected instantly instead of only after a wasted base64-encode + IPC round trip.
+const MAX_DOCUMENT_FILE_BYTES = 8 * 1024 * 1024
+const DOCUMENT_ACCEPT = '.md,.txt,.docx'
 
 export function ChatPane() {
   const { tabs, activeTabId, pendingActions, pendingQuestions, streamingTabIds, workspace, settings, tabErrors, pausedTabs } =
@@ -14,7 +22,10 @@ export function ChatPane() {
   const tab = getActiveTab(tabs, activeTabId)
   const [text, setText] = useState('')
   const [images, setImages] = useState<string[]>([])
+  const [documents, setDocuments] = useState<PendingDocument[]>([])
+  const [documentError, setDocumentError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  const docFileRef = useRef<HTMLInputElement>(null)
   const isStreaming = tab ? streamingTabIds.has(tab.id) : false
   const paused = tab ? pausedTabs[tab.id] : undefined
 
@@ -51,10 +62,17 @@ export function ChatPane() {
 
   const send = () => {
     if (!canSend) return
-    if (!text.trim() && !images.length) return
-    void window.klenny.sendMessage({ tabId: tab.id, text: text.trim() || 'See attached image(s).', images })
+    if (!text.trim() && !images.length && !documents.length) return
+    const fallbackText = images.length && documents.length
+      ? 'See attached image(s) and document(s).'
+      : documents.length
+        ? 'See attached document(s).'
+        : 'See attached image(s).'
+    void window.klenny.sendMessage({ tabId: tab.id, text: text.trim() || fallbackText, images, documents })
     setText('')
     setImages([])
+    setDocuments([])
+    setDocumentError(null)
   }
 
   const onPaste = (e: React.ClipboardEvent) => {
@@ -68,6 +86,29 @@ export function ChatPane() {
         reader.readAsDataURL(file)
       }
     }
+  }
+
+  const attachDocument = (file: File) => {
+    setDocumentError(null)
+    if (file.size > MAX_DOCUMENT_FILE_BYTES) {
+      setDocumentError(
+        `"${file.name}" is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Max size is ${MAX_DOCUMENT_FILE_BYTES / 1024 / 1024} MB.`
+      )
+      return
+    }
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const dataUrl = String(reader.result)
+      const base64 = dataUrl.slice(dataUrl.indexOf(',') + 1)
+      const result = await window.klenny.extractDocument({ filename: file.name, mimeType: file.type || 'application/octet-stream', base64 })
+      if (result.ok) {
+        setDocuments((prev) => [...prev, result])
+      } else {
+        setDocumentError(result.error)
+      }
+    }
+    reader.onerror = () => setDocumentError(`Failed to read "${file.name}".`)
+    reader.readAsDataURL(file)
   }
 
   return (
@@ -135,13 +176,17 @@ export function ChatPane() {
             {blockReason}
           </div>
         )}
-        {images.length > 0 && (
-          <div className="flex gap-2 mb-2 flex-wrap">
-            {images.map((img, i) => (
-              <img key={i} src={img} alt="attachment" className="h-16 rounded border border-klenny-border" />
-            ))}
+        {documentError && (
+          <div className="mb-2 text-xs text-red-400 bg-red-400/10 border border-red-400/30 rounded px-2 py-1.5">
+            {documentError}
           </div>
         )}
+        <PendingAttachmentRow
+          images={images}
+          documents={documents}
+          onRemoveImage={(i) => setImages((prev) => prev.filter((_, idx) => idx !== i))}
+          onRemoveDocument={(i) => setDocuments((prev) => prev.filter((_, idx) => idx !== i))}
+        />
         <textarea
           className="w-full min-h-[80px] bg-klenny-bg border border-klenny-border rounded-md p-3 text-sm resize-y disabled:opacity-50"
           placeholder={canSend ? 'Message Klenny… (paste images supported)' : 'Complete setup above to start chatting'}
@@ -158,12 +203,11 @@ export function ChatPane() {
         />
         <div className="flex justify-between mt-2">
           <div className="flex gap-2">
-            <button
-              className="text-xs px-2 py-1 border border-klenny-border rounded"
-              onClick={() => fileRef.current?.click()}
-            >
-              Attach image
-            </button>
+            <AttachMenu
+              disabled={!canSend}
+              onAttachImage={() => fileRef.current?.click()}
+              onAttachDocument={() => docFileRef.current?.click()}
+            />
             <input
               ref={fileRef}
               type="file"
@@ -175,6 +219,19 @@ export function ChatPane() {
                 const reader = new FileReader()
                 reader.onload = () => setImages((prev) => [...prev, String(reader.result)])
                 reader.readAsDataURL(file)
+                e.target.value = ''
+              }}
+            />
+            <input
+              ref={docFileRef}
+              type="file"
+              accept={DOCUMENT_ACCEPT}
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (!file) return
+                attachDocument(file)
+                e.target.value = ''
               }}
             />
           </div>

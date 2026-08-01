@@ -219,7 +219,11 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.assistantHistoryDelete, async (_e, tabId: string) => sessionStore.deleteAssistantHistoryEntry(tabId))
 
   ipcMain.handle(IPC.sendMessage, async (_e, payload) => {
-    void runUserTurn(payload.tabId, payload.text, payload.images)
+    void runUserTurn(payload.tabId, payload.text, payload.images, payload.documents)
+  })
+  ipcMain.handle(IPC.extractDocument, async (_e, request) => {
+    const { extractDocumentContent } = await import('./agent/documents/extract')
+    return extractDocumentContent(request)
   })
   ipcMain.handle(IPC.stopGeneration, async (_e, tabId: string) => stopGeneration(tabId))
   ipcMain.handle(IPC.continueTurn, async (_e, tabId: string) => {
