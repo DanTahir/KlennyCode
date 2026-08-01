@@ -385,26 +385,93 @@ export async function runUtilityPrompt(opts: {
   return out.trim()
 }
 
+/**
+ * Fixed skeleton the summarizer is required to fill in, instead of writing freeform prose. Each
+ * section has a narrow, single-purpose job:
+ *  - `Completed` / `Active` / `Blocked` are kept as three separate buckets specifically so a
+ *    partially-done or stuck task can never get silently flattened into a single "done"-sounding
+ *    paragraph — that's the exact failure mode the post-compaction checklist-skepticism note
+ *    (see `buildCurrentTimeNote`'s `justCompacted` handling) has to defend against today; a
+ *    structural split makes "done" mean done, not "mentioned favorably".
+ *  - `Next Move` gives a concrete resumption point instead of making the model re-derive "what
+ *    was I about to do" from prose after every compaction.
+ *  - `Relevant Files` gives file paths — the single most-reused fact after compaction for a
+ *    coding agent — their own scannable slot instead of burying them mid-sentence.
+ * `"(none)"` is an explicitly valid value for any bracket so the model isn't tempted to invent
+ * content just to fill a section that genuinely has nothing to report.
+ */
+const SUMMARY_TEMPLATE = `## Objective
+- [one or two brief sentences describing what the user is trying to accomplish]
+
+## Important Details
+- [constraints/preferences, decisions and why, important facts/assumptions, or "(none)"]
+
+## Work State
+### Completed
+- [finished work, verified facts, or changes actually made — or "(none)"]
+
+### Active
+- [current work, partial changes, or in-progress investigation — or "(none)"]
+
+### Blocked
+- [blockers, failing commands, or open unknowns — or "(none)"]
+
+## Next Move
+1. [immediate concrete next action, or "(none)"]
+2. [next action after that if known, or "(none)"]
+
+## Relevant Files
+- [file or directory path: why it matters — or "(none)"]`
+
+/**
+ * Summarizes older conversation history into the fixed `SUMMARY_TEMPLATE` skeleton above, rather
+ * than freeform prose, so every compaction pass produces the same predictable shape.
+ *
+ * `isUpdate` distinguishes two calls this function serves:
+ *  - `false` (no prior summary): `text` is a plain transcript, fill the template from scratch.
+ *  - `true` (a prior summary exists): `text` already contains that prior summary as an "anchored
+ *    summary" block ahead of the newer transcript (see `maybeCompact`'s `fullTranscript`
+ *    framing) — the model is told to revise that same template in place: keep still-true
+ *    entries, drop stale ones, merge in facts from the newer messages. This avoids the summary
+ *    silently regressing to less detail on every repeat compaction, which a fresh "just
+ *    summarize everything again" pass over an already-lossy prior summary plus new messages
+ *    would risk.
+ */
 export async function summarizeMessages(
   apiKey: string,
   model: string,
   text: string,
   signal?: AbortSignal,
-  supportsExplicitCaching?: boolean
+  supportsExplicitCaching?: boolean,
+  isUpdate?: boolean
 ): Promise<string> {
+  const truthfulness =
+    'This transcript already contains the literal, ground-truth record of every tool call that was actually made, ' +
+    'rendered as "[called toolName({...})]" markers and "tool result (toolName): ..." lines. Only ever report tool ' +
+    'calls, arguments, and outcomes that are literally present in this transcript, using their exact tool names and ' +
+    'argument keys as written — never invent, infer, paraphrase into a different schema, or assume a call succeeded ' +
+    '(or happened at all) beyond what the transcript explicitly shows. If a message merely proposes, plans, or ' +
+    'discusses an action (e.g. plan markdown describing a future edit) without a matching "[called ...]" marker, ' +
+    'record it under Active or Next Move as a proposal/plan — never under Completed. When genuinely unsure whether ' +
+    'an action happened, say so explicitly in the relevant section rather than filling in a plausible-sounding but ' +
+    'unverified account.'
+
+  const instruction = isUpdate
+    ? 'The input below starts with an anchored summary (already in the template format) from earlier compaction ' +
+      'passes, followed by newer conversation messages to fold in. Update the anchored summary in place: preserve ' +
+      'entries that are still true, remove ones that are now stale or superseded, and merge in new facts, files, ' +
+      'and progress from the newer messages below it. Reuse the exact same template structure — do not restart it ' +
+      'from scratch or drop sections that still have real content just because no new messages touched them.'
+    : 'Fill in the template below using the conversation history provided as input, replacing every bracketed ' +
+      'placeholder with the real content (or the literal text "(none)" if a section genuinely has nothing to ' +
+      'report). Do not add sections, rename headings, or change the structure.'
+
   return runUtilityPrompt({
     apiKey,
     model,
     systemPrompt:
-      'Summarize the following conversation history concisely, preserving key decisions, file paths, and open tasks. ' +
-      'This transcript already contains the literal, ground-truth record of every tool call that was actually made, ' +
-      'rendered as "[called toolName({...})]" markers and "tool result (toolName): ..." lines. Only ever report tool ' +
-      'calls, arguments, and outcomes that are literally present in this transcript, using their exact tool names and ' +
-      'argument keys as written — never invent, infer, paraphrase into a different schema, or assume a call succeeded ' +
-      '(or happened at all) beyond what the transcript explicitly shows. If a message merely proposes, plans, or ' +
-      'discusses an action (e.g. plan markdown describing a future edit) without a matching "[called ...]" marker, ' +
-      'summarize it as a proposal/plan — never as something that was executed. When genuinely unsure whether an action ' +
-      'happened, say so explicitly rather than filling in a plausible-sounding but unverified account.',
+      `Summarize the following conversation history by filling in this exact template:\n\n${SUMMARY_TEMPLATE}\n\n` +
+      `${instruction}\n\n${truthfulness}`,
     userContent: text,
     signal,
     supportsExplicitCaching

@@ -7,7 +7,11 @@ import type { ChatMessage as ORMessage } from '../openrouter/client'
  *
  * `messages` here should already be the slice actually meant for the wire (i.e. with any
  * compacted-away prefix removed by the caller) — see `messagesForWire` — while `compactionSummary`,
- * if given, is injected as its own system message standing in for that removed prefix.
+ * if given, is injected as its own system message standing in for that removed prefix. As of the
+ * template-based rewrite of `summarizeMessages` (see openrouter/client.ts), this string is no
+ * longer freeform prose — it's a fixed Markdown skeleton (Objective / Important Details / Work
+ * State: Completed/Active/Blocked / Next Move / Relevant Files) — but it's still just injected
+ * verbatim here; the structure is the summarizer's job, not this function's.
  *
  * Whenever `compactionSummary` is present, two distinct instructions can be attached to it, for
  * two distinct problems:
@@ -40,10 +44,10 @@ export function toORMessages(
 ): ORMessage[] {
   const out: ORMessage[] = [{ role: 'system', content: systemPrompt }]
   if (compactionSummary) {
-    let summaryMsg = `Summary of earlier conversation (older messages were omitted to save context):\n\n${compactionSummary}`
-    summaryMsg += `\n\nWhen you eventually write a final wrap-up message summarizing the whole task for the user, make sure it covers everything — including the earlier work captured in this summary above, not just the more recent messages below. Don't let older work get lost just because it's terser or less detailed than recent messages.`
+    let summaryMsg = `Structured summary of earlier conversation (older messages were omitted to save context):\n\n${compactionSummary}`
+    summaryMsg += `\n\nWhen you eventually write a final wrap-up message summarizing the whole task for the user, make sure it covers everything — including the "Completed" work captured in this summary above, not just the more recent messages below. Don't let older work get lost just because it's terser or less detailed than recent messages.`
     if (justCompacted) {
-      summaryMsg += `\n\nNote: this compaction just happened as part of your current turn, purely to manage context size — it is routine background maintenance, not a stopping point. In your next reply, briefly mention in one short sentence that you compacted/summarized earlier context to save space, then immediately continue the task exactly where you left off, using tool calls as needed. Do not end the turn with just that acknowledgment and no tool calls unless the task was already fully complete before compaction occurred.`
+      summaryMsg += `\n\nNote: this compaction just happened as part of your current turn, purely to manage context size — it is routine background maintenance, not a stopping point. In your next reply, briefly mention in one short sentence that you compacted/summarized earlier context to save space, then immediately continue the task exactly where you left off — the summary's "Next Move" section above is your resumption point — using tool calls as needed. Do not end the turn with just that acknowledgment and no tool calls unless the task was already fully complete before compaction occurred.`
     }
     out.push({ role: 'system', content: summaryMsg })
   }

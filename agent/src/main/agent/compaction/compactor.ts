@@ -60,8 +60,12 @@ export async function maybeCompact(opts: {
     .map((m) => transcriptLineForMessage(m))
     .filter((line): line is string => Boolean(line))
     .join('\n')
+  // When a prior summary exists, frame it as an "anchored summary" ahead of the newer transcript
+  // — see `summarizeMessages`'s `isUpdate` handling, which is told to revise this same block in
+  // place (keep still-true entries, drop stale ones, merge in new facts) rather than starting the
+  // template over from scratch on every repeat compaction pass.
   const fullTranscript = priorSummary
-    ? `Summary of earlier conversation:\n${priorSummary}\n\nNewer messages to fold into the summary:\n${transcript}`
+    ? `Anchored summary from earlier compaction:\n${priorSummary}\n\nNewer messages to fold in:\n${transcript}`
     : transcript
 
   // Route the summarization call to the cheap utility model rather than the main chat
@@ -72,7 +76,14 @@ export async function maybeCompact(opts: {
   const summaryModelId = utilityModelInfo.id
   const supportsExplicitCaching =
     Boolean(promptCachingEnabled) && utilityModelInfo.supportsExplicitCaching && modelSupportsCaching(utilityModelInfo)
-  const summaryText = await summarizeMessages(apiKey, summaryModelId, fullTranscript, signal, supportsExplicitCaching)
+  const summaryText = await summarizeMessages(
+    apiKey,
+    summaryModelId,
+    fullTranscript,
+    signal,
+    supportsExplicitCaching,
+    Boolean(priorSummary)
+  )
 
   return {
     compacted: true,
