@@ -170,7 +170,12 @@ async function launchAgentLoop(
   }
 }
 
-export async function runUserTurn(tabId: string, userText: string, images?: string[]): Promise<void> {
+export async function runUserTurn(
+  tabId: string,
+  userText: string,
+  images?: string[],
+  documents?: PendingDocument[]
+): Promise<void> {
   const tab = sessionStore.getTab(tabId)
   if (!tab) return
 
