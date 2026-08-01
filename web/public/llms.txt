@@ -1,0 +1,11 @@
+# KlennyCode
+
+KlennyCode is an open-source coding agent built with Electron, Next.js, and React. 
+It acts as a local desktop assistant for developers.
+
+## Repository Structure
+- `/agent`: The core Electron desktop application.
+- `/web`: The Next.js marketing website.
+
+## Links
+- GitHub: https://github.com/DanTahir/KlennyCode
