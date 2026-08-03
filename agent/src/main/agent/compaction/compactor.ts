@@ -27,6 +27,11 @@ export async function maybeCompact(opts: {
   /** existing rolling summary + cutoff from the tab, if compaction has already run at least once */
   priorSummary?: string
   priorCompactedThroughMessageId?: string
+  /** TabSession.activePlan, if a plan is currently being implemented in this tab — see its doc
+   *  comment. Appended verbatim onto the returned summary (never fed as extra/duplicate input to
+   *  the summarizer beyond however it already naturally appears in the transcript being folded)
+   *  so the exact approved plan text is guaranteed to survive compaction unchanged. */
+  activePlan?: { title: string; markdown: string }
 }): Promise<{ compacted: boolean; summary?: string; compactedThroughMessageId?: string }> {
   const {
     messages,
@@ -37,7 +42,8 @@ export async function maybeCompact(opts: {
     utilityModel,
     models,
     priorSummary,
-    priorCompactedThroughMessageId
+    priorCompactedThroughMessageId,
+    activePlan
   } = opts
 
   // Only the messages after whatever's already been folded into the summary are candidates for
@@ -60,12 +66,19 @@ export async function maybeCompact(opts: {
     .map((m) => transcriptLineForMessage(m))
     .filter((line): line is string => Boolean(line))
     .join('\n')
+  // Strip any verbatim plan block this same function appended onto a *previous* summary before
+  // handing that summary to the utility model as its "anchored summary" input — otherwise the
+  // model would end up paraphrasing/re-summarizing our verbatim block (defeating the point) and
+  // it would duplicate on every repeat compaction pass. The plan's own text may still appear
+  // naturally in `transcript` above if the save_plan/approval message itself falls within `old`
+  // — that's fine and expected, it's just not the thing we're relying on for verbatim survival.
+  const priorSummaryForPrompt = priorSummary ? stripActivePlanBlock(priorSummary) : priorSummary
   // When a prior summary exists, frame it as an "anchored summary" ahead of the newer transcript
   // — see `summarizeMessages`'s `isUpdate` handling, which is told to revise this same block in
   // place (keep still-true entries, drop stale ones, merge in new facts) rather than starting the
   // template over from scratch on every repeat compaction pass.
-  const fullTranscript = priorSummary
-    ? `Anchored summary from earlier compaction:\n${priorSummary}\n\nNewer messages to fold in:\n${transcript}`
+  const fullTranscript = priorSummaryForPrompt
+    ? `Anchored summary from earlier compaction:\n${priorSummaryForPrompt}\n\nNewer messages to fold in:\n${transcript}`
     : transcript
 
   // Route the summarization call to the cheap utility model rather than the main chat
@@ -82,14 +95,37 @@ export async function maybeCompact(opts: {
     fullTranscript,
     signal,
     supportsExplicitCaching,
-    Boolean(priorSummary)
+    Boolean(priorSummaryForPrompt)
   )
 
   return {
     compacted: true,
-    summary: summaryText,
+    // Append the currently-active plan's exact markdown back onto the LLM-produced summary —
+    // never generated or touched by the summarizer itself, so it can't be paraphrased, trimmed,
+    // or dropped no matter what the utility model does with the rest of the transcript.
+    summary: appendActivePlanBlock(summaryText, activePlan),
     compactedThroughMessageId: old[old.length - 1].id
   }
+}
+
+/** Marker pair delimiting the verbatim active-plan block appended onto a compaction summary by
+ *  `appendActivePlanBlock` — an HTML comment so it renders invisibly if a summary is ever shown
+ *  as-is, and unlikely to collide with anything a model would naturally write. Used by
+ *  `stripActivePlanBlock` to remove exactly that block (and nothing else) before re-summarizing. */
+const ACTIVE_PLAN_BLOCK_START = '<!-- ACTIVE_PLAN_VERBATIM_START -->'
+const ACTIVE_PLAN_BLOCK_END = '<!-- ACTIVE_PLAN_VERBATIM_END -->'
+
+function appendActivePlanBlock(summary: string, activePlan?: { title: string; markdown: string }): string {
+  if (!activePlan) return summary
+  return `${summary}\n\n${ACTIVE_PLAN_BLOCK_START}\nFull text of the plan currently being implemented ("${activePlan.title}"), preserved verbatim across compaction — treat this as the authoritative, unaltered spec for the task, not a paraphrase:\n\n${activePlan.markdown}\n${ACTIVE_PLAN_BLOCK_END}`
+}
+
+function stripActivePlanBlock(summary: string): string {
+  const startIdx = summary.indexOf(ACTIVE_PLAN_BLOCK_START)
+  if (startIdx === -1) return summary
+  const endIdx = summary.indexOf(ACTIVE_PLAN_BLOCK_END)
+  const afterEnd = endIdx === -1 ? summary.length : endIdx + ACTIVE_PLAN_BLOCK_END.length
+  return (summary.slice(0, startIdx) + summary.slice(afterEnd)).trim()
 }
 
 /** The literal marker syntax used below to render a *real*, structurally-verified tool call

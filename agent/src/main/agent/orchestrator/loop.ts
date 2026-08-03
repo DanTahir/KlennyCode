@@ -152,7 +152,8 @@ export async function agentLoop(
     utilityModel: settings.utilityModel,
     models,
     priorSummary: tab.compactionSummary,
-    priorCompactedThroughMessageId: tab.compactedThroughMessageId
+    priorCompactedThroughMessageId: tab.compactedThroughMessageId,
+    activePlan: tab.activePlan
   })
   if (compacted.compacted && compacted.summary && compacted.compactedThroughMessageId) {
     // `tab.messages` (the UI-facing history) is left completely untouched here — only these two

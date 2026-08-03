@@ -308,6 +308,83 @@ describe('maybeCompact', () => {
     const idxSecond = more.findIndex((m) => m.id === second.compactedThroughMessageId)
     expect(idxSecond).toBeGreaterThanOrEqual(idxFirst)
   })
+
+  test('appends the active plan verbatim onto the summary, unaffected by the summarizer', async () => {
+    const messages = [
+      ...buildMessages(20),
+      assistantMsg('a_last', 'ok', { promptTokens: 900_000, completionTokens: 10 })
+    ]
+    const activePlan = { title: 'My Plan', markdown: '# My Plan\n\n1. Do the thing\n2. Do another thing' }
+    const result = await maybeCompact({
+      messages,
+      model,
+      apiKey: 'k',
+      utilityModel: 'test/model',
+      models: [model],
+      activePlan
+    })
+    expect(result.compacted).toBe(true)
+    const summary = result.summary ?? ''
+    // The mock summarizer only ever echoes `SUMMARY OF: <transcript>` — since the plan's exact
+    // markdown appears verbatim in the returned summary too, it must have been appended after
+    // the summarizer ran, not generated/paraphrased by it.
+    expect(summary).toContain('# My Plan\n\n1. Do the thing\n2. Do another thing')
+    expect(summary).toContain('My Plan')
+  })
+
+  test('does not append any plan block when no active plan is given', async () => {
+    const messages = [
+      ...buildMessages(20),
+      assistantMsg('a_last', 'ok', { promptTokens: 900_000, completionTokens: 10 })
+    ]
+    const result = await maybeCompact({ messages, model, apiKey: 'k', utilityModel: 'test/model', models: [model] })
+    expect(result.compacted).toBe(true)
+    expect(result.summary ?? '').not.toContain('ACTIVE_PLAN_VERBATIM')
+  })
+
+  test('a repeat compaction strips the previously-appended plan block before re-summarizing (no duplication, no re-paraphrasing)', async () => {
+    const messages = [
+      ...buildMessages(20),
+      assistantMsg('a_last', 'ok', { promptTokens: 900_000, completionTokens: 10 })
+    ]
+    const activePlan = { title: 'My Plan', markdown: '# My Plan\n\nStep one.' }
+    const first = await maybeCompact({
+      messages,
+      model,
+      apiKey: 'k',
+      utilityModel: 'test/model',
+      models: [model],
+      activePlan
+    })
+    expect(first.compacted).toBe(true)
+    // Exactly one occurrence of the plan markdown in the first summary.
+    expect((first.summary ?? '').split('Step one.').length - 1).toBe(1)
+
+    const more = [
+      ...messages,
+      ...buildMessages(10),
+      userMsg('u_new', 'more'),
+      assistantMsg('a_new', 'more ok', { promptTokens: 950_000, completionTokens: 10 })
+    ]
+    const second = await maybeCompact({
+      messages: more,
+      model,
+      apiKey: 'k',
+      utilityModel: 'test/model',
+      models: [model],
+      priorSummary: first.summary,
+      priorCompactedThroughMessageId: first.compactedThroughMessageId,
+      activePlan
+    })
+    expect(second.compacted).toBe(true)
+    const summary = second.summary ?? ''
+    // Still exactly one occurrence — the prior block was stripped before being fed back into the
+    // summarizer, and only the final append put it back, so it never duplicates across passes.
+    expect(summary.split('Step one.').length - 1).toBe(1)
+    // The stripped-of-plan prior summary (not the plan text) is what the mock summarizer actually
+    // echoed back — confirms the anchored-summary input excluded our appended verbatim block.
+    expect(summary).not.toContain('ACTIVE_PLAN_VERBATIM_START -->\nAnchored summary')
+  })
 })
 
 describe('messagesForWire + toORMessages (history untouched, summary injected only for the wire)', () => {

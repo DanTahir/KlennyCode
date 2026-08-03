@@ -259,6 +259,11 @@ export async function approvePlan(slug: string, tabId: string): Promise<void> {
       tab.messages.push(checklistMsg)
       tab.activeChecklist = activeChecklist
     }
+    // Pin the full approved plan text on the tab itself (not injected into the system prompt —
+    // see the field's doc comment) so `maybeCompact` can append it verbatim onto the compaction
+    // summary, guaranteeing the exact approved wording survives even once compaction has folded
+    // away the ChatMessage(s) that first carried it.
+    tab.activePlan = { title: plan.title, markdown: plan.markdown }
 
     const userMsg: ChatMessage = { id: nanoid(), role: 'user', blocks: [{ type: 'text', text: approvalText }], createdAt: Date.now() }
     tab.messages.push(userMsg)

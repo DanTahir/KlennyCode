@@ -540,6 +540,19 @@ export interface TabSession {
    *  plan's approval (never automatically on completion — the finished checklist stays visible
    *  as a record of what was done). */
   activeChecklist?: { messageId: string; title: string; items: ChecklistItem[] }
+  /** The full markdown of the plan currently being implemented in this tab, if any — set once
+   *  by approvePlan() (never by create_checklist, which has no associated plan document). Unlike
+   *  activeChecklist this is NOT re-injected into the system prompt every turn (that would be a
+   *  large, constant per-turn token cost for a document that rarely changes) — its only consumer
+   *  is `maybeCompact`, which appends this text verbatim, byte-for-byte, onto the rolling
+   *  compaction summary whenever compaction actually runs, so the exact approved wording is
+   *  never itself paraphrased/lossy-summarized by the utility model even after the original
+   *  save_plan/approval ChatMessage(s) that carried it scroll out of the kept-recent window (the
+   *  utility model still sees the plan naturally as part of the transcript being summarized —
+   *  this field's text is only ever appended after the fact, never removed from that input).
+   *  Cleared only by approving a *new* plan (mirrors activeChecklist — never automatically on
+   *  completion). */
+  activePlan?: { title: string; markdown: string }
   /** 'project' (default, omitted on old persisted tabs): a normal workspace-scoped coding tab.
    *  'assistant': a tab opened via the sidebar "Open Assistant" button — has no workspace, only
    *  assistant tools (Gmail/Discord/scheduler/web/cross-project/memory). Workspace-independent:
