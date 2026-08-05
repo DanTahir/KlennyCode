@@ -3,7 +3,7 @@ import './globals.css';
 
 const SITE_URL = 'https://klennycode.com';
 const DESCRIPTION =
-  'Klenny Code is a free, open-source desktop coding agent. Bring your own OpenRouter key and use hundreds of AI models, with memory, cross-project lookup, scheduling, and more — for Windows, macOS, and Linux.';
+  'Klenny Code is a free, open-source desktop coding agent. Bring your own OpenRouter key and use hundreds of AI models, with memory, cross-project lookup, scheduling, agent-built Pawprints mini apps, shared Assistant window memory, and more — for Windows, macOS, and Linux.';
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -17,6 +17,9 @@ export const metadata: Metadata = {
     'Claude',
     'GPT',
     'desktop AI agent',
+    'Pawprints',
+    'AI-generated desktop widgets',
+    'Assistant window memory',
   ],
   openGraph: {
     title: 'Klenny Code — The open-source AI coding agent for your desktop',

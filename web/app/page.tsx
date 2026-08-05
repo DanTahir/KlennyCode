@@ -66,10 +66,11 @@ export default function HomePage() {
             Klenny Code is a free, open-source AI coding agent for Windows, macOS, and Linux.
             Bring your own OpenRouter key and unleash hundreds of frontier models — Claude, GPT,
             Gemini, and more — on your real codebase, with memory, cross-project lookup, and a
-            scheduler that works even while you&apos;re away. It comes with a playful corgi
-            personality by default, fully yours to rewrite, dial down, or switch off in a
-            plain-text file. No subscriptions. No lock-in. Just a very good boy with a very big
-            toolbox.
+            scheduler that works even while you&apos;re away. It can even build you Pawprints —
+            small sandboxed desktop widgets of its own — and keep every Assistant window it opens
+            in sync via shared memory. It comes with a playful corgi personality by default, fully
+            yours to rewrite, dial down, or switch off in a plain-text file. No subscriptions. No
+            lock-in. Just a very good boy with a very big toolbox.
           </p>
 
           <DownloadButtons release={release} showGithubButton align="left" />
@@ -139,7 +140,7 @@ export default function HomePage() {
 
       {/* ---------- Mini feature strip ---------- */}
       <section className="mx-auto max-w-6xl px-6 pb-20">
-        <div className="grid grid-cols-2 gap-8 sm:grid-cols-3 lg:grid-cols-6">
+        <div className="grid grid-cols-2 gap-8 sm:grid-cols-4 lg:grid-cols-4">
           <MiniFeature icon="🔑" title="Bring your own key, use any model" color="yellow">
             Connect your own OpenRouter API key and pick from hundreds of models — Claude, GPT,
             Gemini, and more.
@@ -163,6 +164,14 @@ export default function HomePage() {
           <MiniFeature icon="💻" title="Real terminal, real cost control" color="red">
             A genuine interactive shell lives right in the app, alongside a spending cap and cost
             reports so you always know exactly what you&apos;re spending, on what.
+          </MiniFeature>
+          <MiniFeature icon="🐾" title="Pawprints — agent-built mini apps" color="orange">
+            Ask Klenny to build a sandboxed desktop widget — a weather panel, calendar, or clock —
+            that runs in its own window, approved by you before a single line runs.
+          </MiniFeature>
+          <MiniFeature icon="🔗" title="Assistant windows that stay in sync" color="purple">
+            Every Assistant tab quietly shares one memory pool, so opening a second window never
+            means starting from scratch.
           </MiniFeature>
         </div>
       </section>
@@ -188,6 +197,37 @@ export default function HomePage() {
               className="w-full"
             />
           </div>
+        </div>
+      </section>
+
+      {/* ---------- Pawprints spotlight ---------- */}
+      <section className="mx-auto max-w-5xl px-6 pb-24">
+        <div className="mb-8 text-center">
+          <h2 className="mb-3 text-3xl font-bold text-corgi-cream sm:text-4xl">
+            Meet <span className="text-corgi-orange">Pawprints</span> 🐾
+          </h2>
+          <p className="mx-auto max-w-2xl text-corgi-cream/70">
+            Ask Klenny to build a tiny desktop app — a weather widget, a calendar, an analog
+            clock — and it runs in its own sandboxed window, separate from the chat. Every
+            Pawprint goes through a human approval step showing its full source, any npm packages,
+            and any network domains before it ever runs, and the My Pawprints panel lets you
+            manage every instance you&apos;ve created.
+          </p>
+        </div>
+        <div className="overflow-hidden rounded-2xl border border-white/10 bg-white/5 shadow-2xl shadow-black/40">
+          <div className="flex items-center gap-2 border-b border-white/10 bg-black/30 px-4 py-2.5">
+            <span className="h-3 w-3 rounded-full bg-red-400/70" />
+            <span className="h-3 w-3 rounded-full bg-yellow-400/70" />
+            <span className="h-3 w-3 rounded-full bg-green-400/70" />
+            <span className="ml-3 text-xs text-corgi-cream/40">My Pawprints</span>
+          </div>
+          <Image
+            src="/KlennyCodePawprints.png"
+            alt="Klenny Code's My Pawprints panel with a 7-Day Weather widget, an Analog Clock Plus widget, and a Calendar widget, each running as its own sandboxed desktop window"
+            width={1917}
+            height={1017}
+            className="w-full"
+          />
         </div>
       </section>
 
@@ -246,6 +286,20 @@ export default function HomePage() {
           <FeatureCard icon="🖼️" title="Vision, built in" color="green">
             Attach or paste images right in chat and let multimodal models reason about
             screenshots, mockups, and diagrams alongside your code.
+          </FeatureCard>
+
+          <FeatureCard icon="🐾" title="Pawprints — agent-built mini apps" color="orange">
+            Klenny can generate small, sandboxed desktop widgets — sticky notes, timers, a
+            weather panel — that run in their own window, outside the chat. Creating or updating
+            one always requires your explicit approval of the source, packages, and network
+            domains, and the My Pawprints panel lets you open, close, or delete any instance.
+          </FeatureCard>
+
+          <FeatureCard icon="🔗" title="Assistant window shared memory" color="purple">
+            Every Assistant tab writes a short note about what it did after each turn and reads a
+            digest of every other tab's notes at the start of its own — so a second or third
+            Assistant window picks up right where the others left off, with a shared, auto-
+            compacting memory pool you can inspect and manage from the Memory panel.
           </FeatureCard>
         </div>
       </section>
