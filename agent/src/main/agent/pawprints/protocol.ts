@@ -8,10 +8,23 @@ export const PAWPRINT_SCHEME = 'pawprint'
 
 /** In-memory registry of what each currently-open instance should serve, keyed by instanceId.
  *  Populated by windowManager.ts right before creating/reloading a window, read by the
- *  protocol handler on every request — never touches disk. */
+ *  protocol handler on every request — never touches disk. `approvedDomains` is threaded through
+ *  so `htmlShell()` can bake the real per-Pawprint `connect-src` into its own `<meta>` CSP tag
+ *  (see the CSP intersection note on `htmlShell` below for why this field must not be dropped). */
 interface ServedContent {
   bundleJs: string
   themeJson: string
+  approvedDomains: string[]
+}
+
+/** Builds the CSP connect-src value for a given approved-domain list — 'none' when empty, or
+ *  the exact https:// hostnames otherwise. Mirrors the webRequest allowlist exactly; webRequest
+ *  remains the primary hard gate regardless of what this string says. Lives here (not
+ *  windowManager.ts) so htmlShell() below can call it directly without a circular import;
+ *  re-exported from windowManager.ts for backward compatibility with existing callers/tests. */
+export function buildConnectSrc(approvedDomains: string[]): string {
+  if (approvedDomains.length === 0) return "'none'"
+  return approvedDomains.map((d) => `https://${d}`).join(' ')
 }
 
 const servedByInstance = new Map<string, ServedContent>()
@@ -24,12 +37,23 @@ export function clearServedContent(instanceId: string): void {
   servedByInstance.delete(instanceId)
 }
 
-function htmlShell(instanceId: string): string {
+/** NOTE on CSP double-enforcement: this document has TWO Content-Security-Policy sources — this
+ *  `<meta>` tag, and the HTTP response header windowManager.ts injects via `onHeadersReceived`.
+ *  Per the CSP spec, when both a meta CSP and a header CSP apply to the same document, browsers
+ *  enforce the INTERSECTION (most-restrictive-wins per directive), not just the header. This
+ *  previously hardcoded `connect-src 'none'` here unconditionally, which silently overrode
+ *  whatever domains a Pawprint had actually been approved for — every network-enabled Pawprint's
+ *  `fetch()` calls failed with a generic "Failed to fetch" (found via a real weather Pawprint;
+ *  the domain allowlist/CSP header were both correctly configured, this tag was the only actual
+ *  blocker). Fix: build the same real connect-src here from `approvedDomains`, so the two CSP
+ *  sources agree instead of the meta tag silently re-narrowing to 'none'. Do not hardcode 'none'
+ *  here again — it must always reflect the actual per-Pawprint approved-domain list. */
+function htmlShell(instanceId: string, approvedDomains: string[]): string {
   return `<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ${buildConnectSrc(approvedDomains)}" />
     <style>html,body,#root{margin:0;padding:0;width:100%;height:100%;overflow:auto}</style>
   </head>
   <body>
@@ -84,7 +108,7 @@ export function installPawprintProtocolHandler(session: Electron.Session): void 
     if (url.pathname === '/bundle.js' || url.pathname === '') {
       return new Response(content.bundleJs, { headers: { 'Content-Type': 'text/javascript' } })
     }
-    return new Response(htmlShell(instanceId), { headers: { 'Content-Type': 'text/html' } })
+    return new Response(htmlShell(instanceId, content.approvedDomains), { headers: { 'Content-Type': 'text/html' } })
   })
 }
 

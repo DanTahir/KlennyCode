@@ -3,7 +3,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { nanoid } from 'nanoid'
 import { mergePawprintTheme, DEFAULT_PAWPRINT_THEME, type PawprintThemeTokens } from './theme'
-import { installPawprintProtocolHandler, setServedContent, clearServedContent, pawprintEntryUrl } from './protocol'
+import { installPawprintProtocolHandler, setServedContent, clearServedContent, pawprintEntryUrl, buildConnectSrc } from './protocol'
 import { bundlePawprint } from './bundler'
 import { readManifest, readState, writeStateFromMainProcess } from './storage'
 import { readRegistry, writeRegistry } from './storage'
@@ -64,14 +64,10 @@ async function persistInstanceRecord(record: PawprintInstanceRecord): Promise<vo
   await writeRegistry(registry)
 }
 
-/** Builds the CSP connect-src value for a given approved-domain list — 'none' when empty, or
- *  the exact https:// hostnames otherwise. Mirrors the webRequest allowlist exactly; webRequest
- *  remains the primary hard gate regardless of what this string says (see protocol.ts / plan's
- *  enforcement-order note). Exported for the Phase 1 proof-of-concept / tests. */
-export function buildConnectSrc(approvedDomains: string[]): string {
-  if (approvedDomains.length === 0) return "'none'"
-  return approvedDomains.map((d) => `https://${d}`).join(' ')
-}
+/** Re-exported so existing callers/tests importing buildConnectSrc from windowManager.ts keep
+ *  working — the real definition now lives in protocol.ts so htmlShell() can call it directly
+ *  without a circular import (windowManager.ts already imports from protocol.ts). */
+export { buildConnectSrc }
 
 function installNetworkAllowlist(sess: Electron.Session, approvedDomains: string[]): void {
   const allowed = new Set(approvedDomains)
@@ -123,7 +119,7 @@ export async function openPawprintWindow(opts: OpenInstanceOptions): Promise<{ i
   const bundle = await bundlePawprint(opts.pawprintId, source, manifest.packages, manifest.sourceVersion)
 
   const theme = mergePawprintTheme(DEFAULT_PAWPRINT_THEME, manifest.themeOverride)
-  setServedContent(instanceId, { bundleJs: bundle.code, themeJson: JSON.stringify(theme) })
+  setServedContent(instanceId, { bundleJs: bundle.code, themeJson: JSON.stringify(theme), approvedDomains: manifest.approvedDomains })
 
   const sessionPartition = `pawprint-${instanceId}`
   const sess = electronSession.fromPartition(sessionPartition, { cache: false })

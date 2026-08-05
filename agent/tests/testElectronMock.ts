@@ -158,16 +158,28 @@ mock.module('electron', () => ({
         const existing = cache.get(partition)
         if (existing) return existing
         const handledSchemes = new Set<string>()
+        // Handlers ARE stored (not discarded) so pawprints-protocol.test.ts can invoke a
+        // registered scheme handler directly and assert on its real Response — needed to catch
+        // bugs like the htmlShell() hardcoded connect-src 'none' regression, which no purely
+        // behavioral (never-invokes-the-handler) mock could ever surface.
+        const schemeHandlers = new Map<string, (request: Request) => Response | Promise<Response>>()
         const sess = {
           protocol: {
-            handle: (scheme: string, _handler: unknown) => {
+            handle: (scheme: string, handler: (request: Request) => Response | Promise<Response>) => {
               if (handledSchemes.has(scheme)) {
                 throw new Error(`Failed to register protocol: ${scheme}`)
               }
               handledSchemes.add(scheme)
+              schemeHandlers.set(scheme, handler)
             },
             isProtocolHandled: (scheme: string) => handledSchemes.has(scheme),
-            unhandle: (scheme: string) => handledSchemes.delete(scheme)
+            unhandle: (scheme: string) => {
+              handledSchemes.delete(scheme)
+              schemeHandlers.delete(scheme)
+            },
+            // Test-only helper (not part of the real Electron protocol API) so tests can invoke
+            // a registered scheme's handler directly without a real network stack.
+            __getHandler: (scheme: string) => schemeHandlers.get(scheme)
           },
           webRequest: { onBeforeRequest: (_handler: unknown) => {}, onHeadersReceived: (_handler: unknown) => {} },
           setPermissionRequestHandler: (_handler: unknown) => {}

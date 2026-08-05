@@ -29,6 +29,7 @@ import browserAutomationMd from './bundled/browser-automation.md?raw'
 import browserAutomationLegacy1Md from './bundled/_legacy/browser-automation.legacy-1.md?raw'
 import browserAutomationLegacy2Md from './bundled/_legacy/browser-automation.legacy-2.md?raw'
 import browserAutomationLegacy3Md from './bundled/_legacy/browser-automation.legacy-3.md?raw'
+import pawprintAuthoringMd from './bundled/pawprint-authoring.md?raw'
 
 export interface BundledSkill {
   content: string
@@ -38,7 +39,9 @@ export interface BundledSkill {
   /** Every distinct content variant this skill actually shipped as under the old marker-only
    *  seeding scheme (see the file-level doc comment above), oldest first. A legacy install's
    *  on-disk content is compared against each of these in turn; matching any of them means the
-   *  user never touched the file, so it's safe to upgrade to the current `content`. */
+   *  user never touched the file, so it's safe to upgrade to the current `content`. Empty for any
+   *  skill introduced after versioning already existed — it never shipped under the old
+   *  marker-only scheme, so there's nothing to migrate from. */
   legacyVariants: string[]
 }
 
@@ -47,5 +50,10 @@ export const BUNDLED_SKILLS: Record<string, BundledSkill> = {
     content: browserAutomationMd,
     version: 2,
     legacyVariants: [browserAutomationLegacy1Md, browserAutomationLegacy2Md, browserAutomationLegacy3Md]
+  },
+  'pawprint-authoring': {
+    content: pawprintAuthoringMd,
+    version: 1,
+    legacyVariants: []
   }
 }
