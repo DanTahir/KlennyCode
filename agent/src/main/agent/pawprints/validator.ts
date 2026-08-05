@@ -1,6 +1,6 @@
+import './esbuildBinaryPath' // side-effect import — see that file's doc comment (Bug #10)
 import * as acorn from 'acorn'
 import { simple as walkSimple } from 'acorn-walk'
-import { transform } from 'esbuild'
 import { VETTED_LIBRARY_NAMES } from './vettedLibraries'
 
 /** SDK virtual module name — the one import every Pawprint is allowed to use to talk to the
@@ -46,6 +46,12 @@ export interface ValidationResult {
 export async function validatePawprintSource(source: string, approvedPackageNames: string[]): Promise<ValidationResult> {
   const errors: string[] = []
 
+  // Dynamic import — see bundler.ts's identical comment on its own `await import('esbuild')`
+  // for why this must not be a static top-level `import { transform } from 'esbuild'` (Bug #10:
+  // Rollup hoists a static import of this externalized native-binary package above every other
+  // top-level statement in the bundled main-process chunk, including esbuildBinaryPath.ts's
+  // env-var fix, defeating it).
+  const { transform } = await import('esbuild')
   let compiled: string
   try {
     const result = await transform(source, { loader: 'tsx', jsx: 'automatic', format: 'esm' })

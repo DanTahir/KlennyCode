@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { resolveForExternalProcess } from './asarPaths'
 
 const nodeRequire = createRequire(import.meta.url)
 
@@ -48,14 +49,18 @@ function resolveBrowserSafeEntry(name: string): string {
       for (const [fromRel, toRel] of Object.entries(pkg.browser)) {
         const fromAbs = join(pkgDir, fromRel)
         if (fromAbs === mainEntryPath && typeof toRel === 'string') {
-          return join(pkgDir, toRel)
+          // Bug #11: redirect to the app.asar.unpacked mirror before returning — see bundler.ts's
+          // REACT_ALIASES comment / asarPaths.ts's doc comment for the full explanation. Every
+          // vetted library needs a matching `asarUnpack` glob in package.json for this to find a
+          // real file once packaged.
+          return resolveForExternalProcess(join(pkgDir, toRel))
         }
       }
     }
   } catch {
     // No package.json / no browser field / malformed — fall back to the default main entry.
   }
-  return mainEntryPath
+  return resolveForExternalProcess(mainEntryPath)
 }
 
 /** esbuild `alias` map entries for every vetted library, resolved once at module load (same

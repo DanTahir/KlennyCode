@@ -1,4 +1,4 @@
-import { build } from 'esbuild'
+import './esbuildBinaryPath' // side-effect import — see that file's doc comment (Bug #10)
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { mkdir } from 'node:fs/promises'
@@ -6,17 +6,28 @@ import { PAWPRINT_SDK_MODULE } from './validator'
 import { PAWPRINT_SDK_SOURCE } from './sdk'
 import { pawprintNodeModulesDir } from './paths'
 import { VETTED_LIBRARY_ALIASES } from './vettedLibraries'
+import { resolveForExternalProcess } from './asarPaths'
 import type { PawprintPackageRef } from './types'
 
 const nodeRequire = createRequire(import.meta.url)
 
+// Bug #11: once packaged, `require.resolve()` returns an asar-archive-internal path — fine for
+// Electron's own patched `require()`/`fs.readFile`, but esbuild's `alias` option hands these
+// paths to esbuild's own spawned binary process (a real separate OS process, unaffected by
+// Electron's asar transparency — see asarPaths.ts's doc comment) to read directly off disk.
+// `app.asar` is one opaque archive file from the OS's point of view, so an asar-internal path is
+// simply not a file that exists there, and esbuild fails with "Could not resolve ...". Redirect
+// each alias to its `app.asar.unpacked` mirror instead — react/react-dom must have a matching
+// `asarUnpack` glob in package.json's `build.asarUnpack` list for this to actually find a file
+// (see that list's own comment for the "every aliased package needs an entry" rule).
+//
 // Resolved once at module load, not per-build — avoids repeated filesystem `require.resolve()`
 // lookups under load (each `bundlePawprint()` call previously re-resolved all four aliases).
 const REACT_ALIASES = {
-  react: nodeRequire.resolve('react'),
-  'react-dom': nodeRequire.resolve('react-dom'),
-  'react-dom/client': nodeRequire.resolve('react-dom/client'),
-  'react/jsx-runtime': nodeRequire.resolve('react/jsx-runtime')
+  react: resolveForExternalProcess(nodeRequire.resolve('react')),
+  'react-dom': resolveForExternalProcess(nodeRequire.resolve('react-dom')),
+  'react-dom/client': resolveForExternalProcess(nodeRequire.resolve('react-dom/client')),
+  'react/jsx-runtime': resolveForExternalProcess(nodeRequire.resolve('react/jsx-runtime'))
 }
 
 // Phase 8: vetted-library aliases (nanoid, etc. — see vettedLibraries.ts) merged in alongside
@@ -152,6 +163,20 @@ export async function bundlePawprint(id: string, source: string, packages: Pawpr
   // not just when packages were materialized into it.
   await mkdir(pawprintNodeModulesDir(id), { recursive: true })
 
+  // Dynamic import, not a static `import { build } from 'esbuild'` at the top of this file —
+  // load-bearing, not a style choice. Rollup hoists a STATIC import of an external package (like
+  // 'esbuild', which can't be bundled since it ships a native binary) to the very top of the
+  // single main-process output chunk, evaluated before ANY of this file's own top-level code —
+  // including esbuildBinaryPath.ts's module-load-time env var fix (Bug #10). A dynamic
+  // `import()` is a genuine runtime expression Rollup can't hoist, so it only runs here, well
+  // after esbuildBinaryPath's side effect has already set process.env.ESBUILD_BINARY_PATH.
+  // Confirmed by direct reproduction: with a static import, esbuild's own internal
+  // require.resolve() still returned an asar-archive-internal path for its native binary once
+  // packaged, causing `spawn ... ENOENT` / "The service is no longer running: write EPIPE" even
+  // though the binary was correctly unpacked to disk (package.json's asarUnpack) and the env var
+  // fix module existed — the fix's code ran, but too late, after esbuild had already captured
+  // its own (wrong) binary path at that earlier, hoisted import evaluation.
+  const { build } = await import('esbuild')
   const buildOnce = () =>
     build({
       stdin: { contents: ENTRY_WRAPPER, loader: 'tsx', resolveDir: pawprintNodeModulesDir(id) },

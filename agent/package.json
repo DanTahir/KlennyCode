@@ -97,7 +97,11 @@
       "**/node_modules/playwright/**",
       "**/node_modules/playwright-core/**",
       "**/node_modules/esbuild/**",
-      "**/node_modules/@esbuild/**"
+      "**/node_modules/@esbuild/**",
+      "**/node_modules/react/**",
+      "**/node_modules/react-dom/**",
+      "**/node_modules/scheduler/**",
+      "**/node_modules/nanoid/**"
     ],
     "publish": {
       "provider": "github",
