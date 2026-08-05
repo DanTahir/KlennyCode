@@ -8,7 +8,13 @@
  */
 import { app, nativeImage, type NativeImage } from 'electron'
 import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+// This app is ESM (`"type": "module"` in package.json), so `__dirname` isn't a global here —
+// it must be derived from this module's own `import.meta.url`, same pattern used in ipc.ts and
+// pawprints/windowManager.ts.
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 function brandingDir(): string {
   return join(app.getPath('userData'), 'branding')

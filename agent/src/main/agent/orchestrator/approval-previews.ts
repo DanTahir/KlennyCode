@@ -11,6 +11,9 @@ import { emitToAll } from './state'
 import { loadDocxPackage } from '../docx/package'
 import { buildDocxModel } from '../docx/model'
 import { applyEditOp, type DocxEditOp } from '../docx/ops'
+import { readSource, readManifest } from '../pawprints/storage'
+import { validateDomainList } from '../pawprints/domains'
+import { resolvePackages } from '../pawprints/packagePipeline'
 
 export async function previewMutatingTool(
   name: string,
@@ -25,6 +28,9 @@ export async function previewMutatingTool(
       title: `Run command: ${args.command}`,
       extra: { command: String(args.command), cwd: args.cwd ? String(args.cwd) : undefined }
     }
+  }
+  if (name === 'create_pawprint' || name === 'update_pawprint') {
+    return previewPawprintApproval(name, args)
   }
   const path = String(args.path ?? '')
   if (name === 'write_file') {
@@ -116,6 +122,77 @@ export async function previewMutatingTool(
     return { title: `Delete ${path}`, extra: { filePath: path, diff: makeDiff(oldContent, '', path) } }
   } catch {
     return { title: `Delete ${path}`, extra: { filePath: path } }
+  }
+}
+
+/** Builds the combined create_pawprint/update_pawprint approval preview: name/description,
+ *  source diff (against empty for create, against the existing approved source for update),
+ *  requested extra packages (dry-run resolved via the same package pipeline used at execution
+ *  time, so the approval dialog shows real resolved transitive versions, not just what the agent
+ *  requested), and requested domains (format/count validated the same way execution-time does).
+ *  Never writes anything to disk — purely a preview. If package/domain validation fails here,
+ *  the preview still renders (with an error note) rather than throwing, so the user always gets
+ *  to see *something* and reject cleanly; the same validation runs again, authoritatively, in
+ *  manager.ts's createPawprint/updatePawprint at execution time after approval. */
+async function previewPawprintApproval(
+  name: 'create_pawprint' | 'update_pawprint',
+  args: Record<string, unknown>
+): Promise<{ title: string; extra: Partial<PendingAction> }> {
+  const pawprintName = name === 'create_pawprint' ? String(args.name ?? '') : undefined
+  const pawprintId = name === 'update_pawprint' ? String(args.pawprintId ?? '') : undefined
+  const newSource = String(args.source ?? '')
+
+  let oldSource = ''
+  let displayName = pawprintName
+  if (name === 'update_pawprint' && pawprintId) {
+    oldSource = (await readSource(pawprintId).catch(() => null)) ?? ''
+    const manifest = await readManifest(pawprintId).catch(() => null)
+    displayName = manifest?.name ?? pawprintId
+  }
+
+  const requestedPackages = Array.isArray(args.packages)
+    ? (args.packages as unknown[]).filter(
+        (p): p is { name: string; version: string } => !!p && typeof p === 'object' && 'name' in p && 'version' in p
+      )
+    : []
+  const requestedDomains = Array.isArray(args.domains) ? (args.domains as unknown[]).filter((d): d is string => typeof d === 'string') : []
+
+  let pawprintPackages: { name: string; version: string; direct: boolean }[] | undefined
+  let pawprintDomains: string[] | undefined
+  const notes: string[] = []
+
+  if (requestedPackages.length > 0) {
+    const result = await resolvePackages(requestedPackages).catch(
+      (e) => ({ ok: false as const, error: e instanceof Error ? e.message : String(e) })
+    )
+    if (result.ok) {
+      pawprintPackages = result.packages.map((p) => ({ name: p.ref.name, version: p.ref.version, direct: p.ref.direct }))
+    } else {
+      notes.push(`Package resolution preview failed: ${result.error}`)
+    }
+  }
+
+  if (requestedDomains.length > 0) {
+    const domainCheck = validateDomainList(requestedDomains)
+    if (domainCheck.ok) {
+      pawprintDomains = domainCheck.hostnames
+    } else {
+      notes.push(`Domain validation preview failed: ${domainCheck.error}`)
+    }
+  }
+
+  const diff = oldSource !== newSource ? makeDiff(oldSource, newSource, `${displayName ?? 'Pawprint'}/App.tsx`) : undefined
+  const title = name === 'create_pawprint' ? `Create Pawprint "${displayName ?? ''}"` : `Update Pawprint "${displayName ?? pawprintId ?? ''}"`
+
+  return {
+    title,
+    extra: {
+      pawprintName: displayName,
+      pawprintPackages,
+      pawprintDomains,
+      diff,
+      command: notes.length > 0 ? notes.join(' ') : undefined
+    }
   }
 }
 

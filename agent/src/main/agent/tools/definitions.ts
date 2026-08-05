@@ -749,6 +749,87 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'create_pawprint',
+        description:
+          'Creates a new Pawprint — a small, sandboxed single-file React (TSX) app that runs in its own isolated BrowserWindow (like a desktop widget). Always hard-blocked pending human approval regardless of approval mode: the user sees the source, any requested extra npm packages (with resolved transitive versions), and any requested network domains in one combined review before anything is written to disk. Never has access to the OpenRouter API key, run_command, or the broader filesystem. To edit a Pawprint\'s persisted state later, call read_pawprint_source to find its state file path, then use read_file/edit_file/write_file directly.',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Human-readable Pawprint name, e.g. "Sticky Notes".' },
+            description: { type: 'string', description: 'Short description shown in the My Pawprints panel.' },
+            instanceModel: {
+              type: 'string',
+              enum: ['single', 'per-item'],
+              description: '"single" for one shared instance (e.g. a calendar); "per-item" if the user may want multiple independent instances (e.g. one sticky note per note).'
+            },
+            source: { type: 'string', description: 'Full single-file TSX source for the Pawprint\'s App component. No dynamic imports, no `require`/`eval`/`process`/`__dirname`/`__filename`/`globalThis`, no imports beyond React and the klenny-pawprint-sdk plus any explicitly-requested `packages`.' },
+            packages: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: { name: { type: 'string' }, version: { type: 'string' } },
+                required: ['name', 'version']
+              },
+              description: 'Optional extra npm packages to bundle, each fetched from the npm registry and integrity-checked at approval time (never resolved at runtime). Omit for none.'
+            },
+            domains: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Optional exact hostnames (no scheme/port/path/wildcard/IP literal) to allow this Pawprint to fetch from over HTTPS. Max 10. Omit for no network access.'
+            }
+          },
+          required: ['name', 'description', 'instanceModel', 'source']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'update_pawprint',
+        description:
+          'Updates an existing Pawprint\'s source, packages, and/or domains — always hard-blocked pending human approval regardless of approval mode, same combined review as create_pawprint (source diff + packages + domains). Updates are destructive: only the latest approved source/packages/domains are kept, there is no version history. Use read_pawprint_source first to fetch the current source to edit.',
+        parameters: {
+          type: 'object',
+          properties: {
+            pawprintId: { type: 'string', description: 'The Pawprint\'s id, from read_pawprint_source or list context.' },
+            source: { type: 'string', description: 'Full replacement TSX source (same restrictions as create_pawprint).' },
+            packages: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: { name: { type: 'string' }, version: { type: 'string' } },
+                required: ['name', 'version']
+              },
+              description: 'Full replacement list of extra npm packages (omit/empty to remove all extra packages).'
+            },
+            domains: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Full replacement list of approved domains (omit/empty to remove network access).'
+            }
+          },
+          required: ['pawprintId', 'source']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'read_pawprint_source',
+        description:
+          'Read-only. Returns a Pawprint\'s current approved source, packages, and approved domains, plus an `instances` list — every known instance (open or closed) with its instanceId, absolute state-file path, and whether it currently has a live window open. Use the returned statePath with read_file/edit_file/write_file to directly view or edit that instance\'s persisted JSON state (e.g. add a calendar appointment) — an open instance\'s window reloads itself automatically when its state file changes on disk; a closed instance\'s state file is still safely editable and will be reflected next time it\'s opened. Direct writes are only permitted under that instance\'s state/** path — writes to the Pawprint\'s source or manifest are rejected with a message pointing back to update_pawprint.',
+        parameters: {
+          type: 'object',
+          properties: {
+            pawprintId: { type: 'string' }
+          },
+          required: ['pawprintId']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'browser',
         description:
           "Local Playwright-driven browser automation, multiplexed by `action`. Mutating actions (click/type/fill/select/press_key/scroll/drag/submit/evaluate) are queued for user approval with a screenshot preview under policy 'ask', or execute immediately under 'auto'; read-only actions (open/close/list_tabs/navigate/snapshot/screenshot/inspect/wait_for/wait) never need approval. Workflow: open a tab, navigate, then snapshot before acting — the snapshot returns interactive elements each tagged with a stable ref like 'e3'; pass that ref (not a CSS selector) to click/type/fill/select/press_key/scroll/drag/submit, and re-snapshot after any navigation or significant DOM change since old refs can go stale. Use screenshot sparingly (costs real tokens) — prefer snapshot, and screenshot mainly to visually confirm a result. When snapshot's role/name text isn't enough to tell similar elements apart, use `inspect` to run read-only JavaScript and call `klenny.ref(el)` on an element (or return it/a NodeList directly) to get back a usable ref; inspect can never itself click, submit, navigate, or mutate, and works in subagents too. Prefer `wait_for` (polls for a ref/selector, returns as soon as met) over `wait` (fixed-duration sleep, capped at 5 minutes) — only use `wait` when there's nothing concrete to poll for, like a server-side job with no visible DOM change. `evaluate` (unrestricted JS — can mutate/navigate) is disabled by default and never available to subagents; prefer `inspect` plus ref-based actions, and only reach for evaluate when the user has enabled it and nothing else can do the job. For logins, 2FA, or anything requiring a human's judgment, stop and use ask_question. If a CAPTCHA appears in an interactive session, use ask_question to have the user solve it in the visible window then re-snapshot and continue; in a headless subagent/scheduled run, report it as a blocking failure instead.",
@@ -819,7 +900,8 @@ export function getToolDefinitions(
     'task',
     'save_plan',
     'codebase_search',
-    'list_projects'
+    'list_projects',
+    'read_pawprint_source'
   ])
 
   const agentAllowed = new Set<ToolName>([
@@ -861,7 +943,10 @@ export function getToolDefinitions(
     'scheduler_list_tasks',
     'scheduler_update_task',
     'scheduler_delete_task',
-    'browser'
+    'browser',
+    'create_pawprint',
+    'update_pawprint',
+    'read_pawprint_source'
   ])
 
   // Assistant tabs get their own fixed allow-set (ASSISTANT_TOOLS, shared/types.ts) instead of

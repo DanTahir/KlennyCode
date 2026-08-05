@@ -11,6 +11,7 @@ const items = [
   { id: 'plans', label: 'Plans' },
   { id: 'history', label: 'History' },
   { id: 'skills', label: 'Skills' },
+  { id: 'pawprints', label: 'My Pawprints 🐾' },
   { id: 'memory', label: 'Memory' },
   { id: 'settings', label: 'Settings' },
   { id: 'help', label: 'Help' }

@@ -19,6 +19,39 @@ import type {
   TabSession,
   UpdateStatusEvent
 } from './types'
+/** Mirrors PawprintManifest (agent/pawprints/types.ts) for the IPC/renderer boundary — kept as an
+ *  independent local shape rather than importing across the shared/src-main layering boundary. */
+export interface PawprintManifestSummary {
+  id: string
+  name: string
+  description: string
+  instanceModel: 'single' | 'per-item'
+  createdAt: number
+  updatedAt: number
+  sourceVersion: number
+  packages: { name: string; version: string; registrySha512: string; direct: boolean; approvedAt: number }[]
+  approvedDomains: string[]
+  themeOverride: Record<string, string>
+}
+
+/** Mirrors PawprintInstanceRecord (agent/pawprints/types.ts) for the IPC/renderer boundary. */
+export interface PawprintInstanceRecordSummary {
+  pawprintId: string
+  instanceId: string
+  label?: string
+  bounds?: { x: number; y: number; width: number; height: number }
+  alwaysOnTop: boolean
+  openOnLaunch: boolean
+  updatedAt: number
+}
+
+/** One row for the "My Pawprints" panel: a manifest plus its known instance records (bounds/
+ *  alwaysOnTop/openOnLaunch) and which instance ids currently have a live window open. */
+export interface PawprintListEntry {
+  manifest: PawprintManifestSummary
+  instances: PawprintInstanceRecordSummary[]
+  openInstanceIds: string[]
+}
 
 /** Channel names used for ipcRenderer.invoke / ipcMain.handle request-response calls. */
 export const IPC = {
@@ -124,7 +157,25 @@ export const IPC = {
   brandingGetRunningGif: 'branding:getRunningGif',
   brandingSetRunningGif: 'branding:setRunningGif',
   brandingClearRunningGif: 'branding:clearRunningGif',
-  brandingResetAll: 'branding:resetAll'
+  brandingResetAll: 'branding:resetAll',
+
+  pawprintList: 'pawprint:list',
+  pawprintOpen: 'pawprint:open',
+  pawprintClose: 'pawprint:close',
+  pawprintDelete: 'pawprint:delete',
+  pawprintSetAlwaysOnTop: 'pawprint:setAlwaysOnTop',
+  pawprintSetThemeOverride: 'pawprint:setThemeOverride',
+
+  // Renderer-facing channels used ONLY by preloadPawprint.ts's contextBridge, inside a
+  // Pawprint's own sandboxed BrowserWindow — never invoked from the main app's own renderer,
+  // so these are intentionally not part of KlennyApi below.
+  pawprintRendererGetState: 'pawprint:getState',
+  pawprintRendererSetState: 'pawprint:setState',
+  pawprintRendererGetTheme: 'pawprint:getTheme',
+  pawprintRendererCloseSelf: 'pawprint:closeSelf',
+  pawprintRendererRequestNewInstance: 'pawprint:requestNewInstance',
+  pawprintRendererThemeChanged: 'pawprint:themeChanged',
+  pawprintRendererStateChangedExternally: 'pawprint:stateChangedExternally'
 } as const
 
 export interface SendMessagePayload {
@@ -300,4 +351,15 @@ export interface KlennyApi {
 
   onStreamEvent: (cb: (event: unknown) => void) => () => void
   onUpdateStatus: (cb: (event: UpdateStatusEvent) => void) => () => void
+
+  /** "My Pawprints" panel data — every known Pawprint with its instance records and which are
+   *  currently open. */
+  listPawprints: () => Promise<PawprintListEntry[]>
+  /** Opens (or focuses, if already open) a Pawprint instance. Omit instanceId to open a fresh
+   *  instance (used for 'single'-model Pawprints and new 'per-item' instances alike). */
+  openPawprint: (pawprintId: string, instanceId?: string) => Promise<{ instanceId: string }>
+  closePawprint: (instanceId: string) => Promise<void>
+  deletePawprint: (pawprintId: string) => Promise<void>
+  setPawprintAlwaysOnTop: (instanceId: string, value: boolean) => Promise<void>
+  setPawprintThemeOverride: (pawprintId: string, override: Record<string, string>) => Promise<void>
 }

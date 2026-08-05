@@ -14,6 +14,11 @@ import { scheduledTaskManager } from './scheduler/manager'
 import { runScheduledTask } from './agent/orchestrator'
 import { startDiscordClient, stopDiscordClient, setInboundCommandHandler } from './integrations/discord'
 import { runInboundDiscordCommand } from './agent/discordBridge'
+import { registerPawprintSchemePrivileges } from './agent/pawprints/protocol'
+import { reopenAllOnLaunch as reopenAllPawprintsOnLaunch, closeAllPawprintWindows } from './agent/pawprints/manager'
+
+// Must run before app.whenReady() per Electron's custom-scheme privilege requirement.
+registerPawprintSchemePrivileges()
 
 app.whenReady().then(async () => {
   if (process.platform === 'win32') {
@@ -49,6 +54,10 @@ app.whenReady().then(async () => {
 
   initAutoUpdater()
 
+  // Restore any Pawprint windows flagged openOnLaunch:true — failures for one instance are
+  // logged and skipped rather than blocking the rest (see reopenAllOnLaunch's doc comment).
+  void reopenAllPawprintsOnLaunch()
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
   })
@@ -64,4 +73,5 @@ app.on('before-quit', () => {
   void disposeAllBrowserSessions()
   scheduledTaskManager.stopTicking()
   void stopDiscordClient()
+  closeAllPawprintWindows()
 })

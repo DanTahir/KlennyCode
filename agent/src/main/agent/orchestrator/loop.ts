@@ -28,7 +28,7 @@ import type {
   ToolCallBlock,
   ToolResultPayload
 } from '@shared/types'
-import { DEFAULT_BROWSER_AUTOMATION, CODING_ONLY_TOOLS, DOCX_TOOLS } from '@shared/types'
+import { DEFAULT_BROWSER_AUTOMATION, CODING_ONLY_TOOLS, DOCX_TOOLS, ALWAYS_BLOCKED_TOOLS } from '@shared/types'
 import { loadSettings } from '../../settings'
 import { resolveDocumentsDirectory } from '../../documentsDir'
 import { getWorkspace } from '../../workspace'
@@ -72,6 +72,7 @@ import { isIndexActive, searchCode } from '../codeindex/manager'
 import { gmailListMessagesTool, gmailGetMessageTool, gmailSendMessageTool } from '../../integrations/gmail'
 import { discordPostMessageTool } from '../../integrations/discord'
 import { scheduledTaskManager } from '../../scheduler/manager'
+import { createPawprint, updatePawprint, readPawprintSource } from '../pawprints/manager'
 import {
   MAX_SUBAGENT_DEPTH,
   MAX_TRUNCATION_RETRIES,
@@ -592,6 +593,33 @@ async function executeTool(
     }
   }
 
+  // create_pawprint/update_pawprint are ALWAYS hard-blocked pending human approval regardless of
+  // approvalMode — including 'accept_all'/auto and even inside a subagent (unlike every other
+  // mutating tool above, which auto-approves for subagents). This is the plan's non-negotiable
+  // constraint: source/package/domain review must never be skippable. See ALWAYS_BLOCKED_TOOLS's
+  // doc comment in shared/types.ts.
+  if ((ALWAYS_BLOCKED_TOOLS as string[]).includes(name)) {
+    if (subagentCtx) {
+      return {
+        payload: {
+          ok: false,
+          summary: `${name} is not available inside a subagent — it always requires interactive human approval. Report this back to the parent task instead.`,
+          error: 'unsupported_in_subagent'
+        },
+        status: 'error'
+      }
+    }
+    const kind = name as PendingActionKind
+    const preview = await previewMutatingTool(name, args, fileRoot)
+    const action = approvalManager.buildPendingFromTool(tab.id, tc.id, kind, preview.title, preview.extra)
+    emit({ type: 'pending_action', tabId: tab.id, action })
+    const decision = await approvalManager.waitForDecision(action.id)
+    emit({ type: 'pending_action_resolved', tabId: tab.id, actionId: action.id })
+    if (decision === 'reject') {
+      return { payload: { ok: false, summary: 'User rejected action', error: 'rejected' }, status: 'rejected' }
+    }
+  }
+
   if (['write_file', 'edit_file', 'multi_edit', 'delete_file', 'write_docx', 'edit_docx', 'run_command'].includes(name)) {
     // 'manual': everything needs review. 'command': only run_command needs review — file edits
     // are auto-applied like 'auto' mode. 'auto': nothing needs review.
@@ -972,9 +1000,40 @@ async function dispatchTool(
         onProgress: onToolProgress,
         signal
       })
+    case 'create_pawprint': {
+      const instanceModel = args.instanceModel === 'per-item' ? 'per-item' : 'single'
+      return createPawprint({
+        name: String(args.name ?? ''),
+        description: String(args.description ?? ''),
+        instanceModel,
+        source: String(args.source ?? ''),
+        packages: coercePawprintPackages(args.packages),
+        domains: coerceArrayArg(args.domains).filter((d): d is string => typeof d === 'string')
+      })
+    }
+    case 'update_pawprint':
+      return updatePawprint({
+        pawprintId: String(args.pawprintId ?? ''),
+        source: String(args.source ?? ''),
+        packages: coercePawprintPackages(args.packages),
+        domains: coerceArrayArg(args.domains).filter((d): d is string => typeof d === 'string')
+      })
+    case 'read_pawprint_source':
+      return readPawprintSource(String(args.pawprintId ?? ''))
     default:
       return { ok: false, summary: `Unknown tool ${name}`, error: 'unknown' }
   }
+}
+
+/** Coerces create_pawprint/update_pawprint's `packages` arg into a clean { name, version }[],
+ *  tolerating the model sending a stringified-JSON array (see coerceArrayArg) or malformed
+ *  entries — malformed entries are silently dropped rather than crashing the tool call; the
+ *  package pipeline downstream will fail closed on any genuinely missing/invalid package name. */
+function coercePawprintPackages(raw: unknown): { name: string; version: string }[] {
+  return coerceArrayArg(raw)
+    .map((p) => (p && typeof p === 'object' ? (p as Record<string, unknown>) : null))
+    .filter((p): p is Record<string, unknown> => p !== null && typeof p.name === 'string' && typeof p.version === 'string')
+    .map((p) => ({ name: String(p.name), version: String(p.version) }))
 }
 
 /** Coerces a tool argument that the schema declares as an array into a real array, tolerating

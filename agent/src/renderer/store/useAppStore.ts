@@ -51,7 +51,7 @@ interface AppState {
    *  SessionStore.getAssistantHistory in the main process). */
   assistantHistory: ArchivedTabSession[]
   skills: SkillSummary[]
-  panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history' | 'cost-report'
+  panel: 'chat' | 'settings' | 'help' | 'skills' | 'memory' | 'plans' | 'history' | 'cost-report' | 'pawprints'
   /** Set by the agent's open_settings_panel tool (via IPC) to scroll/focus a specific Settings
    *  section once the panel is shown — e.g. 'integrations' when the user asks to connect
    *  Gmail/Discord. Cleared by SettingsPanel after it scrolls to the section. */

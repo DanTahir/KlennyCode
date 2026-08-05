@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, shell, Menu } from 'electron'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { checkForUpdates, installUpdate, isUpdateSupported } from './updater'
 import { IPC } from '@shared/ipc'
 import { loadSettings, saveSettings, setApiKey, clearApiKey, setPineconeKey, clearPineconeKey } from './settings'
@@ -28,6 +29,10 @@ import { startIndexing, stopIndexing, getIndexStatus, rebuildIndex, deleteLocalI
 import { getCostReport, resetCostReport } from './agent/costReport'
 import type { AgentStreamEvent, IndexStatus, ScheduledTask, TabApprovalMode } from '@shared/types'
 import { DEFAULT_BRAND_NAME } from '@shared/types'
+
+// This app is ESM (`"type": "module"` in package.json), so `__dirname` isn't a global here —
+// it must be derived from this module's own `import.meta.url`.
+const __dirname = dirname(fileURLToPath(import.meta.url))
 import { createTray, wireMinimizeToTray, refreshMinimizeToTrayCache, applyAutoStartSetting, refreshTrayIcon } from './tray'
 import { connectGmail, disconnectGmail } from './integrations/gmail'
 import { connectDiscord, disconnectDiscord, getDiscordStatus, onDiscordStatusChange } from './integrations/discord'
@@ -42,6 +47,35 @@ import {
   resolveActiveIconPath,
   loadSquareIcon
 } from './branding'
+import {
+  listPawprintManifests,
+  deletePawprintById,
+  openPawprintWindow,
+  closePawprintWindow,
+  setAlwaysOnTop as setPawprintAlwaysOnTop
+} from './agent/pawprints/manager'
+import { readRegistry as readPawprintRegistry, readManifest as readPawprintManifest, writeManifest as writePawprintManifest } from './agent/pawprints/storage'
+import {
+  getOpenInstanceIds as getOpenPawprintInstanceIds,
+  broadcastThemeOverride,
+  findInstanceKeyForWebContents,
+  handleGetState as getPawprintState,
+  handleSetState as setPawprintState,
+  getInstanceTheme as getPawprintInstanceTheme
+} from './agent/pawprints/windowManager'
+import { mergePawprintTheme, DEFAULT_PAWPRINT_THEME } from './agent/pawprints/theme'
+import { checkPawprintStateSize } from './agent/pawprints/writeGuard'
+
+/** Persists a per-Pawprint theme override (UI-only setting, not routed through the code-approval
+ *  flow — see plan section 6/10) and live-broadcasts the merged theme to any currently-open
+ *  instance of that Pawprint. */
+async function setPawprintThemeOverride(pawprintId: string, override: Record<string, string>): Promise<void> {
+  const manifest = await readPawprintManifest(pawprintId)
+  if (!manifest) return
+  const merged = { ...manifest.themeOverride, ...override }
+  await writePawprintManifest({ ...manifest, themeOverride: merged, updatedAt: Date.now() })
+  broadcastThemeOverride(pawprintId, mergePawprintTheme(DEFAULT_PAWPRINT_THEME, merged))
+}
 
 function broadcast(event: AgentStreamEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -352,6 +386,58 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.schedulerUpdate, async (_e, id: string, patch: Partial<ScheduledTask>) => scheduledTaskManager.update(id, patch))
   ipcMain.handle(IPC.schedulerDelete, async (_e, id: string) => scheduledTaskManager.delete(id))
 
+  ipcMain.handle(IPC.pawprintList, async () => {
+    const manifests = await listPawprintManifests()
+    const registry = await readPawprintRegistry()
+    return manifests.map((m) => ({
+      manifest: m,
+      instances: registry.instances.filter((i) => i.pawprintId === m.id),
+      openInstanceIds: getOpenPawprintInstanceIds(m.id)
+    }))
+  })
+  ipcMain.handle(IPC.pawprintOpen, async (_e, pawprintId: string, instanceId?: string) => openPawprintWindow({ pawprintId, instanceId }))
+  ipcMain.handle(IPC.pawprintClose, async (_e, instanceId: string) => closePawprintWindow(instanceId))
+  ipcMain.handle(IPC.pawprintDelete, async (_e, pawprintId: string) => deletePawprintById(pawprintId))
+  ipcMain.handle(IPC.pawprintSetAlwaysOnTop, async (_e, instanceId: string, value: boolean) => setPawprintAlwaysOnTop(instanceId, value))
+  ipcMain.handle(IPC.pawprintSetThemeOverride, async (_e, pawprintId: string, override: Record<string, string>) =>
+    setPawprintThemeOverride(pawprintId, override)
+  )
+
+  // Renderer-facing bridge for a Pawprint's own sandboxed window (invoked only via
+  // preloadPawprint.ts's contextBridge — never reachable from the main app's own renderer).
+  // The calling instance is resolved from the sender's webContents id, never from an argument
+  // the (untrusted, sandboxed) renderer could spoof.
+  ipcMain.handle(IPC.pawprintRendererGetState, async (e) => {
+    const key = findInstanceKeyForWebContents(e.sender.id)
+    if (!key) return null
+    return getPawprintState(key.pawprintId, key.instanceId)
+  })
+  ipcMain.handle(IPC.pawprintRendererSetState, async (e, data: unknown) => {
+    const key = findInstanceKeyForWebContents(e.sender.id)
+    if (!key) return { ok: false, error: 'unknown_instance' }
+    const byteLength = Buffer.byteLength(JSON.stringify(data), 'utf8')
+    const sizeCheck = checkPawprintStateSize(byteLength)
+    if (!sizeCheck.allowed) return { ok: false, error: sizeCheck.reason }
+    await setPawprintState(key.pawprintId, key.instanceId, data)
+    return { ok: true }
+  })
+  ipcMain.handle(IPC.pawprintRendererGetTheme, async (e) => {
+    const key = findInstanceKeyForWebContents(e.sender.id)
+    if (!key) return DEFAULT_PAWPRINT_THEME
+    return getPawprintInstanceTheme(key.instanceId) ?? DEFAULT_PAWPRINT_THEME
+  })
+  ipcMain.handle(IPC.pawprintRendererCloseSelf, async (e) => {
+    const key = findInstanceKeyForWebContents(e.sender.id)
+    if (key) closePawprintWindow(key.instanceId)
+  })
+  ipcMain.handle(IPC.pawprintRendererRequestNewInstance, async (e, label?: string) => {
+    const key = findInstanceKeyForWebContents(e.sender.id)
+    if (!key) return null
+    // Only meaningful for a 'per-item' instanceModel Pawprint; opening with no explicit
+    // instanceId lets openPawprintWindow mint a fresh one (see manager.ts/windowManager.ts).
+    return openPawprintWindow({ pawprintId: key.pawprintId, label })
+  })
+
   ipcMain.handle(IPC.brandingGetIcon, async () => getCustomIconDataUrl())
   ipcMain.handle(IPC.brandingSetIcon, async (_e, dataUrl: string) => {
     await saveCustomIcon(dataUrl)
@@ -394,7 +480,7 @@ export function createMainWindow(): BrowserWindow {
     autoHideMenuBar: true,
     icon: join(__dirname, '../../build/icons/icon.png'),
     webPreferences: {
-      preload: join(__dirname, '../preload/index.mjs'),
+      preload: join(__dirname, '../preload/index.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false

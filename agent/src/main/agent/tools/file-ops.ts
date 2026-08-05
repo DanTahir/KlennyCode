@@ -1,10 +1,27 @@
 import { readFile, writeFile, unlink, stat, mkdir } from 'node:fs/promises'
-import { dirname, resolve, isAbsolute } from 'node:path'
+import { dirname, resolve, isAbsolute, sep } from 'node:path'
 import type { ToolResultPayload } from '@shared/types'
 import { buildEditNotFoundHelp, countOccurrences, resolveEditMatch } from './edit-match'
 import { detectEol, fromLf, toLf, type Eol } from './eol'
 import { makeDiff } from './diff'
 import { assertMutationAllowed, getWorkspace } from '../../workspace'
+import { checkPawprintWriteGuard, checkPawprintStateSize } from '../pawprints/writeGuard'
+
+/** Combines the write-scope guard with the oversized-state-write check for write_file, which
+ *  (unlike edit_file/multi_edit) writes a brand-new full body rather than patching in place, so
+ *  the size check applies to `content` directly rather than to a post-edit computed string. */
+function checkPawprintGuardFor(abs: string, content: string): { allowed: boolean; reason?: string } {
+  const guard = checkPawprintWriteGuard(abs)
+  if (!guard.allowed) return guard
+  return checkPawprintStateSizeFor(abs, content)
+}
+
+/** Only enforces the size cap for paths the write-scope guard already allows (i.e. under
+ *  `state/**`) — irrelevant/no-op for every other path, including all non-Pawprint files. */
+function checkPawprintStateSizeFor(abs: string, content: string): { allowed: boolean; reason?: string } {
+  if (!abs.includes(`${sep}pawprints${sep}`)) return { allowed: true }
+  return checkPawprintStateSize(Buffer.byteLength(content, 'utf8'))
+}
 
 // `content` in this cache is always normalized to LF, regardless of the file's on-disk
 // EOL style or the machine's `core.autocrlf` setting — see ./eol.ts. This keeps matching,
@@ -59,6 +76,8 @@ export async function readFileTool(
 export async function writeFileTool(args: { path: string; content: string }, root?: string): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path, root)
   if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  const pawprintGuard = checkPawprintGuardFor(abs, args.content)
+  if (!pawprintGuard.allowed) return { ok: false, summary: pawprintGuard.reason!, error: 'pawprint_write_guard' }
   let oldRaw = ''
   let hadExisting = false
   try {
@@ -95,6 +114,8 @@ export async function editFileTool(
 ): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path, root)
   if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  const pawprintGuardCheck = checkPawprintWriteGuard(abs)
+  if (!pawprintGuardCheck.allowed) return { ok: false, summary: pawprintGuardCheck.reason!, error: 'pawprint_write_guard' }
   const raw = await readFile(abs, 'utf8')
   const eol = detectEol(raw)
   const content = toLf(raw)
@@ -131,6 +152,8 @@ export async function editFileTool(
   const next = args.replace_all
     ? content.replaceAll(match.oldString, match.newString)
     : content.replace(match.oldString, match.newString)
+  const stateSizeCheck = checkPawprintStateSizeFor(abs, next)
+  if (!stateSizeCheck.allowed) return { ok: false, summary: stateSizeCheck.reason!, error: 'pawprint_write_guard' }
   // Write back using the file's original EOL style so we don't churn the whole file's
   // line endings on a small edit (which would happen if we always wrote LF-only, and
   // would produce a noisy diff/unwanted git changes when core.autocrlf converts on checkout).
@@ -211,6 +234,10 @@ async function planMultiEdit(
     if (!assertMutationAllowed(abs, root)) {
       return { ok: false, index: i, path: op.path, summary: 'Path outside workspace', error: 'sandbox' }
     }
+    const pawprintGuardCheck = checkPawprintWriteGuard(abs)
+    if (!pawprintGuardCheck.allowed) {
+      return { ok: false, index: i, path: op.path, summary: pawprintGuardCheck.reason!, error: 'pawprint_write_guard' }
+    }
 
     let planned = files.get(abs)
     if (!planned) {
@@ -268,6 +295,11 @@ async function planMultiEdit(
       ? planned.newContent.replaceAll(match.oldString, match.newString)
       : planned.newContent.replace(match.oldString, match.newString)
     planned.editCount++
+
+    const stateSizeCheck = checkPawprintStateSizeFor(abs, planned.newContent)
+    if (!stateSizeCheck.allowed) {
+      return { ok: false, index: i, path: op.path, summary: stateSizeCheck.reason!, error: 'pawprint_write_guard' }
+    }
   }
 
   return { ok: true, files: [...files.values()] }
@@ -388,6 +420,8 @@ export async function previewMultiEdit(edits: MultiEditOp[], root?: string): Pro
 export async function deleteFileTool(args: { path: string }, root?: string): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path, root)
   if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
+  const pawprintGuardCheck = checkPawprintWriteGuard(abs)
+  if (!pawprintGuardCheck.allowed) return { ok: false, summary: pawprintGuardCheck.reason!, error: 'pawprint_write_guard' }
   let oldContent = ''
   try {
     oldContent = toLf(await readFile(abs, 'utf8'))

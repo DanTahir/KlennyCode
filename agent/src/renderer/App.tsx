@@ -10,6 +10,7 @@ import { SettingsPanel } from './components/SettingsPanel'
 import { CostReportPanel } from './components/CostReportPanel'
 import { HelpPanel } from './components/HelpPanel'
 import { SkillsPanel } from './components/SkillsPanel'
+import { PawprintsPanel } from './components/PawprintsPanel'
 import { MemoryPanel } from './components/MemoryPanel'
 import { PlansPanel } from './components/PlansPanel'
 import { PlanTabView } from './components/PlanTabView'
@@ -203,6 +204,7 @@ export default function App() {
         {panel === 'cost-report' && <CostReportPanel />}
         {panel === 'help' && <HelpPanel />}
         {panel === 'skills' && <SkillsPanel />}
+        {panel === 'pawprints' && <PawprintsPanel />}
         {panel === 'memory' && <MemoryPanel />}
         {panel === 'plans' && <PlansPanel />}
         {panel === 'history' && <HistoryPanel />}

@@ -240,6 +240,9 @@ export type ToolName =
   | 'scheduler_update_task'
   | 'scheduler_delete_task'
   | 'browser'
+  | 'create_pawprint'
+  | 'update_pawprint'
+  | 'read_pawprint_source'
 
 /** Tools that need a real, open coding-project *workspace* to make sense — a shell to run
  *  commands in, or a semantic index built over a specific project — and so remain gated off
@@ -376,8 +379,17 @@ export const MUTATING_TOOLS: ToolName[] = [
   'write_skill',
   'write_subagent',
   'task',
-  'browser'
+  'browser',
+  'create_pawprint',
+  'update_pawprint'
 ]
+
+/** create_pawprint/update_pawprint are ALWAYS hard-blocked pending human approval, regardless of
+ *  tab.approvalMode (including 'accept_all'/auto) — see the Pawprints plan's non-negotiable
+ *  constraint. Checked directly in orchestrator/loop.ts alongside the normal approval-mode gate,
+ *  the same way run_command's own hard-block cases are checked. read_pawprint_source is
+ *  read-only and never touches this list. */
+export const ALWAYS_BLOCKED_TOOLS: ToolName[] = ['create_pawprint', 'update_pawprint']
 
 // ---------- Approvals ----------
 
@@ -390,6 +402,8 @@ export type PendingActionKind =
   | 'edit_docx'
   | 'run_command'
   | 'browser_act'
+  | 'create_pawprint'
+  | 'update_pawprint'
 
 export interface PendingAction {
   id: string
@@ -410,6 +424,13 @@ export interface PendingAction {
    *  building the preview, if one was taken — never captured on every 'auto'-policy call, only
    *  when actually building an approval preview for 'ask' policy. */
   screenshotDataUrl?: string
+  /** create_pawprint/update_pawprint only: requested extra npm packages (already resolved via
+   *  the package pipeline by preview time) shown alongside the source diff. */
+  pawprintPackages?: { name: string; version: string; direct: boolean }[]
+  /** create_pawprint/update_pawprint only: requested network-allowlist hostnames. */
+  pawprintDomains?: string[]
+  /** create_pawprint/update_pawprint only: the Pawprint's name/description, for display. */
+  pawprintName?: string
   createdAt: number
 }
 
