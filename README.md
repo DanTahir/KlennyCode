@@ -25,6 +25,7 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Personality** — a user-editable `~/.klenny/SOUL.md` describing who the agent is and how it talks, defaulting to a playful corgi persona; edit it from the Memory tab's "Personality" scope, blank it out for a neutral voice, or restore the built-in default with one click — hardcoded guardrails always keep personality from affecting reasoning, plans, or code quality
 - **Cross-project reference (read-only)** — the agent can read files and memory from *other* projects it has previously opened, so you can ask it to port a feature or convention from one project into the one you're currently working in
 - **Personal Assistant** — an on-demand, persistent "🐾 Assistant" tab (Gmail, Discord, web search, scheduler, cross-project reference — no coding project required), plus a background scheduler for recurring tasks and a Discord bot for two-way chat/automation — see [Personal Assistant](#personal-assistant) below
+- **Pawprints** — the agent can build small, single-file React apps ("Pawprints" — sticky notes, timers, trackers, etc.) that run as their own sandboxed desktop windows, separate from the chat UI. Creating or updating one always goes through a hard-blocked human approval step (source diff + any requested npm packages + any requested network domains, shown together); the agent can also read and edit a running or closed Pawprint's saved data directly via the normal file tools, and an open window picks up an external data edit automatically, in place, with its size and position untouched — see [Pawprints](#pawprints) below
 - **History panel** — closed chat tabs (with messages) are archived, not deleted; reopen or permanently delete them from the History panel, which has separate "💻 Code" and "🐾 Assistant" sections
 - **Cost Report** — a Settings panel breaking down cumulative token usage and USD cost by model, for the current project and across all projects
 - **Codebase semantic search (beta)** — optional, off-by-default vector index of your workspace so the agent can find relevant code by meaning via a `codebase_search` tool, alongside `grep`/`glob`
@@ -229,6 +230,57 @@ window can see at a glance what the others have been up to.
   note (alongside the current-time note) so it never invalidates prompt caching on the big, static
   part of the system prompt — see the code comments in `system-prompt.ts` if you're curious about
   the caching mechanics.
+
+### Pawprints
+
+Beyond editing your own project files, the agent can generate small, standalone React apps —
+called **Pawprints** — that live outside the chat window entirely, each running in its own
+sandboxed desktop window (a sticky-note app, a countdown timer, a simple tracker, etc.).
+
+- **Sandboxed by construction, not just by convention** — a Pawprint window never gets Node
+  integration, the OpenRouter API key, `run_command`, or general filesystem access, even if its
+  generated code is buggy or actively hostile. Each Pawprint's source is statically validated
+  (only React, a small SDK, vetted libraries, and its own explicitly-approved npm packages may be
+  imported — no dynamic `require`/`eval`/Node globals), then bundled once at approval time and
+  served from a locked-down custom protocol with its own per-window session.
+- **Human approval is the security boundary, always** — `create_pawprint`/`update_pawprint` are
+  hard-blocked regardless of your approval-mode setting (even Auto/Accept-all). The single
+  approval screen shows the full source diff, any requested extra npm packages (fetched directly
+  from the npm registry, hash-verified against the registry's own published integrity hash, and
+  rejected outright if they contain native bindings or install-time lifecycle scripts), and any
+  requested network domains (exact hostnames only, HTTPS-only, capped at 10 per Pawprint,
+  enforced at the network layer first and mirrored into CSP as a second layer) — all together, so
+  you review everything that could affect what the Pawprint does in one place.
+- **A small curated library set ships for free** — a short allowlist of pre-bundled, browser-safe
+  libraries (starting with `nanoid`) is always importable without going through the extra-package
+  approval flow, since they're part of Klenny Code itself rather than something fetched at
+  runtime.
+- **The agent can read and edit a Pawprint's saved data directly** — ask it to "add an item to my
+  todo-list Pawprint" and it locates that instance's state file (via `read_pawprint_source`) and
+  edits the JSON with the same `read_file`/`edit_file`/`write_file`/`multi_edit` tools it already
+  uses everywhere else — no dedicated tool needed. This works even for a Pawprint that isn't
+  currently open; the change is simply there the next time you open it. A currently-open window
+  notices the change automatically and reloads itself in place (same window, size and position
+  untouched) — the agent's blanket file access is narrowed, for this one subtree, to only allow
+  writing that saved-data file directly; changing a Pawprint's actual code or approved
+  packages/domains still always requires the approval flow above.
+- **My Pawprints panel** — see every Pawprint you've created, open/close/delete instances, toggle
+  always-on-top per window, review (read-only) its approved packages and domains, and jump into a
+  chat pre-scoped to "ask Klenny to modify" one of them.
+- **Known v1 limitations** — no rollback to a previous version of a Pawprint's source (updates are
+  destructive; only the latest approved version is kept), and the network domain allowlist doesn't
+  defend against DNS rebinding to a private IP — both called out here rather than silently glossed
+  over.
+
+Pawprints have thorough automated coverage (`agent/tests/pawprints-*.test.ts`) for everything
+`bun:test` can exercise without a real rendered window — bundling, validation, storage, the
+package pipeline, domain rules, theming, the write-access guard, and the state-file watcher's
+reload/debounce/self-write-suppression logic. A handful of things genuinely need a live Electron
+GUI and haven't been visually verified in this environment: CSP/`connect-src` enforcement actually
+blocking a real network request at runtime, a package-fetch pipeline run against the live npm
+registry, always-on-top state surviving a real app restart, and a real on-disk edit (via the
+actual `edit_file` tool, not a simulated write) reloading a real open Pawprint window in place with
+its size/position unchanged.
 
 ## Architecture
 

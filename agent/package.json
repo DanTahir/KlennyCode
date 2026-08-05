@@ -95,7 +95,9 @@
       "**/node_modules/@vscode/ripgrep-*/**",
       "**/node_modules/node-pty/**",
       "**/node_modules/playwright/**",
-      "**/node_modules/playwright-core/**"
+      "**/node_modules/playwright-core/**",
+      "**/node_modules/esbuild/**",
+      "**/node_modules/@esbuild/**"
     ],
     "publish": {
       "provider": "github",
