@@ -2,7 +2,14 @@ import { nanoid } from 'nanoid'
 import type { ToolResultPayload } from '@shared/types'
 import { validatePawprintSource } from './validator'
 import { validateDomainList } from './domains'
-import { resolvePackages, cleanupResolvedPackages, MAX_PACKAGE_TOTAL_BYTES, type PackageRequest } from './packagePipeline'
+import {
+  resolvePackages,
+  cleanupResolvedPackages,
+  materializePackages,
+  MAX_PACKAGE_TOTAL_BYTES,
+  type PackageRequest,
+  type ResolvedPackage
+} from './packagePipeline'
 import { bundlePawprint, clearBundleCache } from './bundler'
 import {
   readManifest,
@@ -13,7 +20,7 @@ import {
   listPawprintIds,
   listStateInstanceIds
 } from './storage'
-import { pawprintStatePath } from './paths'
+import { pawprintStatePath, pawprintNodeModulesDir } from './paths'
 import type { PawprintManifest, PawprintPackageRef, PawprintSourceResult } from './types'
 import { openPawprintWindow, closePawprintWindow, reopenAllOnLaunch, closeAllPawprintWindows } from './windowManager'
 
@@ -47,12 +54,12 @@ async function resolveAndValidate(
   source: string,
   requestedPackages: { name: string; version: string }[],
   requestedDomains: string[]
-): Promise<{ ok: true; packageRefs: PawprintPackageRef[]; domains: string[]; nodeModulesSourceDirs: Map<string, string> } | ToolResultPayload> {
+): Promise<{ ok: true; packageRefs: PawprintPackageRef[]; domains: string[]; resolvedPackages: ResolvedPackage[] } | ToolResultPayload> {
   const domainCheck = validateDomainList(requestedDomains)
   if (!domainCheck.ok) return { ok: false, summary: domainCheck.error, error: 'invalid_domain' }
 
   let packageRefs: PawprintPackageRef[] = []
-  const nodeModulesSourceDirs = new Map<string, string>()
+  let resolvedPackages: ResolvedPackage[] = []
   if (requestedPackages.length > 0) {
     const requests: PackageRequest[] = requestedPackages.map((p) => ({ name: p.name, version: p.version }))
     const result = await resolvePackages(requests)
@@ -60,17 +67,17 @@ async function resolveAndValidate(
       return { ok: false, summary: result.error, error: 'package_pipeline_failed', data: { offendingPackage: result.offendingPackage } }
     }
     packageRefs = result.packages.map((p) => p.ref)
-    for (const p of result.packages) nodeModulesSourceDirs.set(p.ref.name, p.extractedDir)
-    await cleanupResolvedPackages(result.packages).catch(() => {})
+    resolvedPackages = result.packages
   }
 
   // Validate AFTER resolving packages so the validator knows the real approved package names.
   const validation = await validatePawprintSource(source, packageRefs.map((p) => p.name))
   if (!validation.ok) {
+    await cleanupResolvedPackages(resolvedPackages).catch(() => {})
     return { ok: false, summary: `Source validation failed: ${validation.errors.join('; ')}`, error: 'validation_failed' }
   }
 
-  return { ok: true, packageRefs, domains: domainCheck.hostnames, nodeModulesSourceDirs }
+  return { ok: true, packageRefs, domains: domainCheck.hostnames, resolvedPackages }
 }
 
 /** Actually executes an already-approved create_pawprint call (called post-approval by
@@ -100,6 +107,8 @@ export async function createPawprint(args: CreatePawprintArgs): Promise<ToolResu
 
   await writeSource(id, args.source)
   await writeManifest(manifest)
+  await materializePackages(resolved.resolvedPackages, pawprintNodeModulesDir(id))
+  await cleanupResolvedPackages(resolved.resolvedPackages).catch(() => {})
 
   return { ok: true, summary: `Created Pawprint "${args.name}" (${id})`, data: { id, name: args.name } }
 }
@@ -121,6 +130,8 @@ export async function updatePawprint(args: UpdatePawprintArgs): Promise<ToolResu
 
   await writeSource(args.pawprintId, args.source)
   await writeManifest(updated)
+  await materializePackages(resolved.resolvedPackages, pawprintNodeModulesDir(args.pawprintId))
+  await cleanupResolvedPackages(resolved.resolvedPackages).catch(() => {})
   clearBundleCache(args.pawprintId)
 
   return { ok: true, summary: `Updated Pawprint "${existing.name}" (${args.pawprintId})`, data: { id: args.pawprintId } }

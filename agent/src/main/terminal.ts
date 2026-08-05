@@ -4,6 +4,7 @@ import { nanoid } from 'nanoid'
 import type { ShellInfo } from '@shared/types'
 import { resolveShell } from './shells'
 import { appendTerminalLog, appendTerminalLogMarker } from './terminalLog'
+import { sanitizedSpawnEnv } from './shellEnv'
 
 /** Extra args used to make a shell start interactively when launched under a PTY (mirrors what a
  *  normal double-click / terminal-app launch of that shell would use). Only posix shells need this
@@ -45,7 +46,7 @@ export function createTerminal(opts: { shellId: string | null | undefined; cwd: 
     cols: Math.max(2, opts.cols || 80),
     rows: Math.max(2, opts.rows || 24),
     cwd: opts.cwd,
-    env: process.env as Record<string, string>
+    env: sanitizedSpawnEnv()
   })
 
   const session: TerminalSession = { id, pty: proc, shell, workspace: opts.cwd }

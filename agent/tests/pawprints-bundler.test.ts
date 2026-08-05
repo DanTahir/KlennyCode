@@ -139,4 +139,40 @@ describe('bundlePawprint — Phase 1 go/no-go proof-of-concept', () => {
     expect(result.code).toContain('getElementById')
     clearBundleCache(freshId)
   })
+
+  // Regression test for a real bug: the virtual user-source module's esbuild onLoad result set
+  // no `resolveDir`, so esbuild had no base directory to walk up from when the agent's source
+  // contains a bare import of an approved extra package (e.g. `import dayjs from 'dayjs'`) that
+  // isn't one of the hardcoded ALL_ALIASES entries — every such import failed at build time with
+  // "Could not resolve", exactly the error a real user hit trying to import dayjs. React/SDK
+  // imports masked this because they resolve via esbuild's `alias`/onResolve plugin mechanisms,
+  // which don't depend on resolveDir at all — only a genuine node_modules-backed bare import
+  // exercises the bug. This test materializes a fake package directly into
+  // pawprintNodeModulesDir(id) (bypassing the network-dependent package pipeline) and confirms
+  // the agent's source can actually import and use it.
+  test('resolves a bare import of an approved extra package materialized into node_modules/', async () => {
+    const pkgId = 'imports-extra-package'
+    const nodeModulesDir = pawprintNodeModulesDir(pkgId)
+    await fs.mkdir(join(nodeModulesDir, 'fake-lib'), { recursive: true })
+    await fs.writeFile(
+      join(nodeModulesDir, 'fake-lib', 'package.json'),
+      JSON.stringify({ name: 'fake-lib', version: '1.0.0', main: 'index.js' })
+    )
+    await fs.writeFile(
+      join(nodeModulesDir, 'fake-lib', 'index.js'),
+      'module.exports = { greet: () => "hello-from-fake-lib" }'
+    )
+
+    const sourceWithImport = `
+import { greet } from 'fake-lib'
+
+export default function App() {
+  return <div>{greet()}</div>
+}
+`
+    clearBundleCache(pkgId)
+    const result = await bundlePawprint(pkgId, sourceWithImport, [{ name: 'fake-lib', version: '1.0.0', registrySha512: 'sha512-fake', direct: true, approvedAt: Date.now() }], 1)
+    expect(result.code).toContain('hello-from-fake-lib')
+    clearBundleCache(pkgId)
+  })
 })

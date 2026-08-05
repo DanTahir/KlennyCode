@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as tar from 'tar'
-import { resolvePackages, cleanupResolvedPackages, MAX_PACKAGE_TOTAL_BYTES } from '../src/main/agent/pawprints/packagePipeline'
+import { resolvePackages, cleanupResolvedPackages, materializePackages, MAX_PACKAGE_TOTAL_BYTES } from '../src/main/agent/pawprints/packagePipeline'
 
 /** Builds a real gzip-less tar buffer for a fake package directory containing the given files. */
 async function buildTarball(files: Record<string, string | Buffer>): Promise<Buffer> {
@@ -444,5 +444,90 @@ describe('resolvePackages — cumulative size cap', () => {
 
   test('MAX_PACKAGE_TOTAL_BYTES is exactly 50 MB', () => {
     expect(MAX_PACKAGE_TOTAL_BYTES).toBe(50 * 1024 * 1024)
+  })
+})
+
+// Regression tests for a real bug: resolvePackages() only ever extracted approved packages into
+// a TEMP directory — nothing in manager.ts's createPawprint/updatePawprint ever copied that temp
+// directory's contents into the Pawprint's own node_modules/ (the location bundler.ts actually
+// points esbuild's resolution at), and the temp dir was deleted via cleanupResolvedPackages()
+// immediately after. Every Pawprint that requested an extra package (e.g. dayjs) therefore
+// failed to build with esbuild's "Could not resolve" error. materializePackages() is the fix:
+// it must actually copy each resolved package's extracted contents into the target directory.
+describe('materializePackages — copies resolved packages into a real node_modules/ directory', () => {
+  test('copies a single resolved package into <nodeModulesDir>/<name>/ with its files intact', async () => {
+    const tarball = await buildTarball({
+      'package.json': JSON.stringify({ name: 'dayjs', version: '1.11.10', main: 'dayjs.min.js' }),
+      'dayjs.min.js': 'module.exports = function dayjs() { return {} }'
+    })
+    const integrity = sha512Integrity(tarball)
+    const registry: FakeRegistry = {
+      packuments: {
+        dayjs: {
+          name: 'dayjs',
+          versions: { '1.11.10': { version: '1.11.10', dist: { tarball: 'https://registry.npmjs.org/tarballs/dayjs-1.11.10.tgz', integrity } } }
+        }
+      },
+      tarballs: { 'https://registry.npmjs.org/tarballs/dayjs-1.11.10.tgz': tarball }
+    }
+
+    const res = await resolvePackages([{ name: 'dayjs', version: '1.11.10' }], makeFetchMock(registry))
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+
+    const nodeModulesDir = await fs.mkdtemp(join(tmpdir(), 'klenny-test-node-modules-'))
+    tempDirsToClean.push(nodeModulesDir)
+    tempDirsToClean.push(join(res.packages[0].extractedDir, '..'))
+
+    await materializePackages(res.packages, nodeModulesDir)
+
+    const pkgJson = JSON.parse(await fs.readFile(join(nodeModulesDir, 'dayjs', 'package.json'), 'utf8'))
+    expect(pkgJson.name).toBe('dayjs')
+    const mainFile = await fs.readFile(join(nodeModulesDir, 'dayjs', 'dayjs.min.js'), 'utf8')
+    expect(mainFile).toContain('function dayjs')
+
+    await cleanupResolvedPackages(res.packages)
+  })
+
+  test('materializes a scoped package name (@scope/name) as two nested directory segments', async () => {
+    const tarball = await buildTarball({ 'package.json': JSON.stringify({ name: '@scope/pkg', version: '1.0.0' }) })
+    const integrity = sha512Integrity(tarball)
+    const registry: FakeRegistry = {
+      packuments: {
+        '@scope/pkg': {
+          name: '@scope/pkg',
+          versions: { '1.0.0': { version: '1.0.0', dist: { tarball: 'https://registry.npmjs.org/tarballs/scope-pkg-1.0.0.tgz', integrity } } }
+        }
+      },
+      tarballs: { 'https://registry.npmjs.org/tarballs/scope-pkg-1.0.0.tgz': tarball }
+    }
+
+    const res = await resolvePackages([{ name: '@scope/pkg', version: '1.0.0' }], makeFetchMock(registry))
+    expect(res.ok).toBe(true)
+    if (!res.ok) return
+
+    const nodeModulesDir = await fs.mkdtemp(join(tmpdir(), 'klenny-test-node-modules-'))
+    tempDirsToClean.push(nodeModulesDir)
+    tempDirsToClean.push(join(res.packages[0].extractedDir, '..'))
+
+    await materializePackages(res.packages, nodeModulesDir)
+
+    const pkgJson = JSON.parse(await fs.readFile(join(nodeModulesDir, '@scope', 'pkg', 'package.json'), 'utf8'))
+    expect(pkgJson.name).toBe('@scope/pkg')
+
+    await cleanupResolvedPackages(res.packages)
+  })
+
+  test('wipes stale packages from a previous materialize call that are no longer requested', async () => {
+    const nodeModulesDir = await fs.mkdtemp(join(tmpdir(), 'klenny-test-node-modules-'))
+    tempDirsToClean.push(nodeModulesDir)
+    // Simulate a stale package left over from an earlier update_pawprint call.
+    await fs.mkdir(join(nodeModulesDir, 'stale-pkg'), { recursive: true })
+    await fs.writeFile(join(nodeModulesDir, 'stale-pkg', 'package.json'), JSON.stringify({ name: 'stale-pkg', version: '1.0.0' }))
+
+    await materializePackages([], nodeModulesDir)
+
+    const exists = await fs.stat(join(nodeModulesDir, 'stale-pkg')).then(() => true, () => false)
+    expect(exists).toBe(false)
   })
 })

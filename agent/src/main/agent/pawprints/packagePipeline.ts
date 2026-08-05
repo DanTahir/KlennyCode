@@ -276,3 +276,26 @@ export async function cleanupResolvedPackages(packages: ResolvedPackage[]): Prom
     await fs.rm(parent, { recursive: true, force: true }).catch(() => {})
   }
 }
+
+/**
+ * Copies every resolved package's extracted contents into `nodeModulesDir` (one subdirectory
+ * per package name, `@scope/name` handled as two path segments) so esbuild can actually resolve
+ * a bare `import` of it at bundle time. This was the missing link between resolvePackages()
+ * (which only ever wrote to a temp dir, later deleted by cleanupResolvedPackages()) and
+ * bundler.ts (which points esbuild's resolution at `nodeModulesDir` but had nothing to find
+ * there) — previously every approved extra package silently never made it to disk, so any
+ * Pawprint importing one failed at build time with "Could not resolve".
+ *
+ * Wipes `nodeModulesDir` first so a package removed from a later `update_pawprint` call (or one
+ * whose resolved version changed) doesn't leave a stale copy behind; call this BEFORE
+ * cleanupResolvedPackages() so the temp extraction dirs still exist to copy from.
+ */
+export async function materializePackages(packages: ResolvedPackage[], nodeModulesDir: string): Promise<void> {
+  await fs.rm(nodeModulesDir, { recursive: true, force: true }).catch(() => {})
+  await fs.mkdir(nodeModulesDir, { recursive: true })
+  for (const pkg of packages) {
+    const destDir = join(nodeModulesDir, ...pkg.ref.name.split('/'))
+    await fs.mkdir(join(destDir, '..'), { recursive: true })
+    await fs.cp(pkg.extractedDir, destDir, { recursive: true })
+  }
+}

@@ -3,6 +3,7 @@ import type { ToolResultPayload } from '@shared/types'
 import { assertInWorkspace, getWorkspace } from '../../workspace'
 import { buildShellInvocation, resolveShell } from '../../shells'
 import { resolveWorkspacePath } from './file-ops'
+import { sanitizedSpawnEnv } from '../../shellEnv'
 
 const backgroundProcs = new Map<string, { pid: number; command: string }>()
 
@@ -95,7 +96,7 @@ export function runProcess(
       return
     }
 
-    const child = spawn(cmd, args, { cwd, shell: false })
+    const child = spawn(cmd, args, { cwd, shell: false, env: sanitizedSpawnEnv() })
     let stdout = ''
     let stderr = ''
     let timedOut = false

@@ -69,8 +69,18 @@ const USER_SOURCE_MODULE = 'klenny-pawprint-user-source'
  *  plugin API (same mechanism as sdkPlugin) rather than bundled as the literal stdin entry
  *  point — this lets the real esbuild entry point be a small wrapper (see ENTRY_WRAPPER below)
  *  that actually mounts the user's default-exported component to the DOM, instead of just
- *  bundling an unused component definition that's never rendered. */
-function userSourcePlugin(source: string) {
+ *  bundling an unused component definition that's never rendered.
+ *
+ *  `resolveDir` is load-bearing, not optional: a virtual module's onLoad result has no
+ *  filesystem location of its own, so without an explicit resolveDir esbuild has no base
+ *  directory to walk up from when the agent's source contains a bare import (e.g.
+ *  `import dayjs from 'dayjs'`) that isn't one of the aliased packages in ALL_ALIASES.
+ *  React/react-dom imports still resolved fine without this because `alias` matches on the
+ *  import specifier alone, independent of resolveDir — but any approved extra package resolved
+ *  via plain node_modules lookup silently failed with "Could not resolve" before this was set.
+ *  Confirmed esbuild threads onLoad's resolveDir through to the resolver for that module's own
+ *  imports (see esbuild issue #696). */
+function userSourcePlugin(source: string, resolveDir: string) {
   return {
     name: 'klenny-pawprint-user-source',
     setup(api: import('esbuild').PluginBuild) {
@@ -80,7 +90,8 @@ function userSourcePlugin(source: string) {
       }))
       api.onLoad({ filter: /.*/, namespace: 'klenny-pawprint-user-source-ns' }, () => ({
         contents: source,
-        loader: 'tsx'
+        loader: 'tsx',
+        resolveDir
       }))
     }
   }
@@ -161,7 +172,8 @@ export async function bundlePawprint(id: string, source: string, packages: Pawpr
   // created by the extra-package pipeline (packagePipeline.ts), which never runs for a Pawprint
   // with zero requested packages (the common case). Ensure it always exists before every build,
   // not just when packages were materialized into it.
-  await mkdir(pawprintNodeModulesDir(id), { recursive: true })
+  const nodeModulesDir = pawprintNodeModulesDir(id)
+  await mkdir(nodeModulesDir, { recursive: true })
 
   // Dynamic import, not a static `import { build } from 'esbuild'` at the top of this file —
   // load-bearing, not a style choice. Rollup hoists a STATIC import of an external package (like
@@ -179,15 +191,15 @@ export async function bundlePawprint(id: string, source: string, packages: Pawpr
   const { build } = await import('esbuild')
   const buildOnce = () =>
     build({
-      stdin: { contents: ENTRY_WRAPPER, loader: 'tsx', resolveDir: pawprintNodeModulesDir(id) },
+      stdin: { contents: ENTRY_WRAPPER, loader: 'tsx', resolveDir: nodeModulesDir },
       bundle: true,
       write: false,
       format: 'iife',
       platform: 'browser',
       target: 'chrome110',
       jsx: 'automatic',
-      absWorkingDir: pawprintNodeModulesDir(id),
-      nodePaths: [pawprintNodeModulesDir(id)],
+      absWorkingDir: nodeModulesDir,
+      nodePaths: [nodeModulesDir],
       alias: ALL_ALIASES,
       // React/ReactDOM's real entry files branch on `process.env.NODE_ENV` at module-body level
       // (`if (process.env.NODE_ENV === 'production') { ... } else { ... }`) to pick their
@@ -205,7 +217,7 @@ export async function bundlePawprint(id: string, source: string, packages: Pawpr
       // Defining it here lets esbuild dead-code-eliminate the dev branch entirely at build time,
       // so no reference to the `process` global remains in the emitted output at all.
       define: { 'process.env.NODE_ENV': '"production"' },
-      plugins: [sdkPlugin(), userSourcePlugin(source)],
+      plugins: [sdkPlugin(), userSourcePlugin(source, nodeModulesDir)],
       logLevel: 'silent'
     })
 
