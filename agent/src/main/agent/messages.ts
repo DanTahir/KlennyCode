@@ -19,8 +19,12 @@ function wrapDocumentForModel(doc: DocumentBlock): string {
  * if given, is injected as its own system message standing in for that removed prefix. As of the
  * template-based rewrite of `summarizeMessages` (see openrouter/client.ts), this string is no
  * longer freeform prose — it's a fixed Markdown skeleton (Objective / Important Details / Work
- * State: Completed/Active/Blocked / Next Move / Relevant Files) — but it's still just injected
- * verbatim here; the structure is the summarizer's job, not this function's.
+ * State: Completed/Active/Blocked / Active Error Messages (verbatim) / Next Move / Relevant
+ * Files) — but it's still just injected verbatim here; the structure is the summarizer's job,
+ * not this function's. The "Active Error Messages" section in particular is instructed to
+ * preserve error/exception/stack-trace text character-for-character rather than paraphrasing it,
+ * so the agent doesn't have to guess at or ask the user to resend an error it was mid-debugging
+ * when compaction ran.
  *
  * Whenever `compactionSummary` is present, two distinct instructions can be attached to it, for
  * two distinct problems:

@@ -397,6 +397,15 @@ export async function runUtilityPrompt(opts: {
  *    was I about to do" from prose after every compaction.
  *  - `Relevant Files` gives file paths — the single most-reused fact after compaction for a
  *    coding agent — their own scannable slot instead of burying them mid-sentence.
+ *  - `Active Error Messages (verbatim)` exists so error text (exception messages, stack traces,
+ *    compiler/linter output, failing test assertions) the agent is currently working through
+ *    survives compaction character-for-character instead of being paraphrased or dropped. A
+ *    paraphrased error is often useless for the exact thing it's needed for — matching a string
+ *    in a stack trace, diffing an assertion, searching for the exact exception type — so this
+ *    section is exempt from the usual "summarize, don't quote" instinct: verbatim text goes in a
+ *    fenced code block, not a description of it. Deliberately scoped to errors still relevant to
+ *    open work (see `Blocked`/`Active`), not a running log of every error ever seen, so it doesn't
+ *    grow unbounded across repeat compaction passes.
  * `"(none)"` is an explicitly valid value for any bracket so the model isn't tempted to invent
  * content just to fill a section that genuinely has nothing to report.
  */
@@ -415,6 +424,9 @@ const SUMMARY_TEMPLATE = `## Objective
 
 ### Blocked
 - [blockers, failing commands, or open unknowns — or "(none)"]
+
+## Active Error Messages (verbatim)
+- [error 1 label/context, then the exact error text in a fenced code block below it — copy it character-for-character from the transcript, do not paraphrase, truncate, or reformat it — or "(none)"]
 
 ## Next Move
 1. [immediate concrete next action, or "(none)"]
@@ -456,6 +468,17 @@ export async function summarizeMessages(
     'an action happened, say so explicitly in the relevant section rather than filling in a plausible-sounding but ' +
     'unverified account.'
 
+  const errorFidelity =
+    'For the "Active Error Messages (verbatim)" section specifically: any error message, exception text, stack ' +
+    'trace, compiler/linter output, or failing test/assertion output that the conversation is still actively working ' +
+    'through (i.e. not yet resolved/fixed as of the end of this transcript) must be copied out EXACTLY as it appears ' +
+    'in the transcript — same wording, same casing, same punctuation, same line breaks — inside a fenced code block. ' +
+    'Do not summarize, shorten, reformat, or "clean up" this text, and do not fix typos in it: even a small wording ' +
+    'change can make it useless for a later exact-string search or comparison. Give each distinct error its own ' +
+    'bullet with a one-line label (e.g. what command/file produced it) followed by its code block. If an error was ' +
+    'raised earlier but is now resolved/fixed per the transcript, leave it out of this section entirely — it belongs ' +
+    'in Completed instead, not here. If there is truly no error text anywhere in the transcript, use "(none)".'
+
   const instruction = isUpdate
     ? 'The input below starts with an anchored summary (already in the template format) from earlier compaction ' +
       'passes, followed by newer conversation messages to fold in. Update the anchored summary in place: preserve ' +
@@ -471,7 +494,7 @@ export async function summarizeMessages(
     model,
     systemPrompt:
       `Summarize the following conversation history by filling in this exact template:\n\n${SUMMARY_TEMPLATE}\n\n` +
-      `${instruction}\n\n${truthfulness}`,
+      `${instruction}\n\n${truthfulness}\n\n${errorFidelity}`,
     userContent: text,
     signal,
     supportsExplicitCaching
