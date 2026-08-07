@@ -4,7 +4,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
-const src = join(root, '..', 'Klenny.jpg')
+const src = join(root, 'public', 'Klenny.jpg')
 const outDir = join(root, 'build', 'icons')
 
 await mkdir(outDir, { recursive: true })
