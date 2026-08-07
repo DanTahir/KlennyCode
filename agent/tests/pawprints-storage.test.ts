@@ -157,4 +157,43 @@ describe('pawprints storage — manifest/registry/source/state roundtrip', () =>
     const raw = await fs.readFile(pawprintsRegistryPath(), 'utf8')
     expect(JSON.parse(raw)).toEqual({ instances: [] })
   })
+
+  test('deleteState removes a written state file, and readState afterwards returns null', async () => {
+    await storage.writeStateFromMainProcess('sticky-notes', 'instance-del', { ok: true })
+    expect(await storage.readState('sticky-notes', 'instance-del')).toEqual({ ok: true })
+    await storage.deleteState('sticky-notes', 'instance-del')
+    expect(await storage.readState('sticky-notes', 'instance-del')).toBeNull()
+  })
+
+  test('deleteState on a state file that was never written is a safe no-op, not a throw', async () => {
+    await expect(storage.deleteState('sticky-notes', 'never-existed')).resolves.toBeUndefined()
+  })
+
+  test('removeInstanceFromRegistry removes only the matching (pawprintId, instanceId) pair, leaving other instances/Pawprints untouched', async () => {
+    const now = Date.now()
+    await storage.writeRegistry({
+      instances: [
+        { pawprintId: 'p1', instanceId: 'a', alwaysOnTop: false, openOnLaunch: true, updatedAt: now },
+        { pawprintId: 'p1', instanceId: 'b', alwaysOnTop: false, openOnLaunch: false, updatedAt: now },
+        { pawprintId: 'p2', instanceId: 'a', alwaysOnTop: false, openOnLaunch: true, updatedAt: now }
+      ]
+    })
+    await storage.removeInstanceFromRegistry('p1', 'a')
+    const registry = await storage.readRegistry()
+    expect(registry.instances.map((i) => `${i.pawprintId}:${i.instanceId}`).sort()).toEqual(['p1:b', 'p2:a'])
+  })
+
+  test('removeInstanceFromRegistry for a pair that is not present is a safe no-op', async () => {
+    await storage.writeRegistry({
+      instances: [{ pawprintId: 'p1', instanceId: 'a', alwaysOnTop: false, openOnLaunch: true, updatedAt: Date.now() }]
+    })
+    await storage.removeInstanceFromRegistry('p1', 'does-not-exist')
+    const registry = await storage.readRegistry()
+    expect(registry.instances.length).toBe(1)
+  })
+
+  test('removeInstanceFromRegistry on an empty/nonexistent registry is a safe no-op', async () => {
+    await expect(storage.removeInstanceFromRegistry('p1', 'a')).resolves.toBeUndefined()
+    expect(await storage.readRegistry()).toEqual({ instances: [] })
+  })
 })

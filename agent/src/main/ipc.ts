@@ -52,7 +52,8 @@ import {
   deletePawprintById,
   openPawprintWindow,
   closePawprintWindow,
-  setAlwaysOnTop as setPawprintAlwaysOnTop
+  setAlwaysOnTop as setPawprintAlwaysOnTop,
+  deleteInstance as deletePawprintInstance
 } from './agent/pawprints/manager'
 import { readRegistry as readPawprintRegistry, readManifest as readPawprintManifest, writeManifest as writePawprintManifest } from './agent/pawprints/storage'
 import {
@@ -65,6 +66,7 @@ import {
 } from './agent/pawprints/windowManager'
 import { mergePawprintTheme, DEFAULT_PAWPRINT_THEME } from './agent/pawprints/theme'
 import { checkPawprintStateSize } from './agent/pawprints/writeGuard'
+import { onPawprintsChanged } from './agent/pawprints/events'
 
 /** Persists a per-Pawprint theme override (UI-only setting, not routed through the code-approval
  *  flow — see plan section 6/10) and live-broadcasts the merged theme to any currently-open
@@ -398,10 +400,20 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.pawprintOpen, async (_e, pawprintId: string, instanceId?: string) => openPawprintWindow({ pawprintId, instanceId }))
   ipcMain.handle(IPC.pawprintClose, async (_e, instanceId: string) => closePawprintWindow(instanceId))
   ipcMain.handle(IPC.pawprintDelete, async (_e, pawprintId: string) => deletePawprintById(pawprintId))
+  ipcMain.handle(IPC.pawprintDeleteInstance, async (_e, pawprintId: string, instanceId: string) =>
+    deletePawprintInstance(pawprintId, instanceId)
+  )
   ipcMain.handle(IPC.pawprintSetAlwaysOnTop, async (_e, instanceId: string, value: boolean) => setPawprintAlwaysOnTop(instanceId, value))
   ipcMain.handle(IPC.pawprintSetThemeOverride, async (_e, pawprintId: string, override: Record<string, string>) =>
     setPawprintThemeOverride(pawprintId, override)
   )
+  // Broadcasts to every main-app window whenever the registry changes from ANY source — see
+  // events.ts's comment for why this can't just be tied to this window's own IPC handlers above.
+  onPawprintsChanged(() => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      win.webContents.send(IPC.onPawprintListChanged)
+    }
+  })
 
   // Renderer-facing bridge for a Pawprint's own sandboxed window (invoked only via
   // preloadPawprint.ts's contextBridge — never reachable from the main app's own renderer).
@@ -436,6 +448,14 @@ export function registerIpcHandlers(): void {
     // Only meaningful for a 'per-item' instanceModel Pawprint; opening with no explicit
     // instanceId lets openPawprintWindow mint a fresh one (see manager.ts/windowManager.ts).
     return openPawprintWindow({ pawprintId: key.pawprintId, label })
+  })
+  ipcMain.handle(IPC.pawprintRendererDeleteSelf, async (e) => {
+    // Resolved from the sender's own webContents id, exactly like the other pawprintRenderer*
+    // handlers above — the sandboxed renderer can only ever delete ITS OWN instance, never an
+    // arbitrary pawprintId/instanceId pair it could otherwise spoof by passing arguments.
+    const key = findInstanceKeyForWebContents(e.sender.id)
+    if (!key) return
+    await deletePawprintInstance(key.pawprintId, key.instanceId)
   })
 
   ipcMain.handle(IPC.brandingGetIcon, async () => getCustomIconDataUrl())

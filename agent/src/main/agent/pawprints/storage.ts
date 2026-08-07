@@ -41,19 +41,28 @@ async function withWriteQueue(path: string, fn: () => Promise<void>): Promise<vo
  * Serialized per destination path via `withWriteQueue()` — see its comment for why this matters.
  */
 export async function atomicWriteJson(path: string, data: unknown): Promise<void> {
-  await withWriteQueue(path, async () => {
-    await fs.mkdir(dirname(path), { recursive: true })
-    const json = JSON.stringify(data, null, 2)
-    const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    try {
-      const prev = await fs.readFile(path).catch(() => null)
-      if (prev) await fs.writeFile(`${path}.bak`, prev)
-    } catch {
-      // best-effort backup only
-    }
-    await fs.writeFile(tmp, json, 'utf8')
-    await renameWithRetry(tmp, path)
-  })
+  await withWriteQueue(path, () => atomicWriteJsonUnqueued(path, data))
+}
+
+/** The actual temp-file-then-rename-plus-.bak write, without the `withWriteQueue()` wrapper.
+ *  Exported so a caller that has ALREADY entered the queue for this path (e.g.
+ *  removeInstanceFromRegistry()'s own read-modify-write, which needs the read and the write to
+ *  happen inside the same queued turn) can perform the write without queuing a second, nested
+ *  turn under the same key — `withWriteQueue()` is not reentrant. Do not call this directly for
+ *  a path you haven't already queued; that would reintroduce the exact race `atomicWriteJson()`
+ *  exists to prevent. */
+export async function atomicWriteJsonUnqueued(path: string, data: unknown): Promise<void> {
+  await fs.mkdir(dirname(path), { recursive: true })
+  const json = JSON.stringify(data, null, 2)
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  try {
+    const prev = await fs.readFile(path).catch(() => null)
+    if (prev) await fs.writeFile(`${path}.bak`, prev)
+  } catch {
+    // best-effort backup only
+  }
+  await fs.writeFile(tmp, json, 'utf8')
+  await renameWithRetry(tmp, path)
 }
 
 /**
@@ -139,6 +148,14 @@ export async function readState(id: string, instanceId: string): Promise<unknown
   return readJsonOrNull<unknown>(pawprintStatePath(id, instanceId))
 }
 
+/** Deletes one instance's persisted state file (used by instance deletion — NOT by
+ *  deletePawprint(), which removes the whole per-Pawprint directory tree in one shot instead).
+ *  Tolerant of the file already being missing (e.g. an instance that was opened but never
+ *  called setState()). */
+export async function deleteState(id: string, instanceId: string): Promise<void> {
+  await fs.rm(pawprintStatePath(id, instanceId), { force: true })
+}
+
 /** Used only by the main process's own setState IPC handler (see stateWatcher.ts for the
  *  self-write-suppression hash this feeds). Direct agent writes to state/*.json go through the
  *  generic write_file/edit_file tools instead, guarded by writeGuard.ts — not this function. */
@@ -156,4 +173,17 @@ export async function readRegistry(): Promise<PawprintRegistry> {
 
 export async function writeRegistry(registry: PawprintRegistry): Promise<void> {
   await atomicWriteJson(pawprintsRegistryPath(), registry)
+}
+
+/** Removes one instance's record from the cross-Pawprint registry, if present. Serialized
+ *  through the same per-path write queue as every other registry write (see withWriteQueue()
+ *  above) so this can never race a concurrent persistInstanceRecord()/persistInstanceRecordClosed()
+ *  write to the same registry.json — both read-modify-write against the queue, not raw disk. */
+export async function removeInstanceFromRegistry(pawprintId: string, instanceId: string): Promise<void> {
+  await withWriteQueue(pawprintsRegistryPath(), async () => {
+    const registry = await readRegistry()
+    const next = registry.instances.filter((i) => !(i.pawprintId === pawprintId && i.instanceId === instanceId))
+    if (next.length === registry.instances.length) return // nothing to remove
+    await atomicWriteJsonUnqueued(pawprintsRegistryPath(), { instances: next })
+  })
 }

@@ -23,6 +23,7 @@ import {
 import { pawprintStatePath, pawprintNodeModulesDir } from './paths'
 import type { PawprintManifest, PawprintPackageRef, PawprintSourceResult } from './types'
 import { openPawprintWindow, closePawprintWindow, reopenAllOnLaunch, closeAllPawprintWindows } from './windowManager'
+import { emitPawprintsChanged } from './events'
 
 export interface CreatePawprintArgs {
   name: string
@@ -109,6 +110,7 @@ export async function createPawprint(args: CreatePawprintArgs): Promise<ToolResu
   await writeManifest(manifest)
   await materializePackages(resolved.resolvedPackages, pawprintNodeModulesDir(id))
   await cleanupResolvedPackages(resolved.resolvedPackages).catch(() => {})
+  emitPawprintsChanged()
 
   return { ok: true, summary: `Created Pawprint "${args.name}" (${id})`, data: { id, name: args.name } }
 }
@@ -133,6 +135,7 @@ export async function updatePawprint(args: UpdatePawprintArgs): Promise<ToolResu
   await materializePackages(resolved.resolvedPackages, pawprintNodeModulesDir(args.pawprintId))
   await cleanupResolvedPackages(resolved.resolvedPackages).catch(() => {})
   clearBundleCache(args.pawprintId)
+  emitPawprintsChanged()
 
   return { ok: true, summary: `Updated Pawprint "${existing.name}" (${args.pawprintId})`, data: { id: args.pawprintId } }
 }
@@ -176,15 +179,16 @@ export async function deletePawprintById(pawprintId: string): Promise<void> {
   closeAllInstancesFor(pawprintId)
   clearBundleCache(pawprintId)
   await deletePawprintStorage(pawprintId)
+  emitPawprintsChanged()
 }
 
 // Re-exported window-manager passthroughs kept here so IPC handlers/tool dispatch only need to
 // import from this one manager module, not reach into windowManager.ts directly.
-export { openPawprintWindow, closePawprintWindow, reopenAllOnLaunch, closeAllPawprintWindows, setAlwaysOnTop }
+export { openPawprintWindow, closePawprintWindow, reopenAllOnLaunch, closeAllPawprintWindows, setAlwaysOnTop, deleteInstance }
 export { bundlePawprint }
 export { MAX_PACKAGE_TOTAL_BYTES }
 
 // Local helpers that need windowManager's live-instance bookkeeping without a circular import
 // at module-eval time (windowManager imports storage/manifest helpers from here indirectly via
 // paths/storage, not from manager.ts, so this stays acyclic).
-import { getOpenInstanceIds, closeAllInstancesFor, setAlwaysOnTop } from './windowManager'
+import { getOpenInstanceIds, closeAllInstancesFor, setAlwaysOnTop, deleteInstance } from './windowManager'

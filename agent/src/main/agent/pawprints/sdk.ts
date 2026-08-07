@@ -32,4 +32,8 @@ export function closeWindow() {
 export function requestNewInstance(label) {
   return bridge.requestNewInstance(label)
 }
+
+export function deleteSelf() {
+  return bridge.deleteSelf()
+}
 `

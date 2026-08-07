@@ -163,8 +163,15 @@ export const IPC = {
   pawprintOpen: 'pawprint:open',
   pawprintClose: 'pawprint:close',
   pawprintDelete: 'pawprint:delete',
+  pawprintDeleteInstance: 'pawprint:deleteInstance',
   pawprintSetAlwaysOnTop: 'pawprint:setAlwaysOnTop',
   pawprintSetThemeOverride: 'pawprint:setThemeOverride',
+  // Pushed to every main-app window whenever the Pawprints registry/manifest data actually
+  // changes on disk, regardless of which code path caused it (My Pawprints panel buttons, an
+  // in-app control inside a Pawprint's own window like requestNewInstance/deleteSelf, or
+  // reopenAllOnLaunch() at startup) — lets an already-mounted PawprintsPanel re-fetch live
+  // instead of only refreshing after its own button clicks.
+  onPawprintListChanged: 'pawprint:onListChanged',
 
   // Renderer-facing channels used ONLY by preloadPawprint.ts's contextBridge, inside a
   // Pawprint's own sandboxed BrowserWindow — never invoked from the main app's own renderer,
@@ -174,6 +181,10 @@ export const IPC = {
   pawprintRendererGetTheme: 'pawprint:getTheme',
   pawprintRendererCloseSelf: 'pawprint:closeSelf',
   pawprintRendererRequestNewInstance: 'pawprint:requestNewInstance',
+  // Lets a Pawprint's own UI delete ITS OWN instance (e.g. a "delete this note" in-app button on
+  // a per-item sticky-note Pawprint) — distinct from pawprintRendererCloseSelf, which only closes
+  // the window without touching persisted state/registry data.
+  pawprintRendererDeleteSelf: 'pawprint:deleteSelf',
   pawprintRendererThemeChanged: 'pawprint:themeChanged',
   pawprintRendererStateChangedExternally: 'pawprint:stateChangedExternally'
 } as const
@@ -360,6 +371,14 @@ export interface KlennyApi {
   openPawprint: (pawprintId: string, instanceId?: string) => Promise<{ instanceId: string }>
   closePawprint: (instanceId: string) => Promise<void>
   deletePawprint: (pawprintId: string) => Promise<void>
+  /** Permanently deletes ONE instance (closes its window if open, removes its state file and
+   *  registry record) without touching the Pawprint's shared manifest/source/packages — use
+   *  deletePawprint() to remove the whole Pawprint instead. Safe to call down to zero remaining
+   *  instances for either instance model; the panel falls back to a synthetic "reopen" row. */
+  deletePawprintInstance: (pawprintId: string, instanceId: string) => Promise<void>
   setPawprintAlwaysOnTop: (instanceId: string, value: boolean) => Promise<void>
   setPawprintThemeOverride: (pawprintId: string, override: Record<string, string>) => Promise<void>
+  /** Fires whenever the Pawprints registry/manifest data changes on disk from ANY source (not
+   *  just this window's own panel actions) — see onPawprintListChanged's comment above. */
+  onPawprintListChanged: (cb: () => void) => () => void
 }

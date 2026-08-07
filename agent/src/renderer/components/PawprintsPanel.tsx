@@ -30,6 +30,14 @@ export function PawprintsPanel() {
     void refresh()
   }, [refresh])
 
+  // Keeps the panel live when a Pawprint's own in-app UI creates/closes/deletes an instance (e.g.
+  // a "new board" button inside the Kanban Pawprint calling requestNewInstance) — without this,
+  // the registry change on disk was invisible to an already-mounted panel until the user
+  // happened to click one of the panel's OWN buttons, which incidentally called refresh().
+  useEffect(() => {
+    return window.klenny.onPawprintListChanged(() => void refresh())
+  }, [refresh])
+
   const withBusy = useCallback(
     async (instanceId: string, fn: () => Promise<void>) => {
       setBusyInstanceIds((prev) => new Set(prev).add(instanceId))
@@ -160,6 +168,20 @@ export function PawprintsPanel() {
                           }
                         >
                           {isOpen ? 'Close' : 'Open'}
+                        </button>
+                        <button
+                          className="text-xs px-2 py-1 rounded bg-red-950 text-red-300 border border-red-900 hover:border-red-600 disabled:opacity-50"
+                          disabled={busy}
+                          title="Deletes this instance's saved data permanently. Closes its window first if open."
+                          onClick={() =>
+                            void withBusy(inst.instanceId, async () => {
+                              const label = inst.label ? ` "${inst.label}"` : ''
+                              if (!window.confirm(`Delete this instance${label}? Its saved data will be lost permanently.`)) return
+                              await window.klenny.deletePawprintInstance(manifest.id, inst.instanceId)
+                            })
+                          }
+                        >
+                          Delete
                         </button>
                       </div>
                     </li>

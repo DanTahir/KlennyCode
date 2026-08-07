@@ -31,6 +31,7 @@ const PAWPRINT_IPC = {
   getTheme: 'pawprint:getTheme',
   closeSelf: 'pawprint:closeSelf',
   requestNewInstance: 'pawprint:requestNewInstance',
+  deleteSelf: 'pawprint:deleteSelf',
   themeChanged: 'pawprint:themeChanged'
 } as const
 
@@ -44,5 +45,6 @@ contextBridge.exposeInMainWorld('__pawprintBridge', {
     return () => ipcRenderer.removeListener(PAWPRINT_IPC.themeChanged, listener)
   },
   close: () => ipcRenderer.invoke(PAWPRINT_IPC.closeSelf),
-  requestNewInstance: (label?: string) => ipcRenderer.invoke(PAWPRINT_IPC.requestNewInstance, label)
+  requestNewInstance: (label?: string) => ipcRenderer.invoke(PAWPRINT_IPC.requestNewInstance, label),
+  deleteSelf: () => ipcRenderer.invoke(PAWPRINT_IPC.deleteSelf)
 })

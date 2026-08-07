@@ -144,8 +144,14 @@ const api: KlennyApi = {
   openPawprint: (pawprintId, instanceId) => ipcRenderer.invoke(IPC.pawprintOpen, pawprintId, instanceId),
   closePawprint: (instanceId) => ipcRenderer.invoke(IPC.pawprintClose, instanceId),
   deletePawprint: (pawprintId) => ipcRenderer.invoke(IPC.pawprintDelete, pawprintId),
+  deletePawprintInstance: (pawprintId, instanceId) => ipcRenderer.invoke(IPC.pawprintDeleteInstance, pawprintId, instanceId),
   setPawprintAlwaysOnTop: (instanceId, value) => ipcRenderer.invoke(IPC.pawprintSetAlwaysOnTop, instanceId, value),
-  setPawprintThemeOverride: (pawprintId, override) => ipcRenderer.invoke(IPC.pawprintSetThemeOverride, pawprintId, override)
+  setPawprintThemeOverride: (pawprintId, override) => ipcRenderer.invoke(IPC.pawprintSetThemeOverride, pawprintId, override),
+  onPawprintListChanged: (cb) => {
+    const listener = () => cb()
+    ipcRenderer.on(IPC.onPawprintListChanged, listener)
+    return () => ipcRenderer.removeListener(IPC.onPawprintListChanged, listener)
+  }
 }
 
 contextBridge.exposeInMainWorld('klenny', api)

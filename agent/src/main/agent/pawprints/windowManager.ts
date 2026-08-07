@@ -6,10 +6,11 @@ import { mergePawprintTheme, DEFAULT_PAWPRINT_THEME, type PawprintThemeTokens } 
 import { installPawprintProtocolHandler, setServedContent, clearServedContent, pawprintEntryUrl, buildConnectSrc } from './protocol'
 import { bundlePawprint } from './bundler'
 import { readManifest, readState, writeStateFromMainProcess } from './storage'
-import { readRegistry, writeRegistry } from './storage'
+import { readRegistry, writeRegistry, removeInstanceFromRegistry, deleteState } from './storage'
 import { readSource } from './storage'
 import { PawprintStateWatcher } from './stateWatcher'
 import type { PawprintInstanceRecord } from './types'
+import { emitPawprintsChanged } from './events'
 
 // This app is ESM (`"type": "module"` in package.json), so `__dirname` isn't a global here —
 // it must be derived from this module's own `import.meta.url`, same pattern used in ipc.ts.
@@ -24,6 +25,14 @@ interface LiveInstance {
 }
 
 const liveInstances = new Map<string, LiveInstance>() // key: instanceId
+
+// Resolved once the 'closed' handler has finished its own async cleanup (stateWatcher.stop(),
+// persistInstanceRecordClosed()) for a given instanceId — NOT just once the BrowserWindow itself
+// has closed. deleteInstance() needs to wait for this, not just win.close(), so its own registry
+// removal always runs strictly after persistInstanceRecordClosed()'s write to the same file;
+// otherwise the two could race (persistInstanceRecordClosed() reading the registry before
+// deleteInstance()'s removal has landed, then re-adding a stale record on its own write).
+const pendingCloseCleanup = new Map<string, Array<() => void>>()
 
 /** Global cap on simultaneously-open Pawprint windows, across all Pawprint ids combined (plan
  *  section 11, Resource/DoS hardening) — bounds worst-case memory/window-handle usage regardless
@@ -62,6 +71,7 @@ async function persistInstanceRecord(record: PawprintInstanceRecord): Promise<vo
   if (idx >= 0) registry.instances[idx] = record
   else registry.instances.push(record)
   await writeRegistry(registry)
+  emitPawprintsChanged()
 }
 
 /** Re-exported so existing callers/tests importing buildConnectSrc from windowManager.ts keep
@@ -101,7 +111,25 @@ export async function openPawprintWindow(opts: OpenInstanceOptions): Promise<{ i
   const manifest = await readManifest(opts.pawprintId)
   if (!manifest) throw new Error(`No Pawprint found with id "${opts.pawprintId}"`)
 
-  const instanceId = opts.instanceId ?? nanoid(10)
+  // Lowercased: the pawprint:// scheme is registered as a standard/secure privileged scheme
+  // (protocol.ts's registerPawprintSchemePrivileges), so it's WHATWG "special scheme" per
+  // Chromium's own URL parser — Chromium lowercases the hostname portion of any navigation URL
+  // before the protocol.handle() callback ever sees request.url, regardless of the original
+  // casing used in win.loadURL()/pawprintEntryUrl(). nanoid()'s default alphabet includes
+  // uppercase letters, so a freshly-minted id containing one silently mismatched every
+  // case-sensitive lookup keyed by the original mixed-case string (servedByInstance in
+  // protocol.ts, liveInstances here, the session partition string, and the on-disk state file
+  // path) — the request that actually arrived used the lowercased hostname, missed
+  // servedByInstance's mixed-case key, and the handler fell through to its 404 Response, which
+  // rendered as literal "Not found" text in the window (no Content-Type set on that response).
+  // Reproduced via `new URL('pawprint://AbC.../index.html').hostname` returning the exact same
+  // mixed-case string in plain Node (not itself a special scheme there) while Electron/Chromium's
+  // real navigation path lowercases it — the mismatch only bit when nanoid happened to produce an
+  // uppercase character, which is why one instance could work while a later one silently failed.
+  // Force lowercase at the single point instanceId is minted so every downstream consumer (this
+  // function, protocol.ts, storage.ts's state path, findInstanceKeyForWebContents) stays
+  // consistent by construction — never reintroduce mixed-case ids here.
+  const instanceId = opts.instanceId ?? nanoid(10).toLowerCase()
   const existing = liveInstances.get(instanceId)
   if (existing && !existing.window.isDestroyed()) {
     existing.window.focus()
@@ -229,9 +257,16 @@ export async function openPawprintWindow(opts: OpenInstanceOptions): Promise<{ i
     liveInstances.delete(instanceId)
     clearServedContent(instanceId)
     stateWatcher.stop(opts.pawprintId, instanceId)
-    persistInstanceRecordClosed(opts.pawprintId, instanceId).catch((err) => {
-      console.error(`[Pawprint ${opts.pawprintId}/${instanceId}] failed to persist closed state:`, err)
-    })
+    persistInstanceRecordClosed(opts.pawprintId, instanceId)
+      .catch((err) => {
+        console.error(`[Pawprint ${opts.pawprintId}/${instanceId}] failed to persist closed state:`, err)
+      })
+      .finally(() => {
+        const waiters = pendingCloseCleanup.get(instanceId)
+        if (!waiters) return
+        pendingCloseCleanup.delete(instanceId)
+        for (const resolve of waiters) resolve()
+      })
   })
 
   await persistInstanceRecord({
@@ -253,6 +288,7 @@ async function persistInstanceRecordClosed(pawprintId: string, instanceId: strin
   if (idx >= 0) {
     registry.instances[idx] = { ...registry.instances[idx], openOnLaunch: false, updatedAt: Date.now() }
     await writeRegistry(registry)
+    emitPawprintsChanged()
   }
 }
 
@@ -260,6 +296,22 @@ export function closePawprintWindow(instanceId: string): void {
   const live = liveInstances.get(instanceId)
   if (!live) return
   if (!live.window.isDestroyed()) live.window.close()
+}
+
+/** Like closePawprintWindow(), but resolves only once the window's own 'closed' handler has
+ *  finished its async cleanup (stateWatcher stop + persistInstanceRecordClosed's registry
+ *  write) — not merely once the OS-level window handle is gone. Used by deleteInstance() so its
+ *  own registry removal is guaranteed to run strictly after that write, never racing it. A
+ *  no-op (resolves immediately) if the instance isn't currently open. */
+export function closePawprintWindowAndWaitForCleanup(instanceId: string): Promise<void> {
+  const live = liveInstances.get(instanceId)
+  if (!live || live.window.isDestroyed()) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    const waiters = pendingCloseCleanup.get(instanceId) ?? []
+    waiters.push(resolve)
+    pendingCloseCleanup.set(instanceId, waiters)
+    live.window.close()
+  })
 }
 
 export function setAlwaysOnTop(instanceId: string, value: boolean): void {
@@ -316,6 +368,27 @@ export async function reopenAllOnLaunch(onError?: (pawprintId: string, instanceI
       onError?.(record.pawprintId, record.instanceId, e)
     }
   }
+}
+
+/**
+ * Permanently deletes one instance of a Pawprint: closes its window if open (waiting for that
+ * window's own 'closed' cleanup — including persistInstanceRecordClosed()'s registry write — to
+ * fully finish first, so the registry removal below can never race it and get clobbered by a
+ * stale re-add), then deletes its persisted state file and removes its record from the
+ * cross-Pawprint registry. Does NOT touch the Pawprint's manifest/source/packages — those are
+ * shared across all instances of a Pawprint and are only removed by deletePawprintById().
+ *
+ * Deliberately allowed to bring a Pawprint down to zero known instances, for both instance
+ * models: the "My Pawprints" panel already renders a synthetic placeholder row (keyed by the
+ * Pawprint's own id) whenever a Pawprint has no real instance records, letting the user reopen a
+ * fresh one on demand — see PawprintsPanel.tsx's `displayInstances` fallback. There is nothing
+ * to "break" by reaching zero instances, so no special-casing "last instance" here is needed.
+ */
+export async function deleteInstance(pawprintId: string, instanceId: string): Promise<void> {
+  await closePawprintWindowAndWaitForCleanup(instanceId)
+  await deleteState(pawprintId, instanceId)
+  await removeInstanceFromRegistry(pawprintId, instanceId)
+  emitPawprintsChanged()
 }
 
 export function findInstanceKeyForWebContents(webContentsId: number): { pawprintId: string; instanceId: string } | null {

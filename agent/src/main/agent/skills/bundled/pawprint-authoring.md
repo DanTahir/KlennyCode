@@ -24,7 +24,7 @@ you are debugging blind from the user's description alone (see Troubleshooting b
 ## The SDK — the ONLY import from the host app
 
 ```ts
-import { getState, setState, getTheme, onThemeChange, closeWindow, requestNewInstance } from 'klenny-pawprint-sdk'
+import { getState, setState, getTheme, onThemeChange, closeWindow, requestNewInstance, deleteSelf } from 'klenny-pawprint-sdk'
 ```
 
 - `getState(): Promise<any>` — reads this instance's persisted JSON state (undefined/null on first run).
@@ -35,9 +35,20 @@ import { getState, setState, getTheme, onThemeChange, closeWindow, requestNewIns
 - `getTheme(): Promise<{ mode?: 'light' | 'dark'; ... }>` — current host theme tokens.
 - `onThemeChange(cb): () => void` — subscribes to live theme changes; **returns an unsubscribe
   function synchronously** (not a Promise) — call it in a `useEffect` cleanup, don't await it.
-- `closeWindow(): void` — closes this Pawprint's own window.
+- `closeWindow(): void` — closes this Pawprint's own window, WITHOUT deleting its persisted state —
+  reopening it (from the "My Pawprints" panel, or `openOnLaunch` at next app start) restores
+  exactly where it left off.
 - `requestNewInstance(label?: string): void` — asks the host to open a new independent instance
   (only meaningful for `instanceModel: 'per-item'` Pawprints).
+- `deleteSelf(): Promise<void>` — permanently deletes THIS instance: closes its window and erases
+  its persisted state file, so reopening starts fresh rather than restoring anything. Use this to
+  build an in-app "delete this note"/"remove this board" button on a `per-item` Pawprint (e.g. a
+  trash icon on each sticky note that calls `deleteSelf()` when clicked) — it deletes only the
+  calling instance, never any other instance of the same Pawprint, and there is no confirmation
+  dialog on the SDK side, so build your own "are you sure?" UI in the component before calling it
+  for anything the user would be upset to lose. Safe to call even as the very last remaining
+  instance of a Pawprint — the "My Pawprints" panel automatically falls back to a "reopen" option
+  when a Pawprint has zero instances, so there is nothing to special-case here.
 
 There is no other host API surface. No filesystem, no clipboard, no notifications, no other IPC —
 if a feature needs something beyond this list, it cannot currently be built as a Pawprint; say so
