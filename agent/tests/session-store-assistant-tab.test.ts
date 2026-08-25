@@ -34,6 +34,54 @@ function assistantHistoryFile(): string {
   return join(electronMockState.userDataDir, 'sessions', 'assistant-tabs.history.json')
 }
 
+describe('SessionStore default model (new tabs should honor settings.mainModel, not a hardcoded id)', () => {
+  test('createEmptyTab() uses DEFAULT_MAIN_MODEL before setDefaultModel() is ever called', async () => {
+    const { DEFAULT_MAIN_MODEL } = await import('../shared/types')
+    const store = new SessionStore()
+    const tab = store.createEmptyTab()
+    expect(tab.model).toBe(DEFAULT_MAIN_MODEL)
+  })
+
+  test('setDefaultModel() changes what createEmptyTab()/createTab() hand out afterward', async () => {
+    const store = new SessionStore()
+    await store.load('/fake/workspace/model-a')
+    store.setDefaultModel('openai/gpt-5.5')
+
+    expect(store.createEmptyTab().model).toBe('openai/gpt-5.5')
+    const tab = await store.createTab()
+    expect(tab.model).toBe('openai/gpt-5.5')
+  })
+
+  test('setDefaultModel() also applies to createAssistantTab()', async () => {
+    const store = new SessionStore()
+    await store.load('/fake/workspace/model-b')
+    store.setDefaultModel('google/gemini-3-pro')
+
+    const tab = await store.createAssistantTab()
+    expect(tab.model).toBe('google/gemini-3-pro')
+  })
+
+  test('getDefaultModel() reflects the most recent setDefaultModel() call', async () => {
+    const store = new SessionStore()
+    store.setDefaultModel('anthropic/claude-opus-5')
+    expect(store.getDefaultModel()).toBe('anthropic/claude-opus-5')
+    store.setDefaultModel('openai/gpt-5.5')
+    expect(store.getDefaultModel()).toBe('openai/gpt-5.5')
+  })
+
+  test('an auto-recreated tab (after closing the last live tab) also honors the current default model', async () => {
+    const store = new SessionStore()
+    await store.load('/fake/workspace/model-c')
+    store.setDefaultModel('openai/gpt-5.5')
+    const onlyTab = store.getTabs()[0]
+
+    await store.closeTab(onlyTab.id)
+
+    expect(store.getTabs()).toHaveLength(1)
+    expect(store.getTabs()[0].model).toBe('openai/gpt-5.5')
+  })
+})
+
 describe('SessionStore Assistant tabs (workspace-independent, persisted)', () => {
   test('createAssistantTab() adds an in-memory tab with kind "assistant"', async () => {
     const store = new SessionStore()

@@ -27,6 +27,10 @@ app.whenReady().then(async () => {
   registerIpcHandlers()
 
   const settings = await loadSettings()
+  // Must happen before any tab gets created (loadAssistantTabs/load below can both create a
+  // fresh empty tab) so new tabs start on the user's configured default model instead of the
+  // hardcoded DEFAULT_MAIN_MODEL fallback.
+  sessionStore.setDefaultModel(settings.mainModel)
   // Assistant tabs are workspace-independent and persist across restarts — load them before any
   // workspace-scoped session load, and even if no workspace is ever opened (see
   // SessionStore.loadAssistantTabs doc comment).

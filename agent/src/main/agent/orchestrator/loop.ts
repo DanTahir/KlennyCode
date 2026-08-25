@@ -138,9 +138,13 @@ export async function agentLoop(
   }
 
   const models = await fetchModels(apiKey, false, signal)
-  const modelInfo = models.find((m) => m.id === tab.model) ?? models[0]
+  // Deliberately does NOT fall back to models[0] when tab.model isn't in the fetched list —
+  // that used to silently compute reasoning-effort/caching decisions (see resolveReasoningEffort/
+  // supportsExplicitCaching below) against a DIFFERENT model than the one actually sent on the
+  // wire, while looking to the user like their model choice was silently ignored.
+  const modelInfo = models.find((m) => m.id === tab.model)
   if (!modelInfo) {
-    emit({ type: 'error', tabId: tab.id, message: 'Model not found.' })
+    emit({ type: 'error', tabId: tab.id, message: `Model "${tab.model}" not found — it may no longer be available on OpenRouter. Pick a different model for this tab.` })
     return 'error'
   }
 

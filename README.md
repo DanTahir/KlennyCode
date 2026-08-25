@@ -266,7 +266,14 @@ sandboxed desktop window (a sticky-note app, a countdown timer, a simple tracker
   packages/domains still always requires the approval flow above.
 - **My Pawprints panel** — see every Pawprint you've created, open/close/delete instances, toggle
   always-on-top per window, review (read-only) its approved packages and domains, and jump into a
-  chat pre-scoped to "ask Klenny to modify" one of them.
+  chat pre-scoped to "ask Klenny to modify" one of them. Deleting an instance removes its saved
+  data and its window (if open) but leaves the Pawprint itself and its other instances untouched;
+  deleting a Pawprint's very last instance is allowed for either instance model — the panel just
+  falls back to a "reopen" row, so nothing is ever bricked.
+- **A Pawprint can delete its own instance from inside its own UI** — the SDK's `deleteSelf()`
+  lets agent-written code add an in-app control (e.g. a trash icon on one sticky note in a
+  `per-item` Pawprint) that deletes only that instance's own window and saved data, without going
+  through the management panel.
 - **Known v1 limitations** — no rollback to a previous version of a Pawprint's source (updates are
   destructive; only the latest approved version is kept), and the network domain allowlist doesn't
   defend against DNS rebinding to a private IP — both called out here rather than silently glossed

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ArchivedTabSession, ChatMessage, TabSession } from '../shared/types'
 
-const { appendMessageToWorkspaceTab } = await import('../src/main/session/store')
+const { appendMessageToWorkspaceTab, sessionStore } = await import('../src/main/session/store')
 
 const tempDirs: string[] = []
 
@@ -137,6 +137,26 @@ describe('appendMessageToWorkspaceTab (background-workspace scheduled task deliv
     expect(tabs).toHaveLength(1)
     expect(tabs[0].id).toBe(resultId)
     expect(tabs[0].title).toBe('Scheduled: Untied Task')
+  })
+
+  test('a brand-new fallback tab uses sessionStore\'s current default model, not a hardcoded one', async () => {
+    const workspace = '/fake/project/g'
+    sessionStore.setDefaultModel('openai/gpt-5.5')
+
+    const resultId = await appendMessageToWorkspaceTab(workspace, null, makeMessage(), 'Scheduled: Model check')
+
+    const tabs = await readWorkspaceTabsFile(workspace)
+    expect(tabs.find((t) => t.id === resultId)?.model).toBe('openai/gpt-5.5')
+  })
+
+  test('an explicit fallbackModel argument overrides the store default', async () => {
+    const workspace = '/fake/project/h'
+    sessionStore.setDefaultModel('openai/gpt-5.5')
+
+    const resultId = await appendMessageToWorkspaceTab(workspace, null, makeMessage(), 'Scheduled: Explicit model', 'google/gemini-3-pro')
+
+    const tabs = await readWorkspaceTabsFile(workspace)
+    expect(tabs.find((t) => t.id === resultId)?.model).toBe('google/gemini-3-pro')
   })
 
   test('never touches a different workspace file', async () => {

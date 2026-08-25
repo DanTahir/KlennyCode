@@ -39,6 +39,13 @@ export class SessionStore {
   private history: ArchivedTabSession[] = []
   private assistantHistory: ArchivedTabSession[] = []
   private workspace: string | null = null
+  // The model newly-created tabs should start on. Defaults to DEFAULT_MAIN_MODEL until the app
+  // has loaded the user's actual settings — main/index.ts calls setDefaultModel(settings.mainModel)
+  // right after loadSettings() at startup (before any tab creation happens), and ipc.ts's
+  // settingsSet handler keeps it in sync whenever the user changes their default model. Without
+  // this, createEmptyTab() would always hardcode DEFAULT_MAIN_MODEL regardless of what the user
+  // picked in Settings — see the "code windows default to Claude Sonnet 5" bug this fixes.
+  private defaultModel: string = DEFAULT_MAIN_MODEL
 
   /** The workspace currently loaded in memory (i.e. what the UI is showing right now), or null
    *  if none is open. Used by callers that need to decide whether a given workspace's tabs can
@@ -46,6 +53,17 @@ export class SessionStore {
    *  deliverScheduledTaskResult in orchestrator.ts. */
   getWorkspace(): string | null {
     return this.workspace
+  }
+
+  /** Sets the model id newly-created tabs (createEmptyTab/createTab/createAssistantTab) start
+   *  on. Should always be kept equal to the user's current settings.mainModel — see callers in
+   *  main/index.ts (startup) and ipc.ts (settingsSet handler). */
+  setDefaultModel(model: string): void {
+    this.defaultModel = model
+  }
+
+  getDefaultModel(): string {
+    return this.defaultModel
   }
 
   /** Loads persisted Assistant tabs + their archived History from their fixed, workspace-
@@ -106,7 +124,7 @@ export class SessionStore {
       id: nanoid(),
       title: 'Code chat',
       mode: 'agent',
-      model: DEFAULT_MAIN_MODEL,
+      model: this.defaultModel,
       createdAt: now,
       updatedAt: now,
       messages: [],
@@ -304,7 +322,8 @@ export async function appendMessageToWorkspaceTab(
   workspace: string,
   tabId: string | null,
   message: TabSession['messages'][number],
-  fallbackTitle: string
+  fallbackTitle: string,
+  fallbackModel: string = sessionStore.getDefaultModel()
 ): Promise<string> {
   const tabs = await readWorkspaceTabs(workspace)
   const idx = tabId ? tabs.findIndex((t) => t.id === tabId) : -1
@@ -332,7 +351,7 @@ export async function appendMessageToWorkspaceTab(
     id: nanoid(),
     title: fallbackTitle,
     mode: 'agent',
-    model: DEFAULT_MAIN_MODEL,
+    model: fallbackModel,
     createdAt: now,
     updatedAt: now,
     messages: [message],

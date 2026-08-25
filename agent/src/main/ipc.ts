@@ -145,6 +145,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.settingsSet, async (_e, patch) => {
     const next = await saveSettings(patch)
     approvalManager.setMode(next.approvalMode)
+    // Keep the session store's default-model-for-new-tabs in sync with the setting the user
+    // just changed — otherwise new tabs would keep starting on whatever model was loaded at
+    // app startup even after switching the default in Settings.
+    if ('mainModel' in patch) sessionStore.setDefaultModel(next.mainModel)
     // Only re-evaluate indexing if a codebase-index-relevant field actually changed —
     // this handler fires on every settings save (theme, spending cap, etc.), and
     // restarting the watcher/scan on unrelated changes would be wasteful and could
