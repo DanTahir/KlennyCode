@@ -528,13 +528,23 @@ const INSPECT_TIMEOUT_MS = 15_000
  *  limitations"). Takes `start` (the current ref counter, so `klenny.ref()` continues the same
  *  numbering snapshot() uses) and the code string; returns the value, or an error string, plus
  *  the counter's new value after any klenny.ref() calls. */
-async function inspectInPage(args: {
+export async function inspectInPage(args: {
   code: string
   start: number
 }): Promise<{ ok: boolean; result?: unknown; error?: string; nextCounter: number }> {
   const win = window as unknown as Record<string, unknown>
   let counter = args.start
   const restores: (() => void)[] = []
+
+  // Captured *before* any guard below is installed, so the element→ref bridge stays structurally
+  // immune to them. `ref()` tags elements with `setAttribute`, which is itself one of the blocked
+  // DOM-mutation methods, and `autoRef()` runs inside the same try block that the guards are only
+  // restored *after* — so without these raw references, any inspect call returning an untagged
+  // element would trip its own guard and fail with the DOM-mutation message. Do NOT "fix" that by
+  // dropping setAttribute from the guard list: model code must still be blocked from calling it.
+  const elementProtoForRef = (win.Element as { prototype: Element } | undefined)?.prototype
+  const rawGetAttribute = elementProtoForRef?.getAttribute as ((this: Element, name: string) => string | null) | undefined
+  const rawSetAttribute = elementProtoForRef?.setAttribute as ((this: Element, name: string, value: string) => void) | undefined
 
   function block(obj: unknown, key: string, message: string): void {
     const target = obj as Record<string, unknown>
@@ -658,10 +668,14 @@ async function inspectInPage(args: {
   // can hand it to click/fill/etc. afterward instead of trying to act on it via more JS.
   function ref(el: unknown): string | null {
     if (!(el instanceof Element)) return null
-    const tag = el.getAttribute('data-klenny-ref')
+    // Raw (pre-guard) accessors — see the capture site above for why these can't go through the
+    // patched prototype methods. The fallbacks only matter in exotic environments where
+    // Element.prototype wasn't readable at capture time.
+    const tag = rawGetAttribute ? rawGetAttribute.call(el, 'data-klenny-ref') : el.getAttribute('data-klenny-ref')
     if (tag) return tag
     const id = `e${counter++}`
-    el.setAttribute('data-klenny-ref', id)
+    if (rawSetAttribute) rawSetAttribute.call(el, 'data-klenny-ref', id)
+    else el.setAttribute('data-klenny-ref', id)
     return id
   }
 
