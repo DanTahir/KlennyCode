@@ -93,7 +93,10 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
 - Package manager is **Bun** (`bun install`, `bun run dev`, `bun test`) — not npm/yarn, though
   `npm run build`/`electron-builder` are used for packaging scripts in `package.json`.
 - File edits in this codebase must go through `read_file` + `edit_file`/`write_file` — never
-  `sed`/`echo`/`node -e` via shell, since that breaks on Windows (primary dev platform).
+  `sed -i`/`echo > file`/`node -e` via shell, since that breaks on Windows (primary dev platform).
+  `run_command` enforces this via `fileEditGuardReason` (`tools/shell.ts`), which judges each shell
+  statement separately: only *authored* content (echo/printf/heredoc) aimed at a real file counts.
+  Diagnostic `echo`, `2>/dev/null`, `2>&1`, and `cmd | tee build.log` are deliberately allowed.
 - Auto-memory notes, plan artifacts, and the codebase index are stored **outside** the project
   tree (Electron `userData` dir, keyed per-project) specifically so nothing needs `.gitignore`
   entries. Only `KLENNY.md`, `KLENNY.local.md`, and `.klenny/skills|agents` at the project root
