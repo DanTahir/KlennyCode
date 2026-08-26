@@ -12,6 +12,7 @@ import { getWorkspace, setWorkspace } from '../../workspace'
 import { sessionStore, appendMessageToWorkspaceTab } from '../../session/store'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
 import { truncateSummary } from '../turnControl'
+import { buildFindingsWarningBlock } from '../verify/audit'
 import { updateAssistantMemoryForTab } from '../memory/assistantMemory'
 import { agentLoop } from './loop'
 import { type SubagentContext, emitToAll } from './state'
@@ -105,7 +106,16 @@ export async function runScheduledTask(
         .filter((b) => b.type === 'text')
         .map((b) => (b as { text: string }).text)
         .join('\n') || 'Scheduled task completed with no text output.'
-    status = reason === 'error' || reason === 'truncation_failed' ? 'error' : 'success'
+    // A scheduled run is one-shot and unattended, so (like a subagent) it gets no forced
+    // self-correction loop — the findings are appended to the delivered result instead. Without
+    // this, a fabricated report would land in the user's tab looking exactly like a real one,
+    // with nobody having watched the run happen.
+    const findings = subTab.messages.flatMap((m) => m.verification?.findings ?? [])
+    if (findings.length > 0) {
+      summary += `\n${buildFindingsWarningBlock(findings)}`
+    }
+    status =
+      reason === 'error' || reason === 'truncation_failed' || reason === 'audit_failed' ? 'error' : 'success'
   } catch (e) {
     status = 'error'
     summary = e instanceof Error ? e.message : String(e)

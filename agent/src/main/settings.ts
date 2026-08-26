@@ -33,6 +33,7 @@ const DEFAULTS: AppSettings = {
   hasPineconeKey: false,
   continueMode: 'auto',
   turnCheckpointSteps: 40,
+  fabricationGuard: 'enforce',
   hasGmailToken: false,
   gmailAccountEmail: null,
   gmailClientId: null,

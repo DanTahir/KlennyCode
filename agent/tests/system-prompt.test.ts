@@ -248,6 +248,54 @@ describe('buildSystemPrompt — subagentCtx body injection', () => {
   })
 })
 
+describe('buildCurrentTimeNote — verification ledger digest (cache-safety critical)', () => {
+  test('renders the ledger digest in the trailing note when one is supplied', async () => {
+    const { buildCurrentTimeNote } = await import('../src/main/agent/orchestrator/system-prompt')
+    const { buildLedgerDigest, buildTurnLedger } = await import('../src/main/agent/orchestrator/ledger')
+    const digest = buildLedgerDigest(
+      buildTurnLedger([
+        { id: 'u1', role: 'user', blocks: [{ type: 'text', text: 'go' }], createdAt: Date.now() },
+        {
+          id: 'a1',
+          role: 'assistant',
+          blocks: [{ type: 'tool_call', id: 'tc1', toolName: 'read_file', args: { path: 'a.ts' }, status: 'success' }],
+          createdAt: Date.now()
+        }
+      ] as never)
+    )
+    const note = await buildCurrentTimeNote(undefined, undefined, undefined, digest)
+    expect(note).toContain('Tool calls actually made so far this turn')
+    expect(note).toContain('read_file')
+    // Still carries the clock: the ledger is additive to the trailing note, not a replacement.
+    expect(note).toContain('Current date/time:')
+  })
+
+  test('omits the ledger section entirely when no digest is supplied', async () => {
+    const { buildCurrentTimeNote } = await import('../src/main/agent/orchestrator/system-prompt')
+    const note = await buildCurrentTimeNote()
+    expect(note).not.toContain('Tool calls actually made so far this turn')
+    expect(note).toContain('Current date/time:')
+  })
+
+  test('the ledger digest never leaks into the CACHED system-prompt prefix', async () => {
+    // The whole reason the digest lives in buildCurrentTimeNote's trailing slot: it changes on
+    // every request within a turn. If it ever appears in buildSystemPrompt()'s output, the
+    // "static" cached prefix stops being byte-identical between calls and prefix cache hits die.
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent', undefined, undefined, 'project')
+    expect(prompt).not.toContain('Tool calls actually made so far this turn')
+    // Two consecutive builds must be byte-identical (nothing per-turn/dynamic baked in).
+    const again = await buildSystemPrompt('agent', undefined, undefined, 'project')
+    expect(again).toBe(prompt)
+  })
+
+  test('the prompt still explains the ledger mechanism (deterrence) even though the data itself is trailing', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent', undefined, undefined, 'project')
+    expect(prompt.toLowerCase()).toContain('verification ledger')
+  })
+})
+
 describe('buildSystemPrompt — shell selection', () => {
   test('names the resolved shell (falls back to the platform default when shellId is invalid/omitted)', async () => {
     const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')

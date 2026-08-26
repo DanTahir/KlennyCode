@@ -45,6 +45,18 @@ import type { ChecklistItem } from '@shared/types'
  * folded away the ChatMessage that first displayed it (see the compaction gotcha this avoids in
  * TabSession.activeChecklist's doc comment).
  *
+ * `ledgerDigest`, when given, folds in the verification ledger: the harness-generated list of tool
+ * calls that actually executed this turn (see orchestrator/ledger.ts). This belongs here for the
+ * exact same reason as the checklist and the clock — it changes on every single request within a
+ * turn (every tool call appends to it), so it MUST stay in this never-cached trailing slot; moving
+ * it into buildSystemPrompt()'s cached prefix would mean the "static" prefix is never identical
+ * twice and explicit-cache models would stop getting prefix hits entirely. Being here is what
+ * makes it cache-safe, not a compromise: do not "optimize" it into the main prompt later.
+ *
+ * The ledger is deliberately placed AFTER the clock and BEFORE the checklist: those three are the
+ * harness's three sources of external ground truth about reality, and the fabrication detector
+ * cross-checks the model's claims against all three (see agent/verify/fabrication-detector.ts).
+ *
  * `justCompacted`, when true, adds one extra sentence IF the checklist has at least one already-
  * done item: those items are self-reported and were never independently re-verified, so they're
  * worth spot-checking before being relied on to decide what still needs doing. Deliberately only
@@ -56,15 +68,28 @@ import type { ChecklistItem } from '@shared/types'
 export async function buildCurrentTimeNote(
   assistantTabId?: string,
   activeChecklist?: { title: string; items: ChecklistItem[] },
-  justCompacted?: boolean
+  justCompacted?: boolean,
+  ledgerDigest?: string
 ): Promise<string> {
   const now = new Date()
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
-  let timeNote = `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool.`
+  let timeNote = `Current date/time: ${now.toString()} (timezone: ${tz}). This is ground truth for "now" — use it directly to compute relative delays or specific future times (e.g. for scheduler_create_task's cron \`schedule\`) instead of looking up the time via the browser tool or any other tool. It is also ground truth for how much time has elapsed: never state a completion time later than this.`
+  if (ledgerDigest) {
+    timeNote += `\n\n${ledgerDigest}`
+  }
   if (activeChecklist && activeChecklist.items.length > 0) {
-    const lines = activeChecklist.items.map(
-      (it, i) => `${i + 1}. [${it.done ? 'x' : ' '}] ${it.text}${it.evidence ? ` — verified: ${it.evidence}` : ''}`
-    )
+    const lines = activeChecklist.items.map((it, i) => {
+      const evidence = it.evidence ? ` — verified: ${it.evidence}` : ''
+      // Surfaced back to the model, not just to the user: an item marked done in a turn that made
+      // no real tool call is the exact signature of the CoFrame fabrication, so the model should
+      // see its own unbacked completions reflected here and be prompted to actually substantiate
+      // them rather than treating them as settled.
+      const unbacked =
+        it.evidenceQuality === 'unverified-no-tool-calls'
+          ? ' — NOTE: marked done in a turn with no supporting tool call; treat as unsubstantiated and re-verify before relying on it'
+          : ''
+      return `${i + 1}. [${it.done ? 'x' : ' '}] ${it.text}${evidence}${unbacked}`
+    })
     timeNote += `\n\nCurrent live checklist ("${activeChecklist.title}") — call update_checklist (by 1-based index) as you actually finish each item, not all at once at the end; make one final update_checklist call once everything is done, right before your closing summary:\n${lines.join('\n')}`
     if (justCompacted && activeChecklist.items.some((it) => it.done)) {
       timeNote += `\n\nNote: the items already checked off above are self-reported (from a prior turn, before this compaction) and were never independently re-verified — spot-check them if you're about to rely on "already done" to decide what still needs doing, rather than assuming they're correct.`

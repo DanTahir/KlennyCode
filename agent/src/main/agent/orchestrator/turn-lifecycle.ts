@@ -91,7 +91,10 @@ async function startAgentLoop(
   // Only 'natural' (finished normally), 'truncation_failed', and 'error' are genuine end-of-turn
   // states — 'aborted' means a newer turn preempted this one, and 'checkpoint'/'hard_limit' just
   // pause the turn waiting for the user to click "Continue", so none of those warrant a
-  // "task finished" notification.
+  // "task finished" notification. 'audit_failed' is deliberately excluded too (it falls out of
+  // the allowlist below rather than needing its own case): the fabrication guard ran out of
+  // self-correction attempts, so the task demonstrably did NOT finish, and telling the user
+  // otherwise would be the same false-completion signal the guard exists to catch.
   let stopReason: LoopStopReason | 'thrown' = 'thrown'
   try {
     stopReason = await agentLoop(tab, apiKey, subagentModel, emit, signal)

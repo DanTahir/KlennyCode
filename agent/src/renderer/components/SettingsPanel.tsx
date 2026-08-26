@@ -474,6 +474,26 @@ export function SettingsPanel() {
                 />
               </div>
             )}
+
+            <div className="space-y-1 pt-2">
+              <label className="block text-sm">Fabrication guard</label>
+              <select
+                className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
+                value={settings.fabricationGuard ?? 'enforce'}
+                onChange={(e) => void patch({ fabricationGuard: e.target.value as 'off' | 'warn' | 'enforce' })}
+              >
+                <option value="enforce">Enforce (default) — make the agent retract unsupported claims</option>
+                <option value="warn">Warn only — flag suspect claims but never interrupt</option>
+                <option value="off">Off — no checking</option>
+              </select>
+              <p className="text-xs text-klenny-muted">
+                Cross-checks what the agent <em>says</em> it did against what it actually did — the harness’s own
+                record of executed tool calls, the current time, the live checklist, and whether files it claims to
+                have created exist. Costs nothing extra (no additional model calls). “Enforce” forces a
+                self-correction turn when a claim is contradicted by that record; “Warn only” just badges the
+                message so you can judge it yourself.
+              </p>
+            </div>
           </section>
 
           <section className="mb-6 space-y-2">

@@ -302,6 +302,19 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ tabs })
         break
       }
+      // The guard flags the message rather than removing it — the user still needs to see exactly
+      // what was claimed in order to judge it (see MessageBubble's verification badge).
+      case 'fabrication_flagged': {
+        const tabs = state.tabs.map((t) => {
+          if (t.id !== e.tabId) return t
+          const messages = t.messages.map((m) =>
+            m.id === e.messageId ? { ...m, verification: { status: e.status, findings: e.findings } } : m
+          )
+          return { ...t, messages }
+        })
+        set({ tabs })
+        break
+      }
       case 'error':
         set({ tabErrors: { ...state.tabErrors, [e.tabId]: e.message } })
         break

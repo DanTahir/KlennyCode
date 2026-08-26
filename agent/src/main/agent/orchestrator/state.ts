@@ -18,6 +18,10 @@ export type LoopStopReason =
   | 'hard_limit'
   | 'subagent_budget'
   | 'truncation_failed'
+  /** The fabrication guard found hard contradictions and the model failed to produce a clean,
+   *  non-contradicted correction within the allowed retries. Treated like 'checkpoint' rather
+   *  than a real completion — the task demonstrably did not finish. */
+  | 'audit_failed'
   | 'error'
 
 export interface SubagentContext {

@@ -19,6 +19,7 @@ Built with **Electron + React + TypeScript**, developed with **Bun** as the pack
 - **Image viewing** — `read_image` reads a png/jpg/gif/webp file from disk (any absolute path on the host, or relative to the open workspace) and lets the agent actually see it, exactly like a user-pasted/attached image
 - **Plan mode** — read-only research, clarifying questions, reviewable plan artifacts before edits
 - **Live-progress checklists** — not just for approved plans: the agent can start one for any multi-step task via `create_checklist`, ticking items off live via `update_checklist` as it actually finishes them (with an optional short evidence note per item — self-reported, not independently verified, but it adds friction and a visible trail). The checklist survives context compaction, reappearing fresh every turn so the agent never loses track of what's actually done
+- **Fabrication guard** — the harness mechanically cross-checks what the agent *says* it did against what it actually did: a machine-maintained ledger of executed tool calls, the injected clock, the live checklist, and the filesystem. Claims that contradict those records (a file "created" that no write touched and doesn't exist, a completion time in the future, a checklist declared finished with no `update_checklist` call) get the message badged as **disputed** and force the agent to retract or actually do the work. Costs nothing extra — it's pure bookkeeping, with no additional model calls — and is configurable (Enforce / Warn only / Off) in Settings → see [Fabrication guard](#fabrication-guard) below
 - **Thinking display** — streams reasoning tokens from supported models live
 - **Diff viewer** — see every code change with accept/reject approval workflow
 - **Memory** — project `KLENNY.md`, global `~/.klenny/KLENNY.md`, and auto-memory notes (Claude Code-style); Assistant tabs additionally share a single auto-compacting memory pool across every Assistant window — see [Assistant window shared memory](#assistant-window-shared-memory) below
@@ -96,6 +97,59 @@ no shell/`run_command` tool for it to affect.
 | Manual review (default) | Every edit/delete/command shows a diff or preview — accept or reject |
 | Command approve | File edits/deletes apply immediately (with checkpoints); shell commands still require approval |
 | Auto-apply | Changes apply immediately; shadow-git checkpoints enable revert |
+
+### Fabrication guard
+
+LLM agents can produce a confident, detailed, entirely fictional report of work they never did —
+narrating commands they never ran and files they never wrote. Prose instructions telling the model
+not to do this help, but they are not a control: they can simply be violated, and the failure looks
+identical to success.
+
+So Klenny Code checks the agent's claims against records the agent doesn't author:
+
+| Ground truth | What it catches |
+|---|---|
+| **Verification ledger** — harness-generated list of tool calls that actually executed this turn | "I ran the tests / updated the checklist" with no such call on record |
+| **Injected clock** | A stated completion time later than the real current time |
+| **Filesystem** | A file described as created that no write tool targeted *and* that doesn't exist |
+| **Live checklist** | "All items complete" while the checklist still has unfinished items |
+
+The ledger is also injected into the agent's own context every turn, so it can see the same
+authoritative record the auditor uses — the goal is for the agent to self-correct before a check
+ever fires.
+
+Findings come in two tiers:
+
+- **Hard** — near-unforgeable contradictions. The message is badged **Disputed** in red, and (in
+  Enforce mode) the agent is handed an audit note and required to retract the unsupported claims or
+  actually perform the work with real tool calls. Capped at two correction attempts, after which the
+  turn stops rather than looping.
+- **Soft** — heuristics (e.g. a wall of result-shaped output with no tool calls). These only badge
+  the message **Unverified narration** in amber; they never interrupt.
+
+| Setting | Behavior |
+|---|---|
+| Enforce (default) | Hard findings force a self-correction turn; soft findings warn |
+| Warn only | Everything is badged, nothing is ever forced |
+| Off | No checking |
+
+A few deliberate design choices worth knowing:
+
+- **No extra model calls.** Every check is programmatic string/filesystem work, so the guard adds
+  no token cost and no latency to speak of.
+- **Flagged, never deleted.** A disputed message stays visible with its badge — you need to see
+  exactly what was claimed to judge it. Disputed messages are also labelled as disputed inside
+  context-compaction summaries, so a fabricated claim can't be laundered into "trusted history"
+  later.
+- **False positives were the primary design risk.** Code blocks and backticked text are stripped
+  before analysis, hedged/future-tense phrasing is ignored, honest "I tried to write X but it was
+  rejected" narration is exempt, and Plan mode drops the file-existence and narration-volume checks
+  entirely (a plan legitimately describes files it intends to create, at length).
+- **Checklist items marked done in a turn with no tool calls at all** are tagged as unbacked in the
+  widget rather than silently accepted — that pattern is the signature of the incident this feature
+  was built in response to.
+- **Unattended runs** (subagents, scheduled tasks) don't get a correction loop — nobody's watching
+  to click Continue — so their findings are appended to the delivered result instead.
 
 ### Project layout (created by Klenny Code)
 

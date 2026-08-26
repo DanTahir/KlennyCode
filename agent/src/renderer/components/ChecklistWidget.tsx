@@ -31,6 +31,11 @@ export function ChecklistWidget({ block }: { block: ChecklistBlock }) {
               {item.evidence && (
                 <span className="text-xs text-klenny-muted italic mt-0.5">Verified: {item.evidence}</span>
               )}
+              {item.evidenceQuality === 'unverified-no-tool-calls' && (
+                <span className="text-xs text-amber-400/90 mt-0.5">
+                  ⚠ Marked done in a turn that made no tool calls — nothing backs this up
+                </span>
+              )}
             </div>
           </div>
         ))}

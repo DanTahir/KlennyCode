@@ -22,6 +22,10 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
     `browser.ts` (Playwright automation), `image.ts` (read_image), `otherProjects.ts`
     (cross-project reference), plus docx tools, memory tools, subagent dispatch, ask_question
   - `src/main/agent/compaction/compactor.ts` — context-window compaction (summarize-and-fold)
+  - `src/main/agent/orchestrator/ledger.ts` — verification ledger: derives "what tools actually
+    ran" from `tab.messages` (turn ledger, session write-paths, model-facing digest)
+  - `src/main/agent/verify/` — the fabrication guard: `fabrication-detector.ts` (pure,
+    programmatic C1–C6 checks + per-context scoping) and `audit.ts` (verdict → enforcement)
   - `src/main/agent/memory/manager.ts` — project/global `KLENNY.md` + auto-memory notes;
     `assistantMemory.ts` — shared, auto-compacting memory pool for Assistant tabs
   - `src/main/agent/soul/manager.ts` — `SOUL.md` (user-editable agent personality) read/write/reset
@@ -79,6 +83,27 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   evidence; a post-compaction skepticism sentence (`buildCurrentTimeNote()`'s `justCompacted` arg)
   additionally flags pre-existing done items as unverified right after a compaction pass, since
   they weren't re-checked this turn.
+- **Fabrication guard** (`agent/verify/`, `orchestrator/ledger.ts`): mechanically cross-checks the
+  model's *claims* against harness-owned ground truth — the **verification ledger** (tool calls
+  that actually executed, derived from `tab.messages` so it can't drift), the injected clock, the
+  live checklist, and the filesystem. **Zero extra model calls** (all string/fs work), tiered via
+  `AppSettings.fabricationGuard` (`'off' | 'warn' | 'enforce'`, default `'enforce'`):
+  - **Hard** findings (near-unforgeable contradictions: future completion time C1, literal
+    fabricated `[called ...]` marker C2a, claimed-created file that no write targeted and doesn't
+    exist C3, checklist contradiction C4) → message flagged `verification.status = 'disputed'`, a
+    harness-authored audit note is injected (`role: 'user'` + `isAuditNote: true`) and the loop
+    recurses for a forced self-correction turn, capped at `MAX_AUDIT_CORRECTIONS = 2` before
+    returning the `'audit_failed'` stop reason.
+  - **Soft** findings (prose tool-claim C2b, narration/tool-call ratio C5, turn-size cap C6) →
+    `'warned'` only, never forced.
+  - Scoping matrix in `scopeForContext()`: plan mode drops C3/C5/C6 (a plan legitimately describes
+    files it intends to create, at length); subagents and scheduled runs never get the correction
+    loop (no UI to click Continue, one-shot budget) and instead have findings appended to their
+    returned summary/delivered result via `buildFindingsWarningBlock()`.
+  - False positives were treated as the primary design risk: code fences/backtick spans are
+    stripped first, same-sentence proximity is required, hedging/future-tense bails out, and
+    honest "I tried to write X but it was rejected" narration is exempt (the ledger keeps write
+    entries regardless of status).
 - **Word .docx support**: `read_docx`/`write_docx`/`edit_docx` for structured document edits.
 - **Image viewing**: `read_image` for viewing arbitrary png/jpg/gif/webp files inline.
 - **SOUL.md personality**: user-editable personality (default: playful corgi) layered under
@@ -133,6 +158,11 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
 - Live checklists: `orchestrator/checklist.ts` → `buildChecklist()` (shared by `approvePlan()` in
   turn-lifecycle.ts and the `create_checklist` dispatch case in loop.ts); rendering/reinjection in
   `orchestrator/system-prompt.ts` → `buildCurrentTimeNote()`; UI in `ChecklistWidget.tsx`.
+- Fabrication guard: `verify/fabrication-detector.ts` → `detectFabrication()` (checks C1–C6) and
+  `scopeForContext()`; `verify/audit.ts` → `auditAssistantMessage()`/`buildAuditNoteMessage()`/
+  `buildFindingsWarningBlock()`; wired in `loop.ts` via the `runAudit()`/`applyAuditEnforcement()`
+  closures at three exit points (truncation-failed, no-tool-calls, post-tool-results). Ledger
+  itself: `orchestrator/ledger.ts`. UI: `MessageBubble.tsx`'s `VerificationBadge`.
 - IPC surface (main ↔ renderer): `src/main/ipc.ts` and `shared/ipcChannels.ts` (channel names)
 - Settings persistence: `src/main/settings.ts` and the `Settings` panel in renderer (category
   sidebar with 8 sections + scrollspy/deep-linking).
@@ -163,6 +193,22 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   regression test). A user-facing manual reset button to force re-summarization from scratch is
   still open follow-up work (not yet built) — belt-and-suspenders recovery UX, not required for
   the poisoning fix itself.
+- **The fabrication guard's ledger must be recomputed AFTER streaming, never before**: the ledger
+  handed to the detector has to include the message's *own* tool calls, or the first legitimate use
+  of any tool in a turn gets flagged as an unsupported claim. Related: the ledger digest lives in
+  `buildCurrentTimeNote()`'s trailing slot **on purpose** — that slot is already the deliberately
+  uncached, regenerated-every-request one (same as the clock and checklist), so putting per-turn
+  ledger text there is cache-*safe*; folding it into `buildSystemPrompt()`'s cached prefix would
+  destroy prefix caching outright. `system-prompt.test.ts` asserts both halves of this (digest
+  present in the trailing note, absent from the prefix, prefix byte-identical across two builds).
+  Do not "optimize" it into the main prompt later.
+- **Audit notes are `role: 'user'` but are NOT user input**: they have to be, because
+  `toORMessages()` only emits system messages for the prompt/summary prefix. Every place that
+  cares about "what the user last said" must therefore skip `isAuditNote` messages — currently
+  `buildTurnLedger()`'s turn-boundary walk, `MessageBubble`'s user styling, and the compaction
+  transcript (which labels them `system-audit-note (generated by the harness, not the user)` so a
+  summary can never record "the user demanded a retraction"). Tab titling happens to be safe only
+  because it derives from the user's typed text in `runUserTurn` before the loop runs.
 - **Checklist `evidence` is a soft mitigation, not a hard guarantee**: nothing structurally
   verifies an `update_checklist` call's `evidence` string actually reflects real work — it's
   self-reported, and its value is entirely the friction of having to articulate a concrete
@@ -195,3 +241,7 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
 - Per-tab workspace tracking (currently a single global workspace singleton — see gotcha above).
 - MCP-style tool integration scaling — researched (OpenClaw/OpenCode patterns) but not built.
 - GitHub integration (`gh` CLI connect/browse/clone) — plan drafted, not started.
+- `system-prompt.test.ts` has a pre-existing test-isolation weakness (predates the fabrication
+  guard): the "sections are separated by a blank line" test passes in a full `bun test` run but
+  fails when that file is run alone, because it picks up the real `~/.klenny` global skills instead
+  of its temp fixture ones. Harmless today, but it makes that file unreliable in isolation.

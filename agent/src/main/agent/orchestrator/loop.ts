@@ -62,6 +62,15 @@ import { listSkills, readSkill, writeSkill } from '../skills/manager'
 import { getSubagentType, writeSubagentType } from '../subagents/manager'
 import { savePlan } from '../plan/manager'
 import { buildChecklist } from './checklist'
+import { buildTurnLedger, buildLedgerDigest, turnHasSubstantiveToolCall } from './ledger'
+import {
+  auditAssistantMessage,
+  buildAuditNoteMessage,
+  buildFindingsWarningBlock,
+  MAX_AUDIT_CORRECTIONS,
+  type AuditOutcome
+} from '../verify/audit'
+import type { DetectorContextKind } from '../verify/fabrication-detector'
 import { approvalManager } from '../approval/manager'
 import { maybeCompact } from '../compaction/compactor'
 import { resolveReasoningEffort } from '../reasoning'
@@ -104,7 +113,10 @@ export async function agentLoop(
   subagentDepth = 0,
   subagentCtx?: SubagentContext,
   stepCount = 0,
-  truncationRetries = 0
+  truncationRetries = 0,
+  /** How many forced fabrication-guard self-correction turns have already happened in this turn.
+   *  Bounded by MAX_AUDIT_CORRECTIONS so a model that won't retract can't loop forever. */
+  auditCorrections = 0
 ): Promise<LoopStopReason> {
   // Defensive nesting guard only — in practice subagentDepth can only be 0 or 1 since the
   // `task` tool is filtered out once already inside a subagent context (see the tools filter
@@ -249,36 +261,40 @@ export async function agentLoop(
     lastCacheBreakpointIdx.set(tab.id, orMessages.length - 2)
   }
 
+  // Subagents can't spawn nested subagents — there's no UI to surface a deeper
+  // level's approvals/questions, and it would risk runaway recursion. The ephemeral Assistant
+  // tab gets its own fixed ASSISTANT_TOOLS allow-set (file tools included, scoped to
+  // documentsDirectory below, but no run_command/read_terminal/codebase_search/save_plan);
+  // other tabs hide workspace-only tools whenever no project is open.
+  // Hoisted out of the streamChatCompletion() call below so the fabrication guard can reuse the
+  // exact same tool list as `knownToolNames` — deriving it from a second, hand-maintained list
+  // would let the two drift apart silently.
+  const toolDefs = getToolDefinitions(
+    tab.mode,
+    subagentCtx?.allowedTools,
+    isIndexActive(),
+    Boolean(getWorkspace()),
+    tab.kind === 'assistant',
+    {
+      docxAvailableInCoding: settings.docxAvailableInCoding,
+      gmailConnected: settings.hasGmailToken,
+      gmailReadAllowed: settings.automationPermissions['gmail.read'] === 'auto',
+      gmailSendAllowed: settings.automationPermissions['gmail.send'] === 'auto',
+      gmailAvailableInCoding: settings.gmailAvailableInCoding,
+      discordConnected: settings.hasDiscordToken,
+      discordPostAllowed: settings.automationPermissions['discord.post'] === 'auto',
+      discordAvailableInCoding: settings.discordAvailableInCoding,
+      browserAutomationAvailable: (settings.browserAutomation?.policy ?? 'off') !== 'off'
+    },
+    Boolean(tab.activeChecklist)
+  ).filter((t) => !subagentCtx || t.function.name !== 'task')
+  const knownToolNames = toolDefs.map((t) => t.function.name)
+
   for await (const chunk of streamChatCompletion({
     apiKey,
     model: tab.model,
     messages: orMessages,
-    // Subagents can't spawn nested subagents — there's no UI to surface a deeper
-    // level's approvals/questions, and it would risk runaway recursion. The ephemeral Assistant
-    // tab gets its own fixed ASSISTANT_TOOLS allow-set (file tools included, scoped to
-    // documentsDirectory below, but no run_command/read_terminal/codebase_search/save_plan);
-    // other tabs hide workspace-only tools whenever no project is open.
-    tools: getToolDefinitions(
-      tab.mode,
-      subagentCtx?.allowedTools,
-      isIndexActive(),
-      Boolean(getWorkspace()),
-      tab.kind === 'assistant',
-      {
-        docxAvailableInCoding: settings.docxAvailableInCoding,
-        gmailConnected: settings.hasGmailToken,
-        gmailReadAllowed: settings.automationPermissions['gmail.read'] === 'auto',
-        gmailSendAllowed: settings.automationPermissions['gmail.send'] === 'auto',
-        gmailAvailableInCoding: settings.gmailAvailableInCoding,
-        discordConnected: settings.hasDiscordToken,
-        discordPostAllowed: settings.automationPermissions['discord.post'] === 'auto',
-        discordAvailableInCoding: settings.discordAvailableInCoding,
-        browserAutomationAvailable: (settings.browserAutomation?.policy ?? 'off') !== 'off'
-      },
-      Boolean(tab.activeChecklist)
-    ).filter(
-      (t) => !subagentCtx || t.function.name !== 'task'
-    ),
+    tools: toolDefs,
     signal,
     reasoningEffort: supportsGranularEffort ? reasoningEffort : undefined,
     reasoningEnabledOnly,
@@ -291,7 +307,13 @@ export async function agentLoop(
     currentTimeNote: await buildCurrentTimeNote(
       tab.kind === 'assistant' ? tab.id : undefined,
       tab.activeChecklist,
-      compacted.compacted
+      compacted.compacted,
+      // Verification ledger for the turn so far. Computed here, per step, so it grows as the turn
+      // executes tools — by design this is the model-facing copy only; the fabrication detector
+      // recomputes its own ledger AFTER streaming so it also sees the calls made by the very
+      // message being audited (a pre-call snapshot would flag the first legitimate use of any
+      // tool in a turn). The empty assistantMsg pushed just above contributes nothing yet.
+      buildLedgerDigest(buildTurnLedger(tab.messages))
     )
   })) {
     if (signal.aborted) break
@@ -359,6 +381,76 @@ export async function agentLoop(
   if (thinkingBuf) assistantMsg.blocks.push({ type: 'thinking', text: thinkingBuf })
   if (textBuf) assistantMsg.blocks.push({ type: 'text', text: textBuf })
 
+  // ---- Fabrication guard ---------------------------------------------------------------------
+  // Cross-checks what this message CLAIMS against the harness's own execution records. Runs only
+  // after the blocks above are attached, and after any tool_call blocks are recorded further
+  // down, so the ledger it builds includes this very message's calls.
+  const fabricationGuard = settings.fabricationGuard ?? 'enforce'
+  const auditContextKind: DetectorContextKind = subagentCtx
+    ? 'subagent'
+    : tab.kind === 'assistant'
+      ? 'assistant'
+      : tab.mode === 'plan'
+        ? 'plan'
+        : 'project-agent'
+
+  const runAudit = async (): Promise<AuditOutcome> => {
+    // Artifact claims are resolved against the same root the tab's own file tools use, so a
+    // relative path in prose is checked exactly where a write would have landed.
+    const auditRoot =
+      tab.kind === 'assistant' ? await resolveDocumentsDirectory() : (getWorkspace() ?? undefined)
+    const outcome = auditAssistantMessage({
+      assistantMsg,
+      messages: tab.messages,
+      guard: fabricationGuard,
+      contextKind: auditContextKind,
+      root: auditRoot,
+      activeChecklist: tab.activeChecklist,
+      knownToolNames
+    })
+    if (outcome.status !== 'clean') {
+      // Flag the message rather than altering it: the user must still see what was claimed.
+      assistantMsg.verification = { status: outcome.status, findings: outcome.findings }
+      emit({
+        type: 'fabrication_flagged',
+        tabId: tab.id,
+        messageId: assistantId,
+        status: outcome.status,
+        findings: outcome.findings,
+        forcedCorrection: outcome.forceCorrection && !subagentCtx
+      })
+    }
+    return outcome
+  }
+
+  /**
+   * Turns a disputed verdict into an actual consequence.
+   *  'none'         — nothing to do (clean, soft-only, 'warn' mode, or a subagent/scheduled run,
+   *                   where findings are surfaced in the returned summary instead of looped on).
+   *  'correct'      — an audit note was injected; caller should recurse for a correction turn.
+   *  'audit_failed' — the correction budget is exhausted; caller should stop.
+   */
+  const applyAuditEnforcement = async (
+    outcome: AuditOutcome
+  ): Promise<'none' | 'correct' | 'audit_failed'> => {
+    if (!outcome.forceCorrection) return 'none'
+    // A subagent has no UI to click Continue and a fixed step budget; a scheduled run is one-shot.
+    // Forcing corrections there would burn the budget without a human ever seeing the exchange.
+    if (subagentCtx) return 'none'
+    if (auditCorrections + 1 > MAX_AUDIT_CORRECTIONS) {
+      emit({
+        type: 'error',
+        tabId: tab.id,
+        message:
+          'The fabrication guard flagged unsupported claims repeatedly and the model did not produce a corrected, evidence-backed response. Stopping rather than continuing — review the disputed messages above; the work they describe may not have actually happened.'
+      })
+      return 'audit_failed'
+    }
+    tab.messages.push(buildAuditNoteMessage(outcome))
+    await sessionStore.updateTab(tab)
+    return 'correct'
+  }
+
   // A generation truncated by the provider's output token limit used to look identical to a
   // normal "model is done" stop (no tool calls, or tool calls with garbage args dispatched
   // straight through) — silently ending the turn or failing tools with a confusing error.
@@ -378,17 +470,29 @@ export async function agentLoop(
         message:
           'The model repeatedly cut its response off at the output token limit and retrying did not recover. Try again, or switch to a model with a larger output limit.'
       })
+      // Surface findings for visibility, but never force a correction here: the context is
+      // already broken by truncation, so a mid-sentence claim isn't evidence of fabrication.
+      await runAudit()
+      await sessionStore.updateTab(tab)
       return 'truncation_failed'
     }
     // Discard this attempt's (possibly garbage) tool calls entirely rather than dispatching
     // them, and re-issue the same request. Doesn't count as a new step — it's a retry of the
     // same one.
-    return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount, truncationRetries + 1)
+    return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount, truncationRetries + 1, auditCorrections)
   }
 
   if (!toolCalls.length) {
     emit({ type: 'message_end', tabId: tab.id, messageId: assistantId, usage: assistantMsg.usage })
+    // This is the exit the CoFrame fabrication took: a long, confident, entirely un-executed
+    // summary with no tool calls, which used to end the turn as a clean 'natural' completion.
+    const outcome = await runAudit()
     await sessionStore.updateTab(tab)
+    const action = await applyAuditEnforcement(outcome)
+    if (action === 'audit_failed') return 'audit_failed'
+    if (action === 'correct') {
+      return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount + 1, 0, auditCorrections + 1)
+    }
     return 'natural'
   }
 
@@ -498,7 +602,26 @@ export async function agentLoop(
 
   await sessionStore.updateTab(tab)
   if (signal.aborted) return 'aborted'
-  return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount + 1, 0)
+
+  // Second audit point: a turn that made *some* real calls can still narrate results that none of
+  // them support (the incident's message did exactly this — 6 genuine calls, then invented
+  // everything after). Running here as well as at the no-tool-calls exit covers that mixed case.
+  const mixedOutcome = await runAudit()
+  const mixedAction = await applyAuditEnforcement(mixedOutcome)
+  if (mixedAction === 'audit_failed') return 'audit_failed'
+  await sessionStore.updateTab(tab)
+  return agentLoop(
+    tab,
+    apiKey,
+    subagentModel,
+    emit,
+    signal,
+    subagentDepth,
+    subagentCtx,
+    stepCount + 1,
+    0,
+    mixedAction === 'correct' ? auditCorrections + 1 : auditCorrections
+  )
 }
 
 async function executeTool(
@@ -902,6 +1025,15 @@ async function dispatchTool(
       }
       const rawUpdates = coerceArrayArg(args.updates)
       const items = tab.activeChecklist.items.map((it) => ({ ...it }))
+      // Plan-gate evidence requirement. The tool_call blocks for this very message are already
+      // recorded by the time dispatch runs, so this ledger covers the whole turn *including* the
+      // update_checklist call itself — turnHasSubstantiveToolCall() filters out checklist
+      // bookkeeping, since marking an item done can't be its own supporting evidence.
+      //
+      // Deliberately NOT a rejection: refusing the update would leave the checklist silently
+      // stale, which is worse than an honestly-labelled "done". Instead the item is marked done
+      // and tagged as unbacked, which the widget and the re-injected checklist note both surface.
+      const turnDidRealWork = turnHasSubstantiveToolCall(buildTurnLedger(tab.messages))
       for (const u of rawUpdates) {
         if (!u || typeof u !== 'object') continue
         const { index, done, evidence } = u as { index?: unknown; done?: unknown; evidence?: unknown }
@@ -913,6 +1045,14 @@ async function dispatchTool(
         // needing to re-truncate or risk diverging from what's actually persisted.
         if (typeof evidence === 'string' && evidence.trim()) {
           items[i].evidence = evidence.trim().slice(0, 300)
+        }
+        // Recomputed on every write rather than only ever being set: an item re-marked done in a
+        // turn that *did* do real work should lose a stale unverified tag, and an item being
+        // un-marked shouldn't carry one at all.
+        if (done && !turnDidRealWork) {
+          items[i].evidenceQuality = 'unverified-no-tool-calls'
+        } else {
+          delete items[i].evidenceQuality
         }
       }
       tab.activeChecklist = { ...tab.activeChecklist, items }
@@ -935,7 +1075,18 @@ async function dispatchTool(
       await sessionStore.updateTab(tab)
       emit({ type: 'tab_upserted', tab })
       const doneCount = items.filter((it) => it.done).length
-      return { ok: true, summary: `Checklist updated (${doneCount}/${items.length} done)`, data: { items } }
+      const unbacked = items.filter((it) => it.done && it.evidenceQuality === 'unverified-no-tool-calls').length
+      // Told to the model plainly, so it knows the tag was applied and why — silently flagging it
+      // would leave the model asserting completion while the UI says otherwise.
+      const unbackedNote =
+        unbacked > 0
+          ? ` — note: ${unbacked} item(s) marked done in a turn with no substantive tool calls are tagged "unverified"; do the underlying work with real tool calls, or say plainly that it isn't done.`
+          : ''
+      return {
+        ok: true,
+        summary: `Checklist updated (${doneCount}/${items.length} done)${unbackedNote}`,
+        data: { items }
+      }
     }
     case 'task':
       return runSubagent(tab, apiKey, subagentModel, args, emit, signal, subagentDepth)
@@ -1257,7 +1408,18 @@ export async function runSubagent(
       summary += '\n\n[Stopped: subagent reached its step budget before finishing — the summary above reflects partial progress only.]'
     }
 
-    run.status = reason === 'error' || reason === 'truncation_failed' ? 'error' : 'success'
+    // Per the scoping matrix, a subagent gets no forced-correction loop (no UI to click Continue,
+    // and a fixed step budget). Instead its findings are surfaced to the *parent* agent right in
+    // the returned summary — otherwise a subagent's fabricated report would be handed upward as
+    // clean, authoritative fact, which is strictly worse than the main-loop case since the parent
+    // has no other window into what the subagent actually did.
+    const subFindings = subTab.messages.flatMap((m) => m.verification?.findings ?? [])
+    if (subFindings.length > 0) {
+      summary += `\n${buildFindingsWarningBlock(subFindings)}`
+    }
+
+    run.status =
+      reason === 'error' || reason === 'truncation_failed' || reason === 'audit_failed' ? 'error' : 'success'
     run.summary = truncateSummary(summary)
     run.activity = undefined
     run.finishedAt = Date.now()

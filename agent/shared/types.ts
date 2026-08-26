@@ -122,6 +122,13 @@ export interface ChecklistItem {
    *  buildCurrentTimeNote in orchestrator/system-prompt.ts) so it survives compaction the same
    *  way done/not-done state does. */
   evidence?: string
+  /** Set by the update_checklist dispatch when an item was marked done in a turn that made no
+   *  substantive (non-checklist-bookkeeping) tool call at all — see the plan-gate evidence
+   *  requirement in orchestrator/loop.ts. Not a rejection: the item still counts as done, but
+   *  both the widget and the re-injected checklist note surface it as unbacked, since "marked
+   *  complete without a single tool call in the same turn" is the exact shape of the CoFrame
+   *  fabrication incident (9 items claimed complete, zero real calls). */
+  evidenceQuality?: 'unverified-no-tool-calls'
 }
 
 /** Renders as a persistent "live progress" widget inside its own ChatMessage (see
@@ -158,6 +165,42 @@ export interface ChatMessage {
   isCompactionSummary?: boolean
   /** reasoning effort level automatically chosen for this assistant turn, if the model supports reasoning */
   reasoningEffort?: ReasoningEffort
+  /**
+   * Set by the fabrication guard when this assistant message's narration contradicted the
+   * verification ledger (see agent/verify/fabrication-detector.ts). 'disputed' = at least one
+   * hard finding (a near-unforgeable contradiction, e.g. a claimed completion time in the future,
+   * or a file described as created that neither any write tool touched nor exists on disk);
+   * 'warned' = heuristic/soft findings only.
+   *
+   * Deliberately a *flag on the message* rather than a deletion or edit of it: the user must
+   * still see exactly what was claimed in order to judge it, and removing the message would also
+   * corrupt the assistant/tool-call pairing the wire format depends on.
+   */
+  verification?: MessageVerification
+  /**
+   * Marks a harness-authored audit note (the forced-correction message injected after a hard
+   * fabrication finding). These are `role: 'user'` purely because toORMessages() only emits
+   * system messages for the prompt/summary prefix — they are NOT real user input, and must be
+   * excluded anywhere "the last thing the user said" matters: the ledger's turn-boundary walk
+   * (orchestrator/ledger.ts), tab titling, and renderer styling.
+   */
+  isAuditNote?: boolean
+}
+
+/** One fabrication-guard finding. `code` is the stable check id (C1/C2a/C3/…) so findings can be
+ *  filtered/tested without string-matching prose. */
+export interface FabricationFinding {
+  code: string
+  severity: 'hard' | 'soft'
+  /** human-readable explanation of the contradiction, shown in the UI and sent to the model */
+  detail: string
+  /** the offending snippet of the model's own text, for display */
+  excerpt?: string
+}
+
+export interface MessageVerification {
+  status: 'disputed' | 'warned'
+  findings: FabricationFinding[]
 }
 
 // ---------- Usage / cost accounting ----------
@@ -636,6 +679,17 @@ export interface AppSettings {
   continueMode: 'auto' | 'checkpoint'
   /** only used when continueMode === 'checkpoint' — how many tool-round-trips to run before pausing */
   turnCheckpointSteps: number
+  /**
+   * Fabrication guard (see agent/verify/fabrication-detector.ts). Cross-checks each finished
+   * assistant message's claims against the harness's own execution records.
+   *  'enforce' (default): hard contradictions (a completion time in the future, hand-written
+   *    tool-call marker syntax, a claimed-created file that was never written and doesn't exist,
+   *    a wholesale "checklist complete" against a checklist that isn't) force a self-correction
+   *    turn; heuristic findings only surface a warning badge.
+   *  'warn': everything is downgraded to a warning badge — nothing is ever forced.
+   *  'off': no checking at all.
+   */
+  fabricationGuard: 'off' | 'warn' | 'enforce'
 
   // ---------- Personal Assistant Platform (Gmail / Discord / Scheduler) ----------
 
@@ -911,6 +965,11 @@ export type AgentStreamEvent =
    *  enforced). `turn_end` is still emitted separately right after this to clear streaming UI
    *  state; this event is what drives the "paused, click Continue" banner. */
   | { type: 'turn_paused'; tabId: string; reason: 'checkpoint' | 'hard_limit'; stepsCompleted: number }
+  /** The fabrication guard found claims in a just-finished assistant message that contradict the
+   *  harness's execution records. `forcedCorrection` is true when hard findings triggered an
+   *  automatic self-correction turn (settings.fabricationGuard === 'enforce'), false when the
+   *  findings are advisory only. Drives the disputed/unverified badge on the message. */
+  | { type: 'fabrication_flagged'; tabId: string; messageId: string; status: 'disputed' | 'warned'; findings: FabricationFinding[]; forcedCorrection: boolean }
   | { type: 'error'; tabId: string; message: string }
   | { type: 'pending_action'; tabId: string; action: PendingAction }
   | { type: 'pending_action_resolved'; tabId: string; actionId: string }
