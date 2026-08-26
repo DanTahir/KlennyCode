@@ -50,7 +50,7 @@ export function isBrowserActionMutating(action: string): boolean {
  *  Not a security boundary by itself (a determined obfuscator can dodge regexes) — see the
  *  runtime containment in `inspectInPage` for the actual defense-in-depth layer, and the
  *  `browser-automation` skill's "Known limitations" section for what neither layer catches. */
-const INSPECT_DENY_PATTERNS: { pattern: RegExp; label: string }[] = [
+export const INSPECT_DENY_PATTERNS: { pattern: RegExp; label: string }[] = [
   { pattern: /\bfetch\s*\(/, label: 'fetch(' },
   { pattern: /\bXMLHttpRequest\b/, label: 'XMLHttpRequest' },
   { pattern: /\bWebSocket\b/, label: 'WebSocket' },
@@ -68,7 +68,15 @@ const INSPECT_DENY_PATTERNS: { pattern: RegExp; label: string }[] = [
       /\.(appendChild|insertBefore|removeChild|replaceChild|append|prepend|before|after|replaceWith|insertAdjacentHTML|insertAdjacentElement|insertAdjacentText|setAttribute|removeAttribute|toggleAttribute)\s*\(/,
     label: 'DOM mutation method'
   },
-  { pattern: /\.innerHTML\s*=|\.outerHTML\s*=|\.textContent\s*=|\.innerText\s*=/, label: 'DOM content assignment' },
+  {
+    // Every alternative needs its own (?!=) so an `===`/`==` *comparison* isn't mistaken for an
+    // assignment. Comparing text content is bread-and-butter read-only inspection
+    // (`el.textContent === 'Example Domain'`), and without the lookahead the first `=` of `===`
+    // matched and the call was rejected outright. The `.value` pattern below always had it — these
+    // four were a plain oversight, not a deliberate choice.
+    pattern: /\.innerHTML\s*=(?!=)|\.outerHTML\s*=(?!=)|\.textContent\s*=(?!=)|\.innerText\s*=(?!=)/,
+    label: 'DOM content assignment'
+  },
   { pattern: /\.value\s*=(?!=)/, label: 'form value assignment' },
   { pattern: /\.click\s*\(/, label: '.click(' },
   { pattern: /\.(submit|requestSubmit)\s*\(/, label: 'form submit' },
@@ -112,6 +120,74 @@ function isValidRef(ref: unknown): ref is string {
 
 function locatorForRef(page: Page, ref: string) {
   return page.locator(`[data-klenny-ref="${ref}"]`)
+}
+
+/** Serializes per-tab ref *minting* — the read→evaluate→commit sequence in doSnapshot/doInspect.
+ *
+ *  Without this, both did a read-modify-write straddling an `await`: concurrent calls on the same
+ *  tab all read the same starting counter, handed out **overlapping ref numbers**, and whichever
+ *  resolved last won the write — which could also roll the counter *backward* and corrupt later
+ *  sequential calls. Two elements sharing a ref means `locatorForRef`'s `[data-klenny-ref="eN"]`
+ *  matches both: a Playwright strict-mode violation, or silently acting on the wrong element.
+ *  Refs are this tool's entire addressing model, and the race was easy to hit precisely because
+ *  the system prompt encourages firing independent tool calls in parallel. `snapshot` and
+ *  `inspect` share one counter, so a parallel inspect+snapshot raced too.
+ *
+ *  Keyed by session *and* tab label, so independent tabs never queue behind each other. The
+ *  WeakMap lets a disposed session's locks be collected; a resolved per-label entry in a live
+ *  session is inert. */
+const refLocks = new WeakMap<BrowserSession, Map<string, Promise<void>>>()
+
+export async function withRefLock<T>(session: BrowserSession, tabLabel: string, fn: () => Promise<T>): Promise<T> {
+  let perTab = refLocks.get(session)
+  if (!perTab) {
+    perTab = new Map()
+    refLocks.set(session, perTab)
+  }
+  const previous = perTab.get(tabLabel) ?? Promise.resolve()
+  const result = previous.then(fn)
+  // Store an outcome-swallowing view of this call: one failing inspect must not reject everything
+  // queued behind it. The caller above still receives its own real result or error via `result`.
+  perTab.set(
+    tabLabel,
+    result.then(
+      () => undefined,
+      () => undefined
+    )
+  )
+  return result
+}
+
+/** Advances a tab's ref counter, never letting it regress — belt-and-braces alongside withRefLock,
+ *  so that even if some future path escapes the lock, a late-completing call can't roll the counter
+ *  back and cause the next mint to re-issue numbers already attached to elements in the page. The
+ *  deliberate exception is `navigate`, which resets to 0 on purpose (the old document's elements
+ *  are gone, so its refs are meaningless and numbering should start clean). */
+export function commitRefCounter(session: BrowserSession, tabLabel: string, nextCounter: number): void {
+  const existing = session.refCounters.get(tabLabel) ?? 0
+  session.refCounters.set(tabLabel, Math.max(existing, nextCounter))
+}
+
+/** Best-effort resync of a tab's ref counter from the refs actually present in the DOM, used only
+ *  on inspect's failure path. A timed-out `page.evaluate` keeps running inside the page and may
+ *  mint refs whose count never made it back to us, so without this the next mint could re-issue a
+ *  number that's already on a live element — exactly the duplicate-ref failure withRefLock exists
+ *  to prevent. Must be called while holding the lock. */
+async function recoverRefCounterFromDom(session: BrowserSession, page: Page, tabLabel: string): Promise<void> {
+  try {
+    const highest = await page.evaluate(() => {
+      let max = -1
+      for (const el of Array.from(document.querySelectorAll('[data-klenny-ref]'))) {
+        const matched = /^e(\d+)$/.exec(el.getAttribute('data-klenny-ref') ?? '')
+        if (matched) max = Math.max(max, Number(matched[1]))
+      }
+      return max
+    })
+    if (highest >= 0) commitRefCounter(session, tabLabel, highest + 1)
+  } catch {
+    // Page closed/navigated out from under us — nothing better available, and commitRefCounter's
+    // monotonicity still prevents regressing below what we already know about.
+  }
 }
 
 function networkPolicyOptions(ctx: BrowserToolContext) {
@@ -266,72 +342,80 @@ interface SnapshotElement {
   value?: string
 }
 
+/** Runs inside the page (via page.evaluate, see doSnapshot). Tags every visible, enabled
+ *  interactive element with a `data-klenny-ref` numbered from `start`, returning them plus the
+ *  counter's new value. Extracted to module scope — like inspectInPage — so doSnapshot's
+ *  ref-counter locking stays readable instead of wrapping 50 indented lines. */
+function snapshotInPage(start: number): { elements: SnapshotElement[]; nextCounter: number } {
+  const SELECTOR = [
+    'a[href]',
+    'button',
+    'input',
+    'select',
+    'textarea',
+    '[role="button"]',
+    '[role="link"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="tab"]',
+    '[role="menuitem"]',
+    '[role="option"]',
+    '[contenteditable="true"]',
+    '[onclick]',
+    'summary'
+  ].join(',')
+
+  const isVisible = (el: Element): boolean => {
+    const rect = el.getBoundingClientRect()
+    if (rect.width === 0 && rect.height === 0) return false
+    const style = window.getComputedStyle(el)
+    return style.visibility !== 'hidden' && style.display !== 'none'
+  }
+
+  let counter = start
+  const results: SnapshotElement[] = []
+  for (const el of Array.from(document.querySelectorAll(SELECTOR))) {
+    if (!(el instanceof HTMLElement)) continue
+    if (!isVisible(el)) continue
+    if ((el as HTMLInputElement).disabled) continue
+
+    const ref = `e${counter++}`
+    el.setAttribute('data-klenny-ref', ref)
+
+    const role = el.getAttribute('role') || el.tagName.toLowerCase()
+    const name =
+      el.getAttribute('aria-label') ||
+      (el as HTMLInputElement).placeholder ||
+      el.textContent?.trim().slice(0, 80) ||
+      (el as HTMLInputElement).value ||
+      ''
+    const entry: SnapshotElement = {
+      ref,
+      role,
+      name,
+      tag: el.tagName.toLowerCase()
+    }
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) entry.value = el.value
+    results.push(entry)
+  }
+  return { elements: results, nextCounter: counter }
+}
+
 async function doSnapshot(ctx: BrowserToolContext, tabLabel: string): Promise<ToolResultPayload> {
   const ensured = await ensureSessionAndPage(ctx, tabLabel)
   if ('ok' in ensured) return ensured
   const { session, page } = ensured
 
-  const startCounter = session.refCounters.get(tabLabel) ?? 0
-  const { elements, nextCounter } = await page.evaluate((start: number) => {
-    const SELECTOR = [
-      'a[href]',
-      'button',
-      'input',
-      'select',
-      'textarea',
-      '[role="button"]',
-      '[role="link"]',
-      '[role="checkbox"]',
-      '[role="radio"]',
-      '[role="tab"]',
-      '[role="menuitem"]',
-      '[role="option"]',
-      '[contenteditable="true"]',
-      '[onclick]',
-      'summary'
-    ].join(',')
+  // Read→evaluate→commit has to be atomic per tab, or a parallel snapshot/inspect on the same tab
+  // mints colliding refs (see withRefLock).
+  const { elements } = await withRefLock(session, tabLabel, async () => {
+    const startCounter = session.refCounters.get(tabLabel) ?? 0
+    const outcome = await page.evaluate(snapshotInPage, startCounter)
+    commitRefCounter(session, tabLabel, outcome.nextCounter)
+    return outcome
+  })
 
-    const isVisible = (el: Element): boolean => {
-      const rect = el.getBoundingClientRect()
-      if (rect.width === 0 && rect.height === 0) return false
-      const style = window.getComputedStyle(el)
-      return style.visibility !== 'hidden' && style.display !== 'none'
-    }
-
-    let counter = start
-    const results: { ref: string; role: string; name: string; tag: string; value?: string }[] = []
-    for (const el of Array.from(document.querySelectorAll(SELECTOR))) {
-      if (!(el instanceof HTMLElement)) continue
-      if (!isVisible(el)) continue
-      if ((el as HTMLInputElement).disabled) continue
-
-      const ref = `e${counter++}`
-      el.setAttribute('data-klenny-ref', ref)
-
-      const role = el.getAttribute('role') || el.tagName.toLowerCase()
-      const name =
-        el.getAttribute('aria-label') ||
-        (el as HTMLInputElement).placeholder ||
-        el.textContent?.trim().slice(0, 80) ||
-        (el as HTMLInputElement).value ||
-        ''
-      const entry: { ref: string; role: string; name: string; tag: string; value?: string } = {
-        ref,
-        role,
-        name,
-        tag: el.tagName.toLowerCase()
-      }
-      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) entry.value = el.value
-      results.push(entry)
-    }
-    return { elements: results, nextCounter: counter }
-  }, startCounter)
-
-  session.refCounters.set(tabLabel, nextCounter)
-
-  const tree = (elements as SnapshotElement[])
-    .map((e) => `- [${e.ref}] ${e.role} "${e.name}"${e.value ? ` (value: "${e.value}")` : ''}`)
-    .join('\n')
+  const tree = elements.map((e) => `- [${e.ref}] ${e.role} "${e.name}"${e.value ? ` (value: "${e.value}")` : ''}`).join('\n')
 
   return {
     ok: true,
@@ -546,28 +630,37 @@ export async function inspectInPage(args: {
   const rawGetAttribute = elementProtoForRef?.getAttribute as ((this: Element, name: string) => string | null) | undefined
   const rawSetAttribute = elementProtoForRef?.setAttribute as ((this: Element, name: string, value: string) => void) | undefined
 
+  // The *entire* body is guarded, not just the assignment: merely reading `obj[key]` can throw on
+  // some origins (a getter that rejects, e.g. `localStorage` on a `data:` URL, which Chromium
+  // refuses with a SecurityError). An unguarded read there used to abort the whole inspect before
+  // the model's code ever ran, so failing soft per-API is the correct behavior for this layer.
   function block(obj: unknown, key: string, message: string): void {
-    const target = obj as Record<string, unknown>
-    if (!(key in target)) return
-    const original = target[key]
     try {
+      const target = obj as Record<string, unknown>
+      if (!target || !(key in target)) return
+      const original = target[key]
       target[key] = function () {
         throw new Error(message)
       }
       restores.push(() => {
-        target[key] = original
+        try {
+          target[key] = original
+        } catch {
+          // best-effort
+        }
       })
     } catch {
-      // Some properties (e.g. non-configurable ones in certain engines) can't be reassigned —
-      // best-effort only, matching this whole layer's defense-in-depth (not guaranteed) nature.
+      // Unreadable or non-reassignable property (non-configurable in some engines, or a throwing
+      // getter) — best-effort only, matching this whole layer's defense-in-depth nature.
     }
   }
 
   function blockSetter(proto: unknown, key: string, message: string): void {
-    const target = proto as object
-    const desc = Object.getOwnPropertyDescriptor(target, key)
-    if (!desc || !desc.get) return
     try {
+      const target = proto as object
+      if (!target) return
+      const desc = Object.getOwnPropertyDescriptor(target, key)
+      if (!desc || !desc.get) return
       Object.defineProperty(target, key, {
         get: desc.get,
         set: () => {
@@ -576,10 +669,14 @@ export async function inspectInPage(args: {
         configurable: true
       })
       restores.push(() => {
-        Object.defineProperty(target, key, desc)
+        try {
+          Object.defineProperty(target, key, desc)
+        } catch {
+          // best-effort
+        }
       })
     } catch {
-      // best-effort
+      // best-effort (see block() above for why the whole body is guarded)
     }
   }
 
@@ -593,8 +690,20 @@ export async function inspectInPage(args: {
   const nav = win.navigator as Record<string, unknown> | undefined
   if (nav) block(nav, 'sendBeacon', denyMsg('navigator.sendBeacon'))
 
-  // Storage
-  const storages = [win.localStorage, win.sessionStorage].filter(Boolean) as Storage[]
+  // Storage. Reading these properties *at all* throws on opaque origins — Chromium rejects
+  // `localStorage` on a `data:` URL with "SecurityError: Storage is disabled inside 'data:' URLs",
+  // which used to abort the entire inspect before any model code ran (ruling out `data:` URLs as a
+  // zero-dependency scratchpad). Read each one defensively and simply skip what isn't there.
+  const storages: Storage[] = []
+  for (const storageKey of ['localStorage', 'sessionStorage']) {
+    try {
+      const candidate = win[storageKey]
+      if (candidate) storages.push(candidate as Storage)
+    } catch {
+      // Storage unavailable on this origin (data:, sandboxed iframe, blocked cookies) — there's
+      // nothing to harden, and the block() calls below would be no-ops anyway.
+    }
+  }
   for (const s of storages) {
     block(s, 'setItem', denyMsg('storage writes'))
     block(s, 'removeItem', denyMsg('storage writes'))
@@ -679,11 +788,43 @@ export async function inspectInPage(args: {
     return id
   }
 
-  function autoRef(value: unknown): unknown {
+  /** Depth ceiling for autoRef's recursion — deep enough for any realistic shape a model returns,
+   *  shallow enough that a pathological structure can't blow the stack inside page.evaluate. */
+  const AUTO_REF_MAX_DEPTH = 8
+
+  function isPlainObject(value: unknown): boolean {
+    if (typeof value !== 'object' || value === null) return false
+    const proto = Object.getPrototypeOf(value)
+    return proto === Object.prototype || proto === null
+  }
+
+  // Converts every Element *anywhere* in the returned value into a ref. Recursing into plain
+  // objects matters because `{label: el}` grouping is a natural thing for a model to return, and
+  // without it the element fell through to Playwright's serializer as the useless, deceptively
+  // ref-looking string "ref: <Node>" — a silent wrong answer rather than an error. A NodeList
+  // nested inside an object degraded the same way, since only the top level was ever checked.
+  // Only plain objects are traversed: class instances are left alone so we don't walk something
+  // with side-effecting getters.
+  function autoRef(value: unknown, depth = 0, path: Set<object> = new Set()): unknown {
     if (value instanceof Element) return ref(value)
-    if (Array.isArray(value)) return value.map(autoRef)
-    if (value instanceof NodeList || value instanceof HTMLCollection) return Array.from(value).map(autoRef)
-    return value
+    if (depth >= AUTO_REF_MAX_DEPTH) return value
+    const isList = value instanceof NodeList || value instanceof HTMLCollection
+    if (!isList && !Array.isArray(value) && !isPlainObject(value)) return value
+    // `path` tracks the current branch only (added before recursing, removed after), so a genuine
+    // cycle is caught while a DAG — the same element referenced twice, e.g. `[el, el]` — still
+    // resolves to the same ref in both slots instead of being misreported as circular.
+    const asObject = value as object
+    if (path.has(asObject)) return '[circular]'
+    path.add(asObject)
+    try {
+      if (isList) return Array.from(value as NodeList | HTMLCollection).map((v) => autoRef(v, depth + 1, path))
+      if (Array.isArray(value)) return value.map((v) => autoRef(v, depth + 1, path))
+      const out: Record<string, unknown> = {}
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = autoRef(v, depth + 1, path)
+      return out
+    } finally {
+      path.delete(asObject)
+    }
   }
 
   const klenny = { ref }
@@ -726,21 +867,28 @@ async function doInspect(args: Record<string, unknown>, ctx: BrowserToolContext,
   const ensured = await ensureSessionAndPage(ctx, tabLabel)
   if ('ok' in ensured) return ensured
   const { session, page } = ensured
-  const startCounter = session.refCounters.get(tabLabel) ?? 0
 
-  try {
-    const outcome = await Promise.race([
-      page.evaluate(inspectInPage, { code, start: startCounter }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('inspect timed out (15s) — likely an infinite loop or unresolved await')), INSPECT_TIMEOUT_MS))
-    ])
-    session.refCounters.set(tabLabel, outcome.nextCounter)
-    if (!outcome.ok) {
-      return { ok: false, summary: 'Inspect failed', error: outcome.error ?? 'inspect_failed' }
+  // Read→evaluate→commit has to be atomic per tab: concurrent inspects otherwise all start from
+  // the same counter and mint colliding refs (see withRefLock).
+  return withRefLock(session, tabLabel, async () => {
+    const startCounter = session.refCounters.get(tabLabel) ?? 0
+    try {
+      const outcome = await Promise.race([
+        page.evaluate(inspectInPage, { code, start: startCounter }),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('inspect timed out (15s) — likely an infinite loop or unresolved await')), INSPECT_TIMEOUT_MS))
+      ])
+      commitRefCounter(session, tabLabel, outcome.nextCounter)
+      if (!outcome.ok) {
+        return { ok: false, summary: 'Inspect failed', error: outcome.error ?? 'inspect_failed' }
+      }
+      return { ok: true, summary: 'Inspected page (read-only)', data: { result: outcome.result } }
+    } catch (e) {
+      // A timeout rejects the race but leaves the in-page code running, so it may have minted refs
+      // whose count never came back. Resync from the DOM so the next mint can't reuse a live ref.
+      await recoverRefCounterFromDom(session, page, tabLabel)
+      return { ok: false, summary: 'Inspect failed', error: e instanceof Error ? e.message : String(e) }
     }
-    return { ok: true, summary: 'Inspected page (read-only)', data: { result: outcome.result } }
-  } catch (e) {
-    return { ok: false, summary: 'Inspect failed', error: e instanceof Error ? e.message : String(e) }
-  }
+  })
 }
 
 async function doWaitFor(args: Record<string, unknown>, ctx: BrowserToolContext, tabLabel: string): Promise<ToolResultPayload> {
