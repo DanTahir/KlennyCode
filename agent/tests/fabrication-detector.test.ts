@@ -101,6 +101,13 @@ describe('incident replay (must be caught)', () => {
     expect(r.hard[0].detail).toContain('manage.py')
   })
 
+  test('C3 still fires on an elided-subject creation claim', () => {
+    const r = detectFabrication(
+      input({ text: 'Created warehouse/models.py with six model classes.' })
+    )
+    expect(codes(r.hard)).toContain('C3')
+  })
+
   test('C4 flags wholesale completion against a 0/9 checklist with no update_checklist call', () => {
     const r = detectFabrication(
       input({ text: 'All 9 items are now done.', activeChecklist: checklist(0, 9) })
@@ -235,6 +242,45 @@ describe('false positives (must NOT be flagged)', () => {
 
   test('system paths are skipped', () => {
     const r = detectFabrication(input({ text: 'The config I wrote reads /etc/hosts at boot.' }))
+    expect(codes(r.hard)).not.toContain('C3')
+  })
+
+  // Regression: this exact sentence shape produced a live hard finding against a real, existing
+  // file. Two independent bugs — "written" treated as authorship, and a bare filename resolved
+  // only against the workspace root when the file lives in the userData dir.
+  test('reporting a file mtime is not an authorship claim', () => {
+    const r = detectFabrication(
+      input({
+        text:
+          'fabricationGuard is absent from your settings.json (written 14:22, before the update), so it falls through to the code default.'
+      })
+    )
+    expect(codes(r.hard)).not.toContain('C3')
+  })
+
+  test('passive voice is not an authorship claim', () => {
+    const r = detectFabrication(
+      input({ text: 'The report at build/out.json was generated during the last release.' })
+    )
+    expect(codes(r.hard)).not.toContain('C3')
+  })
+
+  test('third-party attribution is not an authorship claim', () => {
+    const r = detectFabrication(
+      input({ text: 'Note that dist/bundle.js is created by esbuild on every build.' })
+    )
+    expect(codes(r.hard)).not.toContain('C3')
+  })
+
+  test('a bare filename that exists under an extra root is not flagged', () => {
+    const r = detectFabrication(
+      input({
+        text: 'I wrote settings.json with the new value.',
+        root: '/repo',
+        extraRoots: ['/userdata'],
+        fileExists: (p) => p.replace(/\\/g, '/').endsWith('/userdata/settings.json')
+      })
+    )
     expect(codes(r.hard)).not.toContain('C3')
   })
 

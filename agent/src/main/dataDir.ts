@@ -2,6 +2,11 @@ import { app } from 'electron'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+/** Electron's per-user data dir (settings.json, sessions/, projects/, cost-report.json). */
+export function userDataDir(): string {
+  return app.getPath('userData')
+}
+
 /**
  * Global (cross-project) Klenny config directory — `~/.klenny`. Holds global skills, global
  * custom subagents, and global memory (`KLENNY.md` + auto-memory notes). This lives outside

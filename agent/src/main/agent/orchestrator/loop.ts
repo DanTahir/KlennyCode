@@ -31,6 +31,7 @@ import type {
 import { DEFAULT_BROWSER_AUTOMATION, CODING_ONLY_TOOLS, DOCX_TOOLS, ALWAYS_BLOCKED_TOOLS } from '@shared/types'
 import { loadSettings } from '../../settings'
 import { resolveDocumentsDirectory } from '../../documentsDir'
+import { globalKlennyDir, userDataDir } from '../../dataDir'
 import { getWorkspace } from '../../workspace'
 import { sessionStore } from '../../session/store'
 import { streamChatCompletion, fetchModels, type ToolCall } from '../../openrouter/client'
@@ -399,12 +400,17 @@ export async function agentLoop(
     // relative path in prose is checked exactly where a write would have landed.
     const auditRoot =
       tab.kind === 'assistant' ? await resolveDocumentsDirectory() : (getWorkspace() ?? undefined)
+    // The agent legitimately reads and discusses its own config/memory files, which live outside
+    // the workspace entirely. Resolving a bare filename like "settings.json" against the workspace
+    // alone made a truthful mention of a real file look like a fabricated artifact.
+    const auditExtraRoots = [userDataDir(), globalKlennyDir()]
     const outcome = auditAssistantMessage({
       assistantMsg,
       messages: tab.messages,
       guard: fabricationGuard,
       contextKind: auditContextKind,
       root: auditRoot,
+      extraRoots: auditExtraRoots,
       activeChecklist: tab.activeChecklist,
       knownToolNames
     })

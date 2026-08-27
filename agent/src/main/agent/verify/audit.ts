@@ -52,6 +52,8 @@ export function auditAssistantMessage(opts: {
   guard: FabricationGuardMode
   contextKind: DetectorContextKind
   root?: string
+  /** extra roots for resolving bare claimed paths — see DetectorInput.extraRoots */
+  extraRoots?: string[]
   activeChecklist?: { title: string; items: ChecklistItem[] }
   knownToolNames: readonly string[]
   /** injected for tests; defaults to real wall clock */
@@ -74,6 +76,7 @@ export function auditAssistantMessage(opts: {
     nowMs: opts.nowMs ?? Date.now(),
     activeChecklist: opts.activeChecklist,
     root: opts.root,
+    extraRoots: opts.extraRoots,
     fileExists: opts.fileExists,
     knownToolNames: opts.knownToolNames,
     contextKind: opts.contextKind
