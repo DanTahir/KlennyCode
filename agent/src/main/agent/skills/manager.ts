@@ -1,6 +1,6 @@
-import { readFile, writeFile, mkdir, readdir, access } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, readdir, access, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
-import { join } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import matter from 'gray-matter'
 import type { SkillSummary } from '@shared/types'
 import { getWorkspace } from '../../workspace'
@@ -217,10 +217,147 @@ async function scanSkillsDir(dir: string, scope: 'project' | 'global'): Promise<
   return out
 }
 
-export async function readSkill(path: string): Promise<string> {
-  const raw = await readFile(path, 'utf8')
-  const { content } = matter(raw)
-  return content.trim()
+export interface ResolvedSkill {
+  name: string
+  scope: 'project' | 'global'
+  path: string
+  content: string
+}
+
+/** The skills catalog in the system prompt lists skills as `name (scope): description` — it
+ *  deliberately does NOT include absolute paths (they're long, noisy, and would bloat the cached
+ *  prompt prefix for every turn). read_skill therefore has to accept whatever the model actually
+ *  has in front of it: the bare skill *name*, a catalog-style `name (scope)` / `name (scope): desc`
+ *  line pasted verbatim, or a real path from list_skills. Previously it only accepted an exact
+ *  path, so the first call was always a guess that threw ENOENT, forcing a list_skills round-trip
+ *  before every single skill read. */
+function parseSkillRef(raw: unknown): { ref: string; scopeHint?: 'project' | 'global' } {
+  let ref = String(raw ?? '').trim()
+  // Strip wrapping quotes/backticks the model sometimes includes.
+  ref = ref.replace(/^["'`]+/, '').replace(/["'`]+$/, '').trim()
+  // Catalog line shapes: "browser-automation (global)" / "browser-automation (global): How to...".
+  const m = /^(.+?)\s*\((project|global)\)\s*(?::[\s\S]*)?$/i.exec(ref)
+  if (m) {
+    return { ref: m[1].trim(), scopeHint: m[2].toLowerCase() as 'project' | 'global' }
+  }
+  return { ref }
+}
+
+function looksLikePath(ref: string): boolean {
+  return isAbsolute(ref) || ref.includes('/') || ref.includes('\\') || /\.md$/i.test(ref)
+}
+
+/** Must check isFile(), not just existence: for a ref like `.../skills/browser-automation` the
+ *  *directory* itself exists, so an access()-only check would happily return the directory and then
+ *  fail to read it as a SKILL.md — defeating the `join(ref, 'SKILL.md')` fallback below. */
+async function firstReadableFile(candidates: string[]): Promise<string | null> {
+  for (const candidate of candidates) {
+    try {
+      const st = await stat(candidate)
+      if (st.isFile()) return candidate
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null
+}
+
+/** Path-shaped refs: accept the exact file, a skill *directory* (append SKILL.md), and
+ *  workspace-/global-relative forms like `.klenny/skills/foo/SKILL.md`. */
+async function resolvePathishRef(ref: string): Promise<string | null> {
+  const bases: string[] = []
+  const ws = getWorkspace()
+  if (ws) bases.push(ws)
+  bases.push(globalKlennyDir())
+
+  const roots = isAbsolute(ref) ? [ref] : [ref, ...bases.map((b) => join(b, ref))]
+  const candidates: string[] = []
+  for (const root of roots) {
+    candidates.push(root)
+    if (!/SKILL\.md$/i.test(root)) candidates.push(join(root, 'SKILL.md'))
+  }
+  return firstReadableFile(candidates)
+}
+
+function scopeForPath(skillPath: string): 'project' | 'global' {
+  const globalSkills = resolve(join(globalKlennyDir(), 'skills'))
+  const resolved = resolve(skillPath)
+  if (resolved === globalSkills || resolved.startsWith(globalSkills + sep)) return 'global'
+  return 'project'
+}
+
+/** Resolves a skill reference (name, catalog line, or path) to a concrete SKILL.md.
+ *  Name matching is case-insensitive and checks the frontmatter `name`, the containing directory
+ *  name, and the path itself; a `(scope)` hint from a catalog line is preferred but never required,
+ *  and project scope wins over global on an otherwise-ambiguous name (same precedence as
+ *  listSkills' ordering). */
+export async function resolveSkill(rawRef: unknown): Promise<ResolvedSkill | null> {
+  const { ref, scopeHint } = parseSkillRef(rawRef)
+  if (!ref) return null
+
+  const skills = await listSkills()
+  const needle = ref.toLowerCase()
+
+  const byName = skills.filter(
+    (s) =>
+      s.name.toLowerCase() === needle ||
+      basename(dirname(s.path)).toLowerCase() === needle ||
+      s.path.toLowerCase() === needle
+  )
+  const match = byName.find((s) => s.scope === scopeHint) ?? byName[0]
+  if (match) {
+    const content = await readSkillBody(match.path)
+    if (content !== null) return { name: match.name, scope: match.scope, path: match.path, content }
+  }
+
+  if (looksLikePath(ref)) {
+    const path = await resolvePathishRef(ref)
+    if (path) {
+      const content = await readSkillBody(path)
+      if (content !== null) {
+        const known = skills.find((s) => resolve(s.path) === resolve(path))
+        return {
+          name: known?.name ?? basename(dirname(path)),
+          scope: known?.scope ?? scopeForPath(path),
+          path,
+          content
+        }
+      }
+    }
+  }
+
+  return null
+}
+
+async function readSkillBody(skillPath: string): Promise<string | null> {
+  try {
+    const raw = await readFile(skillPath, 'utf8')
+    const { content } = matter(raw)
+    return content.trim()
+  } catch {
+    return null
+  }
+}
+
+/** Thrown message is deliberately actionable: it lists what IS available so the model can retry
+ *  correctly in the same turn instead of needing a separate list_skills call. */
+export async function readSkillDetailed(ref: unknown): Promise<ResolvedSkill> {
+  const resolved = await resolveSkill(ref)
+  if (resolved) return resolved
+
+  const skills = await listSkills()
+  const asked = String(ref ?? '').trim()
+  if (!skills.length) {
+    throw new Error(`No skills are available${asked ? ` (looked for "${asked}")` : ''}.`)
+  }
+  const available = skills.map((s) => `${s.name} (${s.scope})`).join(', ')
+  throw new Error(
+    `Skill "${asked}" not found. Available skills: ${available}. Pass the skill's name exactly as listed (no path needed).`
+  )
+}
+
+export async function readSkill(ref: string): Promise<string> {
+  return (await readSkillDetailed(ref)).content
 }
 
 export async function writeSkill(
@@ -245,5 +382,5 @@ export async function writeSkill(
 export function skillsCatalogPrompt(skills: SkillSummary[]): string {
   if (!skills.length) return ''
   const lines = skills.map((s) => `- ${s.name} (${s.scope}): ${s.description}`)
-  return `Available skills (call read_skill when relevant):\n${lines.join('\n')}`
+  return `Available skills (call read_skill with the skill's name — e.g. name: "${skills[0].name}" — when relevant; no path or prior list_skills call needed):\n${lines.join('\n')}`
 }

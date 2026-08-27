@@ -333,11 +333,20 @@ export function getToolDefinitions(
       type: 'function',
       function: {
         name: 'read_skill',
-        description: 'Read full skill instructions by path from list_skills.',
+        description:
+          "Read a skill's full instructions. Pass the skill's `name` exactly as shown in the \"Available skills\" catalog in your system prompt (e.g. name: \"browser-automation\") — that works for both project- and global-scoped skills, and you do NOT need to call list_skills first or know the file path. A `path` from list_skills is also accepted if you happen to have one.",
         parameters: {
           type: 'object',
-          properties: { path: { type: 'string' } },
-          required: ['path']
+          properties: {
+            name: {
+              type: 'string',
+              description: "The skill's name from the catalog. Preferred over `path`."
+            },
+            path: {
+              type: 'string',
+              description: 'Optional exact SKILL.md path (or skill directory) from list_skills.'
+            }
+          }
         }
       }
     },

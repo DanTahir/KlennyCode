@@ -59,7 +59,7 @@ import { readDocxTool, writeDocxTool, editDocxTool } from '../docx/index'
 import { listProjectsTool, resolveProjectOrError } from '../tools/otherProjects'
 import { writeMemory, readMemoryTopic, loadProjectMemory, loadAutoMemoryIndex, loadGlobalMemory, listMemoryTopics } from '../memory/manager'
 import { buildFullAssistantMemoryDigest } from '../memory/assistantMemory'
-import { listSkills, readSkill, writeSkill } from '../skills/manager'
+import { listSkills, readSkillDetailed, writeSkill } from '../skills/manager'
 import { getSubagentType, writeSubagentType } from '../subagents/manager'
 import { savePlan } from '../plan/manager'
 import { buildChecklist } from './checklist'
@@ -903,8 +903,18 @@ async function dispatchTool(
       const skills = await listSkills()
       return { ok: true, summary: `${skills.length} skills`, data: { skills } }
     }
-    case 'read_skill':
-      return { ok: true, summary: 'Skill loaded', data: { content: await readSkill(String(args.path)) } }
+    case 'read_skill': {
+      // Accepts a skill name (preferred, straight from the system-prompt catalog), a catalog line,
+      // or a real path — resolveSkill/readSkillDetailed handle all three, so a bare name no longer
+      // fails with ENOENT and forces a list_skills round-trip first.
+      const ref = args.name ?? args.path ?? args.skill
+      const skill = await readSkillDetailed(ref)
+      return {
+        ok: true,
+        summary: `Skill loaded: ${skill.name} (${skill.scope})`,
+        data: { name: skill.name, scope: skill.scope, path: skill.path, content: skill.content }
+      }
+    }
     case 'read_memory': {
       if (args.scope === 'assistant') {
         const content = await buildFullAssistantMemoryDigest()
