@@ -150,7 +150,7 @@ export async function buildSystemPrompt(
     !isAssistant &&
       `run_command executes via ${shell.name} — write commands using that shell's syntax (quoting, path separators, env vars, chaining operators).`,
     mode !== 'plan' &&
-      `write_file/edit_file/multi_edit/delete_file (and write_docx/edit_docx where available) can always mutate these paths too, regardless of the open workspace/documents folder — this is where your own global config and data live (SOUL.md, global skills/subagents/memory, settings, plans, sessions, etc), so edit them directly with these tools instead of shell workarounds:\n${globalRoots.map((r) => `- ${r}`).join('\n')}`,
+      `write_file/edit_file/multi_edit/multi_write/delete_file (and write_docx/edit_docx where available) can always mutate these paths too, regardless of the open workspace/documents folder — this is where your own global config and data live (SOUL.md, global skills/subagents/memory, settings, plans, sessions, etc), so edit them directly with these tools instead of shell workarounds:\n${globalRoots.map((r) => `- ${r}`).join('\n')}`,
     projMem && `Project memory:\n${projMem}`,
     globalMem && `Global memory:\n${globalMem}`,
     autoMem && `Auto-memory index:\n${autoMem}`,

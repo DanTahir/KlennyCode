@@ -417,6 +417,349 @@ export async function previewMultiEdit(edits: MultiEditOp[], root?: string): Pro
   }
 }
 
+export interface MultiWriteOp {
+  path: string
+  content: string
+}
+
+interface PlannedFileWrite {
+  path: string
+  abs: string
+  eol: Eol
+  oldContent: string
+  newContent: string
+  existed: boolean
+}
+
+interface PlanMultiWriteError {
+  ok: false
+  index: number
+  path: string
+  summary: string
+  error: string
+  data?: Record<string, unknown>
+}
+
+/** Keys a model might plausibly use for an entry's target path instead of `path`. Order matters
+ *  only for which alias wins if several are present (first hit). */
+const PATH_ALIASES = ['path', 'file', 'file_path', 'filePath', 'filepath', 'filename', 'fileName', 'name'] as const
+/** Ditto for an entry's body. `content` is the schema's name; the rest are observed/likely
+ *  synonyms. Deliberately does NOT include `data` — too generic, and a `data` key is more likely
+ *  to be a wrapper object than the file body itself. */
+const CONTENT_ALIASES = ['content', 'contents', 'text', 'body', 'source', 'code'] as const
+
+function firstAliasKey(obj: Record<string, unknown>, aliases: readonly string[]): string | undefined {
+  return aliases.find((k) => Object.prototype.hasOwnProperty.call(obj, k))
+}
+
+/** Coerces whatever a model put in an entry's content slot into a real string.
+ *
+ *  Tolerated shapes, all of which have been seen from real models asked to write files:
+ *   - a plain string (the schema's contract — passed through untouched)
+ *   - an array of lines (joined with \n; nested/non-string items stringified)
+ *   - a number/boolean (stringified — e.g. a one-line config value)
+ *   - an object (JSON.stringify'd with 2-space indent — common when writing a .json file, where
+ *     the model sends the object it wants serialized rather than pre-serialized text)
+ *
+ *  Missing/null/undefined content is deliberately NOT coerced to '' — multi_write overwrites, so
+ *  silently turning a malformed entry into a file-truncating empty write is the one failure mode
+ *  worth being strict about. An explicit empty string is still perfectly valid (an intentionally
+ *  empty file). */
+function coerceWriteContent(raw: unknown): { ok: true; content: string } | { ok: false; reason: string } {
+  if (typeof raw === 'string') return { ok: true, content: raw }
+  if (Array.isArray(raw)) {
+    return {
+      ok: true,
+      content: raw.map((line) => (typeof line === 'string' ? line : line === null || line === undefined ? '' : String(line))).join('\n')
+    }
+  }
+  if (typeof raw === 'number' || typeof raw === 'boolean') return { ok: true, content: String(raw) }
+  if (raw === null || raw === undefined) {
+    return { ok: false, reason: 'missing "content" (pass an empty string if you really want an empty file)' }
+  }
+  if (typeof raw === 'object') {
+    try {
+      return { ok: true, content: `${JSON.stringify(raw, null, 2)}\n` }
+    } catch {
+      return { ok: false, reason: '"content" was an object that could not be serialized to JSON' }
+    }
+  }
+  return { ok: false, reason: `"content" had unsupported type ${typeof raw}` }
+}
+
+/** Normalizes one raw entry into {path, content}, tolerating key aliases and content shapes. */
+function normalizeWriteEntry(raw: unknown): { ok: true; op: MultiWriteOp } | { ok: false; reason: string } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, reason: 'each entry must be an object with "path" and "content"' }
+  }
+  const obj = raw as Record<string, unknown>
+  const pathKey = firstAliasKey(obj, PATH_ALIASES)
+  const rawPath = pathKey ? obj[pathKey] : undefined
+  if (typeof rawPath !== 'string' || rawPath.trim().length === 0) {
+    return { ok: false, reason: 'missing/empty "path"' }
+  }
+  const contentKey = firstAliasKey(obj, CONTENT_ALIASES)
+  const coerced = coerceWriteContent(contentKey ? obj[contentKey] : undefined)
+  if (!coerced.ok) return { ok: false, reason: coerced.reason }
+  return { ok: true, op: { path: rawPath.trim(), content: coerced.content } }
+}
+
+/** True when an object looks like a single {path, content} entry rather than a path→content map. */
+function looksLikeSingleEntry(obj: Record<string, unknown>): boolean {
+  return firstAliasKey(obj, PATH_ALIASES) !== undefined && firstAliasKey(obj, CONTENT_ALIASES) !== undefined
+}
+
+/**
+ * Turns whatever arrived in `files` into a real MultiWriteOp[], mirroring normalizeEditsArg's
+ * tolerance (see its doc comment) and then some — because the ways a model can mangle a
+ * "write several files" call are strictly broader than for a batch edit.
+ *
+ * Accepted shapes:
+ *  - a real array of entries (the schema's contract)
+ *  - a JSON-encoded string of any of these (some providers double-encode nested-array args)
+ *  - a single entry object, not wrapped in an array ({path, content})
+ *  - a path→content map ({"src/a.ts": "...", "src/b.ts": "..."}) — a very natural shape for a
+ *    model to reach for when the whole point of the call is "these files, these contents"
+ *  - per-entry key aliases (file/file_path/filename/... and contents/text/body/source/code)
+ *  - per-entry content as an array of lines, a number/boolean, or an object to serialize
+ *
+ * `fallback` backs the degenerate single-file call multi_write({path, content}) with no `files`
+ * at all. There's no multi_edit-style top-level *default* path here (every entry in a batch write
+ * targets a different file by definition, so a shared default would be meaningless) — this is
+ * only used when `files` is absent/empty entirely.
+ */
+export function normalizeFilesArg(
+  rawFiles: unknown,
+  fallback?: { path?: unknown; content?: unknown }
+): { ok: true; files: MultiWriteOp[] } | { ok: false; summary: string } {
+  const fromArray = (arr: unknown[]): { ok: true; files: MultiWriteOp[] } | { ok: false; summary: string } => {
+    const out: MultiWriteOp[] = []
+    for (let i = 0; i < arr.length; i++) {
+      const entry = normalizeWriteEntry(arr[i])
+      if (!entry.ok) {
+        return { ok: false, summary: `multi_write entry at index ${i} is malformed: ${entry.reason}` }
+      }
+      out.push(entry.op)
+    }
+    return { ok: true, files: out }
+  }
+
+  const fromObject = (obj: Record<string, unknown>): { ok: true; files: MultiWriteOp[] } | { ok: false; summary: string } => {
+    if (looksLikeSingleEntry(obj)) {
+      const entry = normalizeWriteEntry(obj)
+      return entry.ok ? { ok: true, files: [entry.op] } : { ok: false, summary: `multi_write "files" is malformed: ${entry.reason}` }
+    }
+    // Treat as a path -> content map.
+    const out: MultiWriteOp[] = []
+    for (const [key, value] of Object.entries(obj)) {
+      if (typeof key !== 'string' || key.trim().length === 0) continue
+      const coerced = coerceWriteContent(value)
+      if (!coerced.ok) {
+        return { ok: false, summary: `multi_write entry "${key}" is malformed: ${coerced.reason}` }
+      }
+      out.push({ path: key.trim(), content: coerced.content })
+    }
+    if (out.length === 0) {
+      return { ok: false, summary: 'multi_write "files" was an object with no usable path/content pairs' }
+    }
+    return { ok: true, files: out }
+  }
+
+  if (Array.isArray(rawFiles)) {
+    if (rawFiles.length > 0) return fromArray(rawFiles)
+    // fall through to the single-file fallback below for an explicitly empty array
+  } else if (typeof rawFiles === 'string') {
+    const trimmed = rawFiles.trim()
+    if (trimmed.length > 0) {
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(trimmed)
+      } catch (e) {
+        return {
+          ok: false,
+          summary: `multi_write "files" was a string but not valid JSON (${e instanceof Error ? e.message : String(e)}); pass files as a real JSON array of {path, content} objects, not a stringified one`
+        }
+      }
+      if (Array.isArray(parsed)) return fromArray(parsed)
+      if (parsed && typeof parsed === 'object') return fromObject(parsed as Record<string, unknown>)
+      return {
+        ok: false,
+        summary: 'multi_write "files" was a JSON string but did not parse to an array or object; it must be an array of {path, content} objects'
+      }
+    }
+  } else if (rawFiles && typeof rawFiles === 'object') {
+    return fromObject(rawFiles as Record<string, unknown>)
+  }
+
+  // No usable `files` — accept the degenerate single-file form multi_write({path, content}).
+  if (fallback && typeof fallback.path === 'string' && fallback.path.trim().length > 0) {
+    const entry = normalizeWriteEntry(fallback)
+    if (!entry.ok) return { ok: false, summary: `multi_write called with a top-level path but ${entry.reason}` }
+    return { ok: true, files: [entry.op] }
+  }
+
+  if (rawFiles === null || rawFiles === undefined) {
+    return { ok: false, summary: 'multi_write called with no files' }
+  }
+  if (Array.isArray(rawFiles) || typeof rawFiles === 'string') {
+    return { ok: false, summary: 'multi_write called with no files' }
+  }
+  return {
+    ok: false,
+    summary: `multi_write "files" must be an array of {path, content} objects (got ${typeof rawFiles})`
+  }
+}
+
+/** Shared by multiWriteFileTool (real run) and its approval preview (dry run): validates every
+ *  entry and computes each file's before/after content without touching disk. All-or-nothing like
+ *  planMultiEdit — the first bad entry aborts the whole batch, so a malformed 5th file never
+ *  leaves the first 4 written.
+ *
+ *  Unlike planMultiEdit there is no staleness check and no "file must already exist" requirement:
+ *  creating new files is the entire point, and an overwrite doesn't depend on having read the
+ *  previous contents first (same reasoning as writeFileTool, which also skips the stale guard).
+ *  Duplicate paths within one batch are collapsed last-write-wins, keyed by resolved absolute
+ *  path so 'a.ts' and './a.ts' count as the same file. */
+async function planMultiWrite(
+  files: MultiWriteOp[],
+  root?: string
+): Promise<{ ok: true; files: PlannedFileWrite[] } | PlanMultiWriteError> {
+  const planned = new Map<string, PlannedFileWrite>()
+
+  for (let i = 0; i < files.length; i++) {
+    const op = files[i]
+    if (!op || typeof op.path !== 'string' || op.path.length === 0 || typeof op.content !== 'string') {
+      return {
+        ok: false,
+        index: i,
+        path: typeof op?.path === 'string' ? op.path : '',
+        summary: `Malformed entry at index ${i}: each entry needs a string "path" and string "content"`,
+        error: 'invalid_file'
+      }
+    }
+
+    let abs: string
+    try {
+      abs = resolveWorkspacePath(op.path, root)
+    } catch (e) {
+      return {
+        ok: false,
+        index: i,
+        path: op.path,
+        summary: e instanceof Error ? e.message : String(e),
+        error: 'invalid_path'
+      }
+    }
+
+    if (!assertMutationAllowed(abs, root)) {
+      return { ok: false, index: i, path: op.path, summary: 'Path outside workspace', error: 'sandbox' }
+    }
+
+    const normalizedNew = toLf(op.content)
+    const pawprintGuard = checkPawprintGuardFor(abs, normalizedNew)
+    if (!pawprintGuard.allowed) {
+      return { ok: false, index: i, path: op.path, summary: pawprintGuard.reason!, error: 'pawprint_write_guard' }
+    }
+
+    const existing = planned.get(abs)
+    if (existing) {
+      // Same file targeted twice in one batch — last write wins, but keep the original
+      // oldContent/eol so the diff still describes the change from what's actually on disk.
+      existing.path = op.path
+      existing.newContent = normalizedNew
+      continue
+    }
+
+    let oldRaw = ''
+    let existed = false
+    try {
+      oldRaw = await readFile(abs, 'utf8')
+      existed = true
+    } catch {
+      // new file — diff against empty content
+    }
+    // Preserve an existing file's EOL convention (LF for new files), exactly like writeFileTool,
+    // so overwriting a CRLF file doesn't rewrite every line ending just because model output is LF.
+    planned.set(abs, {
+      path: op.path,
+      abs,
+      eol: existed ? detectEol(oldRaw) : '\n',
+      oldContent: toLf(oldRaw),
+      newContent: normalizedNew,
+      existed
+    })
+  }
+
+  return { ok: true, files: [...planned.values()] }
+}
+
+export async function multiWriteFileTool(
+  args: { files?: unknown; path?: unknown; content?: unknown },
+  root?: string
+): Promise<ToolResultPayload> {
+  const normalized = normalizeFilesArg(args?.files, { path: args?.path, content: args?.content })
+  if (!normalized.ok) {
+    return { ok: false, summary: normalized.summary, error: 'no_files' }
+  }
+  if (normalized.files.length === 0) {
+    return { ok: false, summary: 'multi_write called with no files', error: 'no_files' }
+  }
+
+  const plan = await planMultiWrite(normalized.files, root)
+  if (!plan.ok) {
+    return {
+      ok: false,
+      summary: plan.summary,
+      error: plan.error,
+      data: { ...plan.data, path: plan.path, fileIndex: plan.index }
+    }
+  }
+
+  // Every entry validated in memory — only now does anything hit disk.
+  const written: PlannedFileWrite[] = []
+  const diffs: string[] = []
+  for (const f of plan.files) {
+    await mkdir(dirname(f.abs), { recursive: true })
+    await writeFile(f.abs, fromLf(f.newContent, f.eol), 'utf8')
+    const st = await stat(f.abs)
+    fileReadCache.set(f.abs, { mtimeMs: st.mtimeMs, content: f.newContent })
+    written.push(f)
+    diffs.push(makeDiff(f.oldContent, f.newContent, f.path))
+  }
+
+  const createdCount = written.filter((f) => !f.existed).length
+  const overwroteCount = written.length - createdCount
+  const detail = [createdCount > 0 ? `${createdCount} created` : '', overwroteCount > 0 ? `${overwroteCount} overwritten` : '']
+    .filter(Boolean)
+    .join(', ')
+
+  return {
+    ok: true,
+    summary: `Wrote ${written.length} file${written.length === 1 ? '' : 's'}${detail ? ` (${detail})` : ''}`,
+    data: {
+      paths: written.map((f) => f.path),
+      diff: diffs.filter(Boolean).join('\n'),
+      files: written.map((f) => ({ path: f.path, diff: makeDiff(f.oldContent, f.newContent, f.path), created: !f.existed }))
+    }
+  }
+}
+
+/** Dry-run version of multiWriteFileTool for the approval dialog — same plan and combined diff,
+ *  nothing written. Degrades to a bare path list (never throws) if planning fails, so a malformed
+ *  batch still renders a rejectable preview instead of crashing the turn and leaving the tool
+ *  call stuck at "running" — same hard-won contract as previewMultiEdit. */
+export async function previewMultiWrite(
+  files: MultiWriteOp[],
+  root?: string
+): Promise<{ paths: string[]; diff?: string }> {
+  const plan = await planMultiWrite(files, root)
+  if (!plan.ok) {
+    return { paths: [...new Set(files.map((f) => (typeof f?.path === 'string' ? f.path : '')).filter(Boolean))] }
+  }
+  const diff = plan.files.map((f) => makeDiff(f.oldContent, f.newContent, f.path)).filter(Boolean).join('\n')
+  return { paths: plan.files.map((f) => f.path), diff: diff || undefined }
+}
+
 export async function deleteFileTool(args: { path: string }, root?: string): Promise<ToolResultPayload> {
   const abs = resolveWorkspacePath(args.path, root)
   if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }

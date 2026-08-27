@@ -35,7 +35,7 @@ export function isInsideDirectory(absPath: string, root: string): boolean {
   return normalized === normalizedRoot || normalized.startsWith(normalizedRoot + '/')
 }
 
-/** Roots the agent may always mutate (write_file/edit_file/multi_edit/delete_file/write_docx/
+/** Roots the agent may always mutate (write_file/edit_file/multi_edit/multi_write/delete_file/write_docx/
  *  edit_docx), regardless of the open project workspace or Assistant-tab documentsDirectory:
  *  the global `~/.klenny` config dir (SOUL.md, global skills/subagents/memory) and the Electron
  *  `userData` dir (settings.json, sessions, plans, per-project data, branding assets, etc). This
@@ -47,7 +47,7 @@ export function alwaysAllowedMutationRoots(): string[] {
   return [globalKlennyDir(), app.getPath('userData')]
 }
 
-/** Shared sandbox check for every mutating file tool (write_file/edit_file/multi_edit/
+/** Shared sandbox check for every mutating file tool (write_file/edit_file/multi_edit/multi_write/
  *  delete_file/write_docx/edit_docx): allowed when the path is inside `root` (Assistant-tab
  *  documentsDirectory) or the open project workspace — exactly like before this existed — OR
  *  inside one of `alwaysAllowedMutationRoots()`, which is always checked regardless of `root`/

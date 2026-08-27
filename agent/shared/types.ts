@@ -5,7 +5,7 @@ export type AgentMode = 'agent' | 'plan'
 
 /** 'manual': every mutating tool call (file edits and shell commands) waits for user approval.
  *  'auto': every mutating tool call is applied immediately, with a checkpoint commit for
- *  potential revert. 'command': file edits (write_file/edit_file/multi_edit/delete_file) are
+ *  potential revert. 'command': file edits (write_file/edit_file/multi_edit/multi_write/delete_file) are
  *  auto-applied like 'auto', but run_command calls still require manual approval — a middle
  *  ground for users who trust the agent's code changes but want to review shell commands. */
 export type ApprovalMode = 'manual' | 'auto' | 'command'
@@ -247,6 +247,7 @@ export type ToolName =
   | 'write_file'
   | 'edit_file'
   | 'multi_edit'
+  | 'multi_write'
   | 'delete_file'
   | 'read_docx'
   | 'write_docx'
@@ -292,7 +293,7 @@ export type ToolName =
  *  entirely on Assistant-kind tabs (they have no workspace) and on any project tab with no
  *  workspace open. See getToolDefinitions() in agent/tools/definitions.ts.
  *
- *  File tools (read_file/write_file/edit_file/multi_edit/delete_file/grep/glob) are
+ *  File tools (read_file/write_file/edit_file/multi_edit/multi_write/delete_file/grep/glob) are
  *  deliberately NOT in this list even though they used to be: Assistant tabs now get them too,
  *  scoped to AppSettings.documentsDirectory (default: the OS Documents folder) for anything
  *  that resolves a relative path or performs a mutation — see file-ops.ts's resolveWorkspacePath
@@ -349,6 +350,7 @@ export const ASSISTANT_TOOLS: ToolName[] = [
   'write_file',
   'edit_file',
   'multi_edit',
+  'multi_write',
   'delete_file',
   'read_docx',
   'write_docx',
@@ -414,6 +416,7 @@ export const MUTATING_TOOLS: ToolName[] = [
   'write_file',
   'edit_file',
   'multi_edit',
+  'multi_write',
   'delete_file',
   'write_docx',
   'edit_docx',
@@ -440,6 +443,7 @@ export type PendingActionKind =
   | 'write_file'
   | 'edit_file'
   | 'multi_edit'
+  | 'multi_write'
   | 'delete_file'
   | 'write_docx'
   | 'edit_docx'
@@ -454,12 +458,12 @@ export interface PendingAction {
   kind: PendingActionKind
   toolCallId: string
   title: string
-  /** unified diff text, present for write/edit/delete — for multi_edit this is the
+  /** unified diff text, present for write/edit/delete — for multi_edit/multi_write this is the
    *  concatenation of every affected file's diff, in the same unified-diff format git
    *  uses for multi-file patches, so DiffViewer renders it exactly like a single diff. */
   diff?: string
   filePath?: string
-  /** populated instead of filePath for multi_edit — every file the batch touches. */
+  /** populated instead of filePath for multi_edit/multi_write — every file the batch touches. */
   filePaths?: string[]
   command?: string
   cwd?: string

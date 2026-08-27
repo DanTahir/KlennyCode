@@ -193,7 +193,7 @@ describe('buildSystemPrompt — assistant kind', () => {
     expect(prompt).not.toContain('run_command executes via')
     expect(prompt).toContain('personal assistant')
     // Base file-tool clause always present.
-    expect(prompt).toContain('read_file/write_file/edit_file/multi_edit/delete_file/grep/glob')
+    expect(prompt).toContain('read_file/write_file/edit_file/multi_edit/multi_write/delete_file/grep/glob')
     // Option-gated tools not mentioned when unavailable.
     expect(prompt).not.toContain('read_docx/write_docx/edit_docx')
     expect(prompt).not.toContain('gmail_list_messages')

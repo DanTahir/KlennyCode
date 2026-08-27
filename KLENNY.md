@@ -64,6 +64,13 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   (cmd/PowerShell/bash/zsh/WSL/Git Bash) shared with `run_command`.
 - **Batch file editing**: `multi_edit` bundles multiple edit_file-style replacements (optionally
   across files) into a single all-or-nothing, single-approval operation.
+- **Batch file writing**: `multi_write` is the write-side counterpart — a `files` array of
+  {path, content} entries written in one all-or-nothing, single-approval call (parent dirs
+  created automatically), for scaffolding/generating many whole files without one round-trip
+  each. Shares the plan/preview/diff shape of `multi_edit` (`planMultiWrite`/`previewMultiWrite`
+  in `tools/file-ops.ts`) so the approval dialog and result card render identically.
+  `normalizeFilesArg` is deliberately very tolerant of how a model may mangle the batch argument
+  — see the gotcha below.
 - **Codebase semantic search** (`codebase_search`): optional, off-by-default vector index over
   the workspace (embeddings + local Vectra or Pinecone), incremental via a manifest.
 - **Skill/subagent authoring**: the agent can write and read its own Cursor-style `SKILL.md`
@@ -242,6 +249,24 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   regression test in `fabrication-detector.test.ts`, including positive controls
   (`warehouse-allocator/manage.py`, `archive.7z`) that must keep firing so a future fix can't pass
   by simply blinding C3.
+- **`multi_write`'s argument tolerance is the feature, not incidental defensiveness**: the
+  observed failure mode that motivated the tool (an agent on a real project repeatedly "trying to
+  batch write" and falling back to one file at a time) means the arg shape a model sends is the
+  weak link, so `normalizeFilesArg` (`tools/file-ops.ts`) accepts, and `tests/multi-write.test.ts`
+  pins: a real array; a JSON-*string*-encoded array/object (the double-encoding gotcha below); a
+  single unwrapped `{path, content}` object; a `path -> content` **map** (very natural shape for
+  "these files, these contents"); per-entry key aliases (`file`/`file_path`/`filename`/`name`,
+  `contents`/`text`/`body`/`source`/`code`); and per-entry `content` as an array of lines (joined
+  with `\n`), a number/boolean, or an object (pretty-JSON serialized). Two deliberate asymmetries
+  vs `multi_edit`: (1) there is **no** top-level default `path` — every entry in a batch write
+  targets a different file by definition, so a shared default would be meaningless (a top-level
+  `{path, content}` with no `files` is still accepted as the degenerate single-file call); (2)
+  missing/null `content` is a hard error rather than coerced to `''`, because `multi_write`
+  overwrites — silently turning a malformed entry into a file-truncating empty write is the one
+  failure mode worth being strict about (an explicit `''` is still a valid empty file). Note the
+  ledger (`orchestrator/ledger.ts`) has to mirror just enough of this tolerance in
+  `collectPathsFromArgs` (alias keys + map form), or a file genuinely written via one of the odd
+  shapes gets hard-flagged by the fabrication guard's C3 as a nonexistent artifact.
 - **Fuzzy edit matching** (`edit-match.ts`): handles CRLF, escaped chars, em-dash/hyphen variants
   — but line-number prefixes from `read_file` output are NOT in real file bytes, never include
   them in `old_string`.

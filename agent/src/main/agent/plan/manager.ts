@@ -163,7 +163,7 @@ ${personaSection(soul)}`
  * `kind` selects between the regular coding-project prompt body (default, and the only option
  * that ever mentions run_command/codebase_search/read_terminal by name) and a separate
  * Assistant-tab body. Assistant tabs DO get file tools (read_file/write_file/edit_file/
- * multi_edit/delete_file/read_image/grep/glob — see ASSISTANT_TOOLS in shared/types.ts), scoped
+ * multi_edit/multi_write/delete_file/read_image/grep/glob — see ASSISTANT_TOOLS in shared/types.ts), scoped
  * to AppSettings.documentsDirectory instead of a project workspace (see documentsDir.ts), but
  * never get the truly workspace-dependent tools (run_command/read_terminal/codebase_search —
  * see CODING_ONLY_TOOLS in shared/types.ts / getToolDefinitions()'s isAssistant gate). Docx
@@ -205,7 +205,7 @@ function joinClauses(clauses: string[]): string {
 
 function buildAssistantModePromptBody(tools: AssistantToolAvailability): string {
   const clauses: string[] = [
-    'reading and writing files (read_file/write_file/edit_file/multi_edit/delete_file/grep/glob)'
+    'reading and writing files (read_file/write_file/edit_file/multi_edit/multi_write/delete_file/grep/glob)'
   ]
   if (tools.docx) {
     clauses.push(
@@ -293,7 +293,7 @@ The plan markdown itself (the content passed to save_plan) must be straightforwa
 
 const AGENT_MODE_PROMPT_BODY = `You are Klenny, a capable coding agent. Use tools to accomplish tasks. When requirements are ambiguous, use ask_question before making irreversible changes.
 
-File changes: always use read_file, then edit_file or write_file. Never use run_command to write or edit file *contents* (sed -i, echo/printf redirected into a file, heredocs, node -e writeFileSync, python -c open(), Set-Content) — those fail on Windows and are blocked. This is about authoring file contents only: echo/printf for progress output, redirects to /dev/null, 2>&1 stderr redirection, and piping build output through tee to a log are all fine and not blocked. For renames or global substitutions within one file, use edit_file with replace_all: true. When you already know multiple edits you want to make — several changes to the same file, or a coordinated change across multiple files — batch them into one multi_edit call instead of separate edit_file calls: it's validated as one all-or-nothing operation and needs only a single approval, cutting down on round-trips.
+File changes: always use read_file, then edit_file or write_file. Never use run_command to write or edit file *contents* (sed -i, echo/printf redirected into a file, heredocs, node -e writeFileSync, python -c open(), Set-Content) — those fail on Windows and are blocked. This is about authoring file contents only: echo/printf for progress output, redirects to /dev/null, 2>&1 stderr redirection, and piping build output through tee to a log are all fine and not blocked. For renames or global substitutions within one file, use edit_file with replace_all: true. When you already know multiple edits you want to make — several changes to the same file, or a coordinated change across multiple files — batch them into one multi_edit call instead of separate edit_file calls: it's validated as one all-or-nothing operation and needs only a single approval, cutting down on round-trips. The same applies on the write side: when you're creating or fully replacing more than one file (scaffolding a project, generating a set of components, laying down config files), batch them into one multi_write call — a "files" array of {path, content} — instead of calling write_file once per file. Both batch tools are all-or-nothing and single-approval; reach for them by default whenever more than one file is involved.
 
 Prefer small, focused edits. Use grep/glob to explore.
 

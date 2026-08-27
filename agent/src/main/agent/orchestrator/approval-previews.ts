@@ -2,7 +2,14 @@
 // call) and the spending-cap guard checked at the start of every user turn.
 import { readFile } from 'node:fs/promises'
 import type { PendingAction, TabSession } from '@shared/types'
-import { resolveWorkspacePath, previewMultiEdit, normalizeEditsArg, type MultiEditOp } from '../tools/index'
+import {
+  resolveWorkspacePath,
+  previewMultiEdit,
+  normalizeEditsArg,
+  previewMultiWrite,
+  normalizeFilesArg,
+  type MultiEditOp
+} from '../tools/index'
 import { toLf } from '../tools/eol'
 import { makeDiff } from '../tools/diff'
 import { resolveEditMatch } from '../tools/edit-match'
@@ -113,6 +120,22 @@ export async function previewMutatingTool(
     } catch {
       const paths = [...new Set(edits.map((e) => (typeof e?.path === 'string' ? e.path : '')).filter(Boolean))]
       const title = paths.length === 1 ? `Edit ${paths[0]}` : `Edit ${paths.length || edits.length} files (${edits.length} edits)`
+      return { title, extra: { filePaths: paths } }
+    }
+  }
+  if (name === 'multi_write') {
+    // Same defensive shape as the multi_edit branch above: normalizeFilesArg/previewMultiWrite
+    // both degrade rather than throw, but keep the try/catch so an unexpected failure still
+    // yields a rejectable preview instead of stranding the tool call at "running" forever.
+    const normalized = normalizeFilesArg(args.files, { path: args.path, content: args.content })
+    const files = normalized.ok ? normalized.files : []
+    try {
+      const { paths, diff } = await previewMultiWrite(files, root)
+      const title = paths.length === 1 ? `Write ${paths[0]}` : `Write ${paths.length} files`
+      return { title, extra: { filePaths: paths, diff } }
+    } catch {
+      const paths = [...new Set(files.map((f) => f.path).filter(Boolean))]
+      const title = paths.length === 1 ? `Write ${paths[0]}` : `Write ${paths.length || files.length} files`
       return { title, extra: { filePaths: paths } }
     }
   }

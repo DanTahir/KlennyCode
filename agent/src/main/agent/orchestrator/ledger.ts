@@ -60,6 +60,7 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set<ToolName>([
   'write_file',
   'edit_file',
   'multi_edit',
+  'multi_write',
   'write_docx',
   'edit_docx',
   'write_skill',
@@ -158,6 +159,25 @@ function collectPathsFromArgs(toolName: string, args: Record<string, unknown>, i
     for (const e of edits) {
       if (e && typeof e === 'object') push((e as Record<string, unknown>).path)
     }
+  }
+  // multi_write carries a per-file path array. Mirrors normalizeFilesArg's tolerance (file-ops.ts)
+  // just enough for C3's purposes: the point is to record every path the model *attempted* to
+  // bring into being, so a batch sent in one of the odd-but-accepted shapes (key aliases, or a
+  // path->content map instead of an array) must still register here — otherwise a file that was
+  // genuinely written gets hard-flagged as a fabricated artifact.
+  const files = args.files
+  if (Array.isArray(files)) {
+    for (const f of files) {
+      if (!f || typeof f !== 'object') continue
+      const rec = f as Record<string, unknown>
+      const alias = ['path', 'file', 'file_path', 'filePath', 'filepath', 'filename', 'fileName', 'name'].find((k) =>
+        Object.prototype.hasOwnProperty.call(rec, k)
+      )
+      if (alias) push(rec[alias])
+    }
+  } else if (files && typeof files === 'object') {
+    // path -> content map form: the keys are the paths.
+    for (const key of Object.keys(files as Record<string, unknown>)) push(key)
   }
 }
 

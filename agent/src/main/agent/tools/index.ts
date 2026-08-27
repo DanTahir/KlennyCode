@@ -9,8 +9,12 @@ export {
   multiEditFileTool,
   previewMultiEdit,
   normalizeEditsArg,
+  multiWriteFileTool,
+  previewMultiWrite,
+  normalizeFilesArg,
   deleteFileTool,
-  type MultiEditOp
+  type MultiEditOp,
+  type MultiWriteOp
 } from './file-ops'
 
 export { grepTool, globTool } from './search'

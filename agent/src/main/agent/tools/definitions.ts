@@ -147,6 +147,33 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'multi_write',
+        description:
+          'Write or overwrite SEVERAL whole files in one call, needing only one approval — the write-side counterpart to multi_edit. Strongly prefer this over repeated write_file calls whenever you are creating or replacing more than one file (scaffolding a project, generating a set of components/pages, laying down config files): it is validated as one all-or-nothing batch (if any entry is malformed or outside the sandbox, nothing at all is written) and costs a single round-trip instead of one per file. Parent directories are created automatically. Each entry replaces the whole file, so use multi_edit instead when you only want to change part of an existing file.',
+        parameters: {
+          type: 'object',
+          properties: {
+            files: {
+              type: 'array',
+              description:
+                'The files to write, each an object with its own "path" (no shared/top-level default — every file in a batch write has a different path) and the full "content" to write into it. Order only matters if the same path appears twice, in which case the last entry wins.',
+              items: {
+                type: 'object',
+                properties: {
+                  path: { type: 'string', description: 'Absolute, or relative to the workspace/documents root.' },
+                  content: { type: 'string', description: 'The complete new contents of the file.' }
+                },
+                required: ['path', 'content']
+              }
+            }
+          },
+          required: ['files']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'delete_file',
         description: 'Delete a file.',
         parameters: {
@@ -918,6 +945,7 @@ export function getToolDefinitions(
     'write_file',
     'edit_file',
     'multi_edit',
+    'multi_write',
     'delete_file',
     'read_image',
     'read_docx',
@@ -989,6 +1017,7 @@ export function getToolDefinitions(
       'write_file',
       'edit_file',
       'multi_edit',
+      'multi_write',
       'delete_file',
       'read_image',
       'grep',

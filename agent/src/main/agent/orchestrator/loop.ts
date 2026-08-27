@@ -44,6 +44,8 @@ import {
   multiEditFileTool,
   normalizeEditsArg,
   type MultiEditOp,
+  multiWriteFileTool,
+  normalizeFilesArg,
   deleteFileTool,
   grepTool,
   globTool,
@@ -753,7 +755,7 @@ async function executeTool(
     }
   }
 
-  if (['write_file', 'edit_file', 'multi_edit', 'delete_file', 'write_docx', 'edit_docx', 'run_command'].includes(name)) {
+  if (['write_file', 'edit_file', 'multi_edit', 'multi_write', 'delete_file', 'write_docx', 'edit_docx', 'run_command'].includes(name)) {
     // 'manual': everything needs review. 'command': only run_command needs review — file edits
     // are auto-applied like 'auto' mode. 'auto': nothing needs review.
     const needsApproval = approvalMode === 'manual' || (approvalMode === 'command' && name === 'run_command')
@@ -873,6 +875,8 @@ async function dispatchTool(
       )
     case 'multi_edit':
       return multiEditFileTool(args as unknown as { edits: MultiEditOp[]; path?: string }, fileRoot)
+    case 'multi_write':
+      return multiWriteFileTool(args as { files?: unknown; path?: unknown; content?: unknown }, fileRoot)
     case 'delete_file':
       return deleteFileTool(args as { path: string }, fileRoot)
     case 'read_docx':
@@ -1240,6 +1244,11 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       const edits = normalized.ok ? (normalized.edits as Array<{ path?: unknown }>) : []
       const paths = [...new Set(edits.map((e) => (typeof e.path === 'string' ? e.path : '')).filter(Boolean))]
       return paths.length > 1 ? `Editing ${paths.length} files` : `Editing ${paths[0] ?? 'files'}`
+    }
+    case 'multi_write': {
+      const normalized = normalizeFilesArg(args.files, { path: args.path, content: args.content })
+      const paths = normalized.ok ? [...new Set(normalized.files.map((f) => f.path))] : []
+      return paths.length > 1 ? `Writing ${paths.length} files` : `Writing ${paths[0] ?? 'files'}`
     }
     case 'delete_file':
       return `Deleting ${str(args.path) ?? 'file'}`

@@ -179,7 +179,7 @@ custom subagents, global memory (`KLENNY.md` + auto-memory notes), and the agent
 on the host the way you, the logged-in user running Klenny Code, can (not limited to the open
 project). A relative path still resolves against the current workspace as before, and with no
 path at all grep/glob still default to the workspace root. `write_file`/`edit_file`/
-`multi_edit`/`delete_file` are otherwise sandboxed to the currently open workspace (or an
+`multi_edit`/`multi_write`/`delete_file` are otherwise sandboxed to the currently open workspace (or an
 Assistant tab's Documents directory) — mutation doesn't reach outside the project/folder you
 have open — **except** for two always-allowed global directories: `~/.klenny/` (global
 memory/skills/subagents/`SOUL.md`) and Klenny Code's own Electron `userData` directory
@@ -206,8 +206,8 @@ Beyond coding projects, Klenny Code can act as a lightweight personal assistant:
 
 - **Assistant tab** — click "Open Assistant" in the sidebar (between "Check for update" and
   "Change project") to spin up a new chat tab with web search, `list_projects` discovery, memory,
-  Gmail, Discord, scheduler tools, and full file tools (read/write/edit/multi_edit/delete/grep/
-  glob, plus `read_docx`/`write_docx`/`edit_docx` for Word documents specifically and `read_image`
+  Gmail, Discord, scheduler tools, and full file tools (read/write/edit/multi_edit/multi_write/
+  delete/grep/glob, plus `read_docx`/`write_docx`/`edit_docx` for Word documents specifically and `read_image`
   to actually see image files) — but no coding project needed and no
   shell/`run_command`/`codebase_search` access.
   File-tool relative paths and mutation are sandboxed to a **Documents directory**
@@ -311,7 +311,7 @@ sandboxed desktop window (a sticky-note app, a countdown timer, a simple tracker
   runtime.
 - **The agent can read and edit a Pawprint's saved data directly** — ask it to "add an item to my
   todo-list Pawprint" and it locates that instance's state file (via `read_pawprint_source`) and
-  edits the JSON with the same `read_file`/`edit_file`/`write_file`/`multi_edit` tools it already
+  edits the JSON with the same `read_file`/`edit_file`/`write_file`/`multi_edit`/`multi_write` tools it already
   uses everywhere else — no dedicated tool needed. This works even for a Pawprint that isn't
   currently open; the change is simply there the next time you open it. A currently-open window
   notices the change automatically and reloads itself in place (same window, size and position
