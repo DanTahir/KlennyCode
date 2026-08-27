@@ -103,7 +103,8 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   - False positives were treated as the primary design risk: code fences/backtick spans are
     stripped first, same-sentence proximity is required, hedging/future-tense bails out, and
     honest "I tried to write X but it was rejected" narration is exempt (the ledger keeps write
-    entries regardless of status).
+    entries regardless of status). Live testing then found **three more C3 false-positive shapes**
+    that the original design missed — see the C3 precision-gates gotcha below.
 - **Word .docx support**: `read_docx`/`write_docx`/`edit_docx` for structured document edits.
 - **Image viewing**: `read_image` for viewing arbitrary png/jpg/gif/webp files inline.
 - **SOUL.md personality**: user-editable personality (default: playful corgi) layered under
@@ -215,6 +216,32 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   justification plus the human-inspectable trail it leaves, not a verification mechanism. Don't
   build anything downstream that treats a present `evidence` string as proof; treat it the same
   way you'd treat any other unverified model claim.
+- **C3 (artifact existence) needs three precision gates, every one added after a live false
+  positive**: C3's premise is "this message claims *it* brought a file into being", and each gate
+  below exists because a *truthful* message got hard-flagged in real use (the guard fired, injected
+  an audit note, and forced a correction turn — the enforcement machinery was right, the check's
+  precision was not).
+  1. **Authorship.** A creation verb alone is not a claim of authorship.
+     `AUTHORSHIP_CUE_RE`/`ELIDED_AUTHORSHIP_RE` require a first-person subject ("I created X") or
+     an elided-subject clause opener ("Created X", "- Wrote X"), and `NON_AUTHORSHIP_RE` bails the
+     sentence out on passive/attributive/metadata framing ("was generated", "created by esbuild",
+     `settings.json (written 14:22)`, "mtime"/"last modified"). The trigger was prose reporting a
+     file's **mtime** — someone else's past write, asserting nothing about this message.
+  2. **Multi-root resolution.** `DetectorInput.extraRoots` (fed `[userDataDir(), globalKlennyDir()]`
+     by `loop.ts`) means a bare/relative path is only flagged when missing under *every* plausible
+     root. The agent constantly and correctly discusses its own `settings.json`, `SOUL.md` and
+     memory notes, which live outside the workspace entirely; resolving those against the workspace
+     alone produced a hard finding for a file that genuinely existed.
+  3. **Numeric tokens.** `PATH_TOKEN_RE`'s extension class is `[A-Za-z0-9]{1,8}` — digits allowed —
+     so `$78.70` parses as a file named `78.70` with extension `70`. `looksLikeRealPath()` requires
+     an alphabetic character in the token *and* (when present) in its extension, rejecting money
+     amounts, version strings (`5.1.2`), sub-second durations (`1.29`) and percentages while still
+     checking real digit-bearing extensions like `archive.7z`.
+
+  Do not "simplify" any of these back into the bare `CREATION_CUE_RE` test — each has a named
+  regression test in `fabrication-detector.test.ts`, including positive controls
+  (`warehouse-allocator/manage.py`, `archive.7z`) that must keep firing so a future fix can't pass
+  by simply blinding C3.
 - **Fuzzy edit matching** (`edit-match.ts`): handles CRLF, escaped chars, em-dash/hyphen variants
   — but line-number prefixes from `read_file` output are NOT in real file bytes, never include
   them in `old_string`.

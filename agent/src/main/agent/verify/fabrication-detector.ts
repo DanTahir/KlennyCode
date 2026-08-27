@@ -262,10 +262,35 @@ const ELIDED_AUTHORSHIP_RE =
 const NON_AUTHORSHIP_RE =
   /\b(?:was|were|is|are|be|been|being|got|gets)\s+(?:just\s+|already\s+|previously\s+|recently\s+|last\s+)?(?:created|written|added|generated|scaffolded|saved|produced|modified)\b|\b(?:created|written|added|generated|saved|modified)\s+(?:by|on|at)\s|\b(?:created|written|modified|saved|added)\s+\d|\b(?:mtime|ctime|last\s+modified|last\s+written|timestamp)\b/i
 // Requires a real-looking extension (1-8 chars) or a trailing slash for directories.
+// NOTE: the extension class allows digits, so this alone also matches decimals like `78.70` and
+// `5.1.2`. looksLikeRealPath() below is what rejects those — see its comment.
 const PATH_TOKEN_RE = /(?:[A-Za-z]:[\\/]|\.{0,2}[\\/])?(?:[\w.@-]+[\\/])*[\w.@-]+(?:\.[A-Za-z0-9]{1,8}|[\\/])(?=$|[\s,;:!?)"'\]]|\.\s)/g
 const SYSTEM_PATH_RE = /^(?:[\\/](?:etc|usr|bin|sbin|proc|sys|dev|var|opt|tmp|lib)\b|[A-Za-z]:[\\/](?:windows|program files))/i
 const URL_RE = /^(?:https?:|ftp:|mailto:|data:)/i
 const MAX_PATHS_CHECKED = 12
+
+const HAS_LETTER_RE = /[A-Za-z]/
+
+/**
+ * Rejects number-shaped tokens that PATH_TOKEN_RE matches only incidentally.
+ *
+ * Real false positive this fixes: a currency amount in a results table (`$78.70 saved`) was read as
+ * a file named `78.70` with extension `70`, producing a hard finding against a figure that came
+ * straight out of a session file's `cacheSavingsUsd`. Version strings (`5.1.2`), sub-second
+ * durations (`1.29`) and percentages have the same shape.
+ *
+ * Rule: a filename must carry at least one letter, and — for an extension-bearing token — the
+ * extension itself must too. No real extension is all-digits, while every all-digit "extension" is
+ * a decimal fraction. Slash-bearing tokens only need a letter somewhere (`123/456/` is conceivable
+ * but vanishingly rare, and under-flagging is the correct failure mode for a hard-tier check).
+ */
+function looksLikeRealPath(claimed: string): boolean {
+  if (!HAS_LETTER_RE.test(claimed)) return false
+  if (/[\\/]/.test(claimed)) return true
+  const lastDot = claimed.lastIndexOf('.')
+  if (lastDot < 0) return true
+  return HAS_LETTER_RE.test(claimed.slice(lastDot + 1))
+}
 
 function normalizePath(p: string): string {
   return p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase()
@@ -311,6 +336,8 @@ function checkArtifacts(input: DetectorInput, stripped: string, out: Fabrication
       if (URL_RE.test(claimed) || SYSTEM_PATH_RE.test(claimed)) continue
       // Bare sentence-ending words like "done." can slip through the extension rule.
       if (!/[\\/]/.test(claimed) && !/\.[A-Za-z0-9]{1,8}$/.test(claimed)) continue
+      // Money amounts, version strings, durations, percentages — numbers, not files.
+      if (!looksLikeRealPath(claimed)) continue
       if (wasWriteAttempted(claimed, input.sessionWritePaths)) continue
 
       checked++

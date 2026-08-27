@@ -284,6 +284,38 @@ describe('false positives (must NOT be flagged)', () => {
     expect(codes(r.hard)).not.toContain('C3')
   })
 
+  // Regression: a currency amount in a results table produced a live hard finding, because the
+  // extension class allows digits so "78.70" parsed as a file with extension "70".
+  test('money amounts are not artifact paths', () => {
+    const r = detectFabrication(
+      input({ text: 'I saved $78.70 in cache costs across the whole session.' })
+    )
+    expect(codes(r.hard)).not.toContain('C3')
+  })
+
+  test('a money amount in a results table row is not an artifact path', () => {
+    const r = detectFabrication(
+      input({ text: '| Session totals | 17,851,087 / 19,822,075 = 90.1% cached, $78.70 saved |' })
+    )
+    expect(codes(r.hard)).not.toContain('C3')
+  })
+
+  test('version strings are not artifact paths', () => {
+    const r = detectFabrication(input({ text: 'I generated the lockfile and pinned 5.1.2 today.' }))
+    expect(codes(r.hard)).not.toContain('C3')
+  })
+
+  test('sub-second durations are not artifact paths', () => {
+    const r = detectFabrication(input({ text: 'I created the bundle in 1.29 seconds flat.' }))
+    expect(codes(r.hard)).not.toContain('C3')
+  })
+
+  // Guards against over-blinding the numeric fix: a digit-bearing extension is still a real file.
+  test('a filename with a digit-bearing extension is still checked', () => {
+    const r = detectFabrication(input({ text: 'I created archive.7z for the release bundle.' }))
+    expect(codes(r.hard)).toContain('C3')
+  })
+
   test('URLs are not artifact paths', () => {
     const r = detectFabrication(
       input({ text: 'I wrote the docs and published them to https://example.com/guide.html today.' })
