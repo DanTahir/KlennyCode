@@ -34,8 +34,9 @@ the same gotchas every run.
    ordering, font hosting, viewport quirks). If it doesn't exist yet, note that
    and continue.
 2. `list_memory({ scope: 'project' })`, then read any note whose title mentions
-   replicas, scraping, this skill, or the target domain. A previous run against
-   the same site is the single most valuable thing you can find.
+   replicas, scraping, this skill, or the target domain. A previous run's
+   **note** on the same site is the single most valuable thing you can find —
+   the note, never that run's code (see "Never build from another run" below).
 
 Apply what you learn — if the global note says "always check the Rive renderer
 build", check it *this* run, don't rediscover it.
@@ -87,6 +88,45 @@ Then fill in the placeholders (use `edit_file`, never shell substitution):
 Never edit the template in-place for a specific site. If you discover a genuine
 **general** improvement, fix the template too — but do it as a separate,
 deliberate edit, and say so in your summary.
+
+The pristine template and the folder you are creating are the **only** code you
+may read this run — see the next section.
+
+---
+
+## Never build from another run in this repo (hard requirement)
+
+The workspace may already contain replicas from earlier runs — `examplecom-1`,
+`examplecom-2`, a half-finished attempt, or a different site entirely. Treat
+every one of them as off-limits for the whole run:
+
+- **Do not read** another replica folder's source — no `read_file`, `grep`,
+  `glob`, `codebase_search`, or shell `cat` into `<other-slug>/**`. The only
+  code you may open is the pristine
+  `~/.klenny/skills/website-replica/template/` and the folder you are building
+  right now.
+- **Do not copy** files, components, CSS, `replica.config.json` values, effect
+  modules, or `ClientRuntime.tsx` wiring out of another run.
+- **Do not** diff your output against another run, or use one to "check" your
+  work.
+
+Exactly two inputs are legitimate: **memory notes** (Step 0) and **this run's
+own capture of the live site** (`scrape/**` and the `app/generated/**` your own
+pipeline produced). Every line you write must be justified by what this run
+actually observed on the target page.
+
+Why this is a hard rule and not a preference: a neighbouring replica is a
+plausible-looking but unverified answer to a *different* question. Copying from
+it silently imports that run's assumptions — its fade-in active class, its Rive
+renderer build, its stripped-class list, its port, its section names — none of
+which were derived from *this* URL. That converts a capture-driven replica into
+a guess that merely compiles, and the resulting defects are precisely the kind
+that clear every gate and surface only as "it doesn't quite look right".
+Knowledge is supposed to travel between runs through memory notes, which are
+written deliberately and reviewed; code is not.
+
+If you find yourself wanting a neighbour's file, the correct move is to re-read
+this run's `scrape/analysis/**` and look at the live page again.
 
 ---
 
@@ -233,6 +273,10 @@ Before writing your final message:
 
 If you improved the vendored template, record that in the global note too.
 
+Write both notes as if the folder you just built will be **unreadable** to your
+successor — because under the rule above, it will be. Anything a future run
+needs must be stated *in the note*, not left to be inferred from the code.
+
 ---
 
 ## Step 9 — Final message requirements
@@ -253,6 +297,9 @@ The last message must include, explicitly:
 
 ## Hard rules
 
+- **Never** read or copy code from another replica folder in this workspace.
+  Memory notes and this run's own capture are the only legitimate inputs (see
+  "Never build from another run in this repo").
 - **Never** hardcode site-specific values into `scripts/**`. They stay
   URL-agnostic; site knowledge lives in `replica.config.json`.
 - **Never** hand-edit `app/generated/**` — codegen overwrites it. Fix the config

@@ -96,6 +96,32 @@ describe.skipIf(!hasManifest)('generated manifest', () => {
       expect(existsSync(join(generatedDir, sheet))).toBe(true);
     }
   });
+
+  it('emitted each body stylesheet exactly once', () => {
+    // Regression: body <style> blocks are seen by two independent passes —
+    // capture (document.body.querySelectorAll) and codegen's JSX walker, which
+    // records every <style> it drops. Concatenating both without a union
+    // emitted every body sheet twice. That is cascade-invisible (identical
+    // rules resolve identically) which is exactly why it survived the gate,
+    // but it doubled the sheet count and desynced the @import list from the
+    // real document. Compared by content, not filename: filenames embed the
+    // cascade index, so duplicates are unique by construction.
+    const bodySheets = manifest!.stylesheets.filter((f) => /-body\d+\.css$/.test(f));
+    const byContent = new Map<string, string[]>();
+    for (const sheet of bodySheets) {
+      // Strip the generated header comment — it embeds the index, so identical
+      // CSS would otherwise compare as distinct.
+      const css = readFileSync(join(generatedDir, sheet), 'utf8')
+        .replace(/^\/\*[\s\S]*?\*\/\n?/, '')
+        .trim();
+      byContent.set(css, [...(byContent.get(css) ?? []), sheet]);
+    }
+    const dupes = [...byContent.values()].filter((files) => files.length > 1);
+    expect(
+      dupes,
+      `duplicate body stylesheets: ${dupes.map((f) => f.join(' == ')).join('; ')}`,
+    ).toEqual([]);
+  });
 });
 
 describe.skipIf(!hasManifest)('runtime-artifact sanitizer', () => {

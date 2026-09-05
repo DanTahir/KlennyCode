@@ -779,7 +779,24 @@ async function emitStyles(headInfo) {
   }
 
   // Body-level <style> blocks cascade after everything in <head>.
-  const bodyStyles = [...(headInfo.bodyStyles ?? []), ...inlineStylesFromBody];
+  //
+  // Two independent passes observe the same <style> nodes: capture records them
+  // (headInfo.bodyStyles, via document.body.querySelectorAll) and the JSX walker
+  // collects every one it drops (inlineStylesFromBody). Blindly concatenating
+  // both emitted each body stylesheet twice — invisible in the rendered result,
+  // since duplicate identical rules cascade to the same outcome, but it doubled
+  // the sheet count, inflated the manifest, and made the @import list disagree
+  // with the real document. Union them instead, deduped by exact CSS text and
+  // preserving document order (capture's order wins).
+  const bodyStyleSources = [...(headInfo.bodyStyles ?? []), ...inlineStylesFromBody];
+  const seenBodyStyles = new Set();
+  const bodyStyles = [];
+  for (const raw of bodyStyleSources) {
+    const key = (raw ?? '').trim();
+    if (!key || seenBodyStyles.has(key)) continue;
+    seenBodyStyles.add(key);
+    bodyStyles.push(raw);
+  }
   for (const [i, raw] of bodyStyles.entries()) {
     const css = rewriteCssUrls(rewriteUrlsInText(raw ?? ''), cfg.targetUrl);
     if (!css.trim()) continue;

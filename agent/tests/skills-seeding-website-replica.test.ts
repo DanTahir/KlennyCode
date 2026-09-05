@@ -291,3 +291,39 @@ describe('website-replica template manifest matches the vendored files on disk',
     }
   })
 })
+
+/** The CSS-duplication regression lives in the vendored `scripts/codegen.mjs`, which this suite
+ *  cannot execute: it's an inert `.txt` asset targeting a generated Next.js project, not code that
+ *  runs here. The template ships its own vitest assertion against real generated output, but that
+ *  only fires inside a replica *after* a pipeline run — far too late to catch a bad re-vendor, and
+ *  never in CI for this repo. Re-vendoring from a stale copy (the template was originally copied
+ *  out of a run's directory) is precisely how the bug would come back, so pin its absence in the
+ *  shipped bytes. */
+describe('website-replica template preserves the body-stylesheet dedupe fix', () => {
+  test('codegen unions the two body-<style> sources instead of concatenating them', async () => {
+    const { WEBSITE_REPLICA_TEMPLATE } = await import('../src/main/agent/skills/websiteReplicaTemplate')
+    const codegen = WEBSITE_REPLICA_TEMPLATE['template/scripts/codegen.mjs']
+    expect(codegen).toBeTruthy()
+
+    // The bug: capture's `headInfo.bodyStyles` and the JSX walker's `inlineStylesFromBody` observe
+    // the same <style> nodes, so spreading both straight into the emit list wrote every body
+    // stylesheet twice.
+    expect(codegen).not.toMatch(
+      /const bodyStyles = \[\s*\.\.\.\(headInfo\.bodyStyles \?\? \[\]\),\s*\.\.\.inlineStylesFromBody,?\s*\]/
+    )
+
+    // The fix: gather both, then dedupe by exact CSS text, preserving document order.
+    expect(codegen).toContain('const bodyStyleSources =')
+    expect(codegen).toContain('seenBodyStyles')
+    // Both sources must still be consulted — dropping one would "fix" the duplication by losing
+    // stylesheets that only the other pass sees.
+    expect(codegen).toContain('headInfo.bodyStyles')
+    expect(codegen).toContain('inlineStylesFromBody')
+  })
+
+  test('the shipped template test suite asserts body sheets are emitted exactly once', async () => {
+    const { WEBSITE_REPLICA_TEMPLATE } = await import('../src/main/agent/skills/websiteReplicaTemplate')
+    const suite = WEBSITE_REPLICA_TEMPLATE['template/tests/generated.test.ts']
+    expect(suite).toContain('emitted each body stylesheet exactly once')
+  })
+})
