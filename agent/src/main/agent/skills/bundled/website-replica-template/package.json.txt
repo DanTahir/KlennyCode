@@ -1,0 +1,40 @@
+{
+  "name": "__SLUG__",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pixel-faithful Next.js replica of __TARGET_URL__",
+  "scripts": {
+    "capture": "node scripts/capture.mjs",
+    "scrape": "node scripts/scrape.mjs",
+    "analyze": "node scripts/analyze.mjs",
+    "codegen": "node scripts/codegen.mjs",
+    "extras": "node scripts/fetch-extras.mjs",
+    "pipeline": "npm run capture && npm run scrape && npm run extras && npm run analyze && npm run codegen",
+    "dev": "node scripts/dev.mjs",
+    "build": "next build",
+    "start": "node scripts/dev.mjs --start",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "viewports": "node scripts/viewport-check.mjs",
+    "viewports:live": "node scripts/viewport-check.mjs --live --shots --json",
+    "compare": "node scripts/compare-live.mjs",
+    "verify": "npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "next": "15.5.4",
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "jsdom": "^25.0.1",
+    "parse5": "^7.2.1",
+    "playwright-core": "^1.49.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

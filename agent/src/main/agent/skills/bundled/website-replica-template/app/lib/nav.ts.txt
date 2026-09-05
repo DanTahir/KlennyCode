@@ -1,0 +1,180 @@
+/**
+ * Navigation behaviours: mobile burger toggle, scroll state, dropdowns,
+ * smooth in-page anchors.
+ */
+import { $all, rafThrottle, type Teardown } from './runtime';
+
+export interface NavToggleOptions {
+  buttonSelector?: string;
+  menuSelector?: string;
+  /** Class applied to the menu when open (usually already styled by the CSS). */
+  openClass?: string;
+  /** Class applied to <body>, typically to lock scrolling. */
+  bodyOpenClass?: string;
+}
+
+/** Mobile menu open/close, with Escape-to-close and outside-click-to-close. */
+export function createNavToggle(options: NavToggleOptions = {}) {
+  const {
+    buttonSelector = '.w-nav-button, [class*="burger"], [class*="hamburger"], button[aria-label*="enu"]',
+    menuSelector = '.w-nav-menu, [class*="nav-menu"], nav [role="menubar"]',
+    openClass = 'is-open',
+    bodyOpenClass = 'nav-open',
+  } = options;
+
+  return function initNavToggle(root: ParentNode = document): Teardown | void {
+    const button = root.querySelector<HTMLElement>(buttonSelector);
+    const menu = root.querySelector<HTMLElement>(menuSelector);
+    if (!button || !menu) return;
+
+    let open = false;
+
+    const apply = (next: boolean) => {
+      open = next;
+      menu.classList.toggle(openClass, open);
+      button.classList.toggle(openClass, open);
+      button.setAttribute('aria-expanded', String(open));
+      document.body.classList.toggle(bodyOpenClass, open);
+    };
+
+    const onButton = (e: Event) => {
+      e.preventDefault();
+      apply(!open);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && open) apply(false);
+    };
+    const onDocClick = (e: MouseEvent) => {
+      if (!open) return;
+      const t = e.target as Node;
+      if (!menu.contains(t) && !button.contains(t)) apply(false);
+    };
+
+    button.setAttribute('aria-expanded', 'false');
+    button.addEventListener('click', onButton);
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('click', onDocClick);
+
+    return () => {
+      button.removeEventListener('click', onButton);
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('click', onDocClick);
+      document.body.classList.remove(bodyOpenClass);
+    };
+  };
+}
+
+export interface NavScrollOptions {
+  navSelector?: string;
+  /** Class added once the page is scrolled past `offset`. */
+  scrolledClass?: string;
+  offset?: number;
+  /** Also hide the nav when scrolling down, reveal when scrolling up. */
+  hideOnScrollDown?: boolean;
+  hiddenClass?: string;
+}
+
+/** Adds a "scrolled" class to the header, the usual sticky-nav shrink effect. */
+export function createNavScroll(options: NavScrollOptions = {}) {
+  const {
+    navSelector = 'header, .navbar, [class*="nav-bar"], [data-nav]',
+    scrolledClass = 'is-scrolled',
+    offset = 24,
+    hideOnScrollDown = false,
+    hiddenClass = 'is-hidden',
+  } = options;
+
+  return function initNavScroll(root: ParentNode = document): Teardown | void {
+    const nav = root.querySelector<HTMLElement>(navSelector);
+    if (!nav) return;
+
+    let lastY = window.scrollY;
+
+    const onScroll = rafThrottle(() => {
+      const y = window.scrollY;
+      nav.classList.toggle(scrolledClass, y > offset);
+      if (hideOnScrollDown) {
+        const goingDown = y > lastY && y > offset * 4;
+        nav.classList.toggle(hiddenClass, goingDown);
+      }
+      lastY = y;
+    });
+
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  };
+}
+
+/** Hover/click dropdowns (Webflow-style `.w-dropdown` and generic markup). */
+export function createNavDropdown(
+  options: { rootSelector?: string; toggleSelector?: string; listSelector?: string; openClass?: string } = {},
+) {
+  const {
+    rootSelector = '.w-dropdown, [data-dropdown]',
+    toggleSelector = '.w-dropdown-toggle, [data-dropdown-toggle]',
+    listSelector = '.w-dropdown-list, [data-dropdown-list]',
+    openClass = 'w--open',
+  } = options;
+
+  return function initNavDropdown(root: ParentNode = document): Teardown | void {
+    const roots = $all(rootSelector, root);
+    if (!roots.length) return;
+
+    const cleanups: Array<() => void> = [];
+
+    for (const dropdown of roots) {
+      const toggle = dropdown.querySelector<HTMLElement>(toggleSelector);
+      const list = dropdown.querySelector<HTMLElement>(listSelector);
+      if (!toggle || !list) continue;
+
+      const set = (open: boolean) => {
+        toggle.classList.toggle(openClass, open);
+        list.classList.toggle(openClass, open);
+        toggle.setAttribute('aria-expanded', String(open));
+      };
+
+      const onEnter = () => set(true);
+      const onLeave = () => set(false);
+      const onClick = (e: Event) => {
+        e.preventDefault();
+        set(!toggle.classList.contains(openClass));
+      };
+
+      dropdown.addEventListener('mouseenter', onEnter);
+      dropdown.addEventListener('mouseleave', onLeave);
+      toggle.addEventListener('click', onClick);
+
+      cleanups.push(() => {
+        dropdown.removeEventListener('mouseenter', onEnter);
+        dropdown.removeEventListener('mouseleave', onLeave);
+        toggle.removeEventListener('click', onClick);
+      });
+    }
+
+    return () => cleanups.forEach((c) => c());
+  };
+}
+
+/** Smooth scrolling for same-page #anchor links. */
+export function initSmoothAnchors(root: ParentNode = document): Teardown | void {
+  const links = $all<HTMLAnchorElement>('a[href^="#"]:not([href="#"])', root);
+  if (!links.length) return;
+
+  const onClick = (e: Event) => {
+    const a = e.currentTarget as HTMLAnchorElement;
+    const id = a.getAttribute('href')?.slice(1);
+    if (!id) return;
+    const target = document.getElementById(id);
+    if (!target) return;
+    e.preventDefault();
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  for (const a of links) a.addEventListener('click', onClick);
+  return () => links.forEach((a) => a.removeEventListener('click', onClick));
+}
+
+export const initNavToggle = createNavToggle();
+export const initNavScroll = createNavScroll();
+export const initNavDropdown = createNavDropdown();

@@ -1,0 +1,18 @@
+import type { Metadata, Viewport } from 'next';
+
+/**
+ * PLACEHOLDER — overwritten by `npm run codegen`.
+ *
+ * The generated version lifts title/description/OG/Twitter/icons verbatim from
+ * the captured <head>, with every image rewritten to its self-hosted path.
+ * It exists pre-codegen only so the template type-checks and builds clean.
+ */
+export const metadata: Metadata = {
+  title: 'Replica (not yet generated)',
+  description: 'Run `npm run pipeline` to generate this page from the captured site.',
+};
+
+export const viewport: Viewport = {
+  width: 'device-width',
+  initialScale: 1,
+};

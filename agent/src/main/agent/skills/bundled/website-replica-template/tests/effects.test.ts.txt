@@ -1,0 +1,314 @@
+/**
+ * Unit tests for the effect modules.
+ *
+ * These are the replica's real behavioural guarantees: the captured markup is
+ * inert, so if an effect stops re-applying its class the page silently ships
+ * frozen mid-animation (usually invisible). Each test asserts the effect both
+ * applies its state AND cleans up.
+ */
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { observedElementCount, resetObservers, triggerIntersection } from './setup';
+import { createFadeIn } from '../app/lib/fadeIn';
+import { createNavToggle, createNavScroll, initSmoothAnchors } from '../app/lib/nav';
+import {
+  createAccordion,
+  createCounters,
+  createLazyImages,
+  createMarquee,
+  createTabs,
+} from '../app/lib/reveal';
+import { createForms } from '../app/lib/forms';
+import { initEffects } from '../app/lib/runtime';
+
+beforeEach(() => {
+  document.body.innerHTML = '';
+  resetObservers();
+});
+
+afterEach(() => {
+  document.body.className = '';
+});
+
+describe('fadeIn', () => {
+  it('adds the active class only once the element intersects', () => {
+    document.body.innerHTML = '<div class="fade-in" id="a">hi</div>';
+    const el = document.getElementById('a')!;
+
+    const teardown = createFadeIn()(document);
+
+    // Pre-intersection it must stay in its captured (hidden) state.
+    expect(el.classList.contains('faded-in')).toBe(false);
+
+    triggerIntersection(el);
+    expect(el.classList.contains('faded-in')).toBe(true);
+
+    if (typeof teardown === 'function') teardown();
+  });
+
+  it('honours a custom active class', () => {
+    document.body.innerHTML = '<div class="fade-in" id="a"></div>';
+    const el = document.getElementById('a')!;
+    createFadeIn({ activeClass: 'is-visible' })(document);
+    triggerIntersection(el);
+    expect(el.classList.contains('is-visible')).toBe(true);
+    expect(el.classList.contains('faded-in')).toBe(false);
+  });
+
+  it('stops observing after teardown', () => {
+    document.body.innerHTML = '<div class="fade-in"></div><div class="fade-in"></div>';
+    const teardown = createFadeIn()(document);
+    expect(observedElementCount()).toBe(2);
+    if (typeof teardown === 'function') teardown();
+    expect(observedElementCount()).toBe(0);
+  });
+
+  it('no-ops without targets', () => {
+    expect(() => createFadeIn()(document)).not.toThrow();
+  });
+});
+
+describe('navToggle', () => {
+  const markup = `
+    <nav>
+      <div class="w-nav-button" id="burger"></div>
+      <div class="w-nav-menu" id="menu"></div>
+    </nav>`;
+
+  it('toggles open state and aria-expanded', () => {
+    document.body.innerHTML = markup;
+    const burger = document.getElementById('burger')!;
+    const menu = document.getElementById('menu')!;
+
+    createNavToggle()(document);
+    expect(burger.getAttribute('aria-expanded')).toBe('false');
+
+    burger.click();
+    expect(menu.classList.contains('is-open')).toBe(true);
+    expect(burger.getAttribute('aria-expanded')).toBe('true');
+    expect(document.body.classList.contains('nav-open')).toBe(true);
+
+    burger.click();
+    expect(menu.classList.contains('is-open')).toBe(false);
+    expect(document.body.classList.contains('nav-open')).toBe(false);
+  });
+
+  it('closes on Escape', () => {
+    document.body.innerHTML = markup;
+    const burger = document.getElementById('burger')!;
+    const menu = document.getElementById('menu')!;
+    createNavToggle()(document);
+
+    burger.click();
+    expect(menu.classList.contains('is-open')).toBe(true);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(menu.classList.contains('is-open')).toBe(false);
+  });
+
+  it('removes the body class on teardown', () => {
+    document.body.innerHTML = markup;
+    const burger = document.getElementById('burger')!;
+    const teardown = createNavToggle()(document);
+    burger.click();
+    expect(document.body.classList.contains('nav-open')).toBe(true);
+    if (typeof teardown === 'function') teardown();
+    expect(document.body.classList.contains('nav-open')).toBe(false);
+  });
+});
+
+describe('navScroll', () => {
+  it('applies the scrolled class past the offset', () => {
+    document.body.innerHTML = '<header id="h"></header>';
+    const header = document.getElementById('h')!;
+    createNavScroll({ offset: 10 })(document);
+
+    expect(header.classList.contains('is-scrolled')).toBe(false);
+
+    Object.defineProperty(window, 'scrollY', { value: 50, configurable: true });
+    window.dispatchEvent(new Event('scroll'));
+    expect(header.classList.contains('is-scrolled')).toBe(true);
+
+    Object.defineProperty(window, 'scrollY', { value: 0, configurable: true });
+    window.dispatchEvent(new Event('scroll'));
+    expect(header.classList.contains('is-scrolled')).toBe(false);
+  });
+});
+
+describe('tabs', () => {
+  it('activates the clicked tab and its pane', () => {
+    document.body.innerHTML = `
+      <div class="w-tab-link" id="t0"></div>
+      <div class="w-tab-link" id="t1"></div>
+      <div class="w-tab-pane" id="p0"></div>
+      <div class="w-tab-pane" id="p1"></div>`;
+    createTabs()(document);
+
+    // Falls back to the first tab when the capture had none marked current.
+    expect(document.getElementById('t0')!.classList.contains('w--current')).toBe(true);
+
+    document.getElementById('t1')!.click();
+    expect(document.getElementById('t1')!.classList.contains('w--current')).toBe(true);
+    expect(document.getElementById('p1')!.classList.contains('w--tab-active')).toBe(true);
+    expect(document.getElementById('t0')!.classList.contains('w--current')).toBe(false);
+  });
+
+  it('does not hijack a single-tab page', () => {
+    document.body.innerHTML = '<div class="w-tab-link"></div><div class="w-tab-pane"></div>';
+    expect(createTabs()(document)).toBeUndefined();
+  });
+});
+
+describe('accordion', () => {
+  it('opens one item at a time', () => {
+    document.body.innerHTML = `
+      <div class="faq-item" id="i0"><button></button><div class="accordion-content"></div></div>
+      <div class="faq-item" id="i1"><button></button><div class="accordion-content"></div></div>`;
+    createAccordion()(document);
+
+    const i0 = document.getElementById('i0')!;
+    const i1 = document.getElementById('i1')!;
+
+    i0.querySelector('button')!.click();
+    expect(i0.classList.contains('is-open')).toBe(true);
+
+    i1.querySelector('button')!.click();
+    expect(i1.classList.contains('is-open')).toBe(true);
+    expect(i0.classList.contains('is-open')).toBe(false);
+  });
+});
+
+describe('counters', () => {
+  it('counts to the target value on intersection', () => {
+    document.body.innerHTML = '<span data-count-to="1200" id="c">0</span>';
+    const el = document.getElementById('c')!;
+    createCounters({ durationMs: 0 })(document);
+
+    triggerIntersection(el);
+    // rAF is synchronous in setup.ts, so the animation completes immediately.
+    expect(el.textContent).toBe((1200).toLocaleString());
+  });
+
+  it('strips formatting when reading the target from text', () => {
+    document.body.innerHTML = '<span data-counter id="c">1,500+</span>';
+    const el = document.getElementById('c')!;
+    createCounters({ durationMs: 0, attribute: 'data-nonexistent' })(document);
+    triggerIntersection(el);
+    expect(el.textContent).toBe((1500).toLocaleString());
+  });
+});
+
+describe('marquee', () => {
+  it('clones children once and restores on teardown', () => {
+    document.body.innerHTML = `
+      <div class="marquee"><div class="track"><span>a</span><span>b</span></div></div>`;
+    const track = document.querySelector('.track')!;
+
+    const teardown = createMarquee()(document);
+    expect(track.children.length).toBe(4);
+
+    // Idempotency: a second init (React strict mode) must not clone again.
+    createMarquee()(document);
+    expect(track.children.length).toBe(4);
+
+    if (typeof teardown === 'function') teardown();
+    expect(track.children.length).toBe(2);
+  });
+
+  it('marks clones aria-hidden so screen readers do not repeat them', () => {
+    document.body.innerHTML =
+      '<div class="marquee"><div class="track"><span>a</span></div></div>';
+    createMarquee()(document);
+    const clone = document.querySelector('[data-marquee-clone="true"]')!;
+    expect(clone.getAttribute('aria-hidden')).toBe('true');
+  });
+});
+
+describe('lazyImages', () => {
+  it('promotes data-src to src on intersection', () => {
+    document.body.innerHTML = '<img id="i" data-src="/assets/img/hero.png" alt="" />';
+    const img = document.getElementById('i') as HTMLImageElement;
+    createLazyImages()(document);
+
+    triggerIntersection(img);
+    expect(img.getAttribute('src')).toBe('/assets/img/hero.png');
+    expect(img.classList.contains('is-loaded')).toBe(true);
+  });
+});
+
+describe('forms', () => {
+  it('intercepts submit, never navigating, and shows the done block', async () => {
+    document.body.innerHTML = `
+      <div>
+        <form id="f"><input name="email" value="a@b.co" /><button type="submit">Go</button></form>
+        <div class="w-form-done" id="done" style="display:none"></div>
+      </div>`;
+    const form = document.getElementById('f') as HTMLFormElement;
+    const done = document.getElementById('done')!;
+
+    let captured: Record<string, string> | null = null;
+    createForms({ latencyMs: 0, onSubmit: (data) => (captured = data) })(document);
+
+    const event = new Event('submit', { cancelable: true, bubbles: true });
+    form.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 5));
+    expect(captured).toEqual({ email: 'a@b.co' });
+    expect(done.style.display).toBe('block');
+    expect(form.style.display).toBe('none');
+  });
+});
+
+describe('smoothAnchors', () => {
+  it('prevents default only for anchors with a real target', () => {
+    document.body.innerHTML = `
+      <a href="#sec" id="good">to section</a>
+      <a href="#missing" id="bad">broken</a>
+      <div id="sec"></div>`;
+    // jsdom lacks scrollIntoView.
+    Element.prototype.scrollIntoView = () => {};
+    initSmoothAnchors(document);
+
+    const good = new MouseEvent('click', { cancelable: true, bubbles: true });
+    document.getElementById('good')!.dispatchEvent(good);
+    expect(good.defaultPrevented).toBe(true);
+
+    const bad = new MouseEvent('click', { cancelable: true, bubbles: true });
+    document.getElementById('bad')!.dispatchEvent(bad);
+    expect(bad.defaultPrevented).toBe(false);
+  });
+});
+
+describe('initEffects', () => {
+  it('isolates a throwing effect and still runs the rest', () => {
+    let ranAfter = false;
+    const teardown = initEffects([
+      {
+        name: 'boom',
+        init: () => {
+          throw new Error('effect exploded');
+        },
+      },
+      {
+        name: 'after',
+        init: () => {
+          ranAfter = true;
+        },
+      },
+    ]);
+    expect(ranAfter).toBe(true);
+    expect(() => teardown()).not.toThrow();
+  });
+
+  it('swallows teardown errors so unmount never breaks', () => {
+    const teardown = initEffects([
+      {
+        name: 'bad-teardown',
+        init: () => () => {
+          throw new Error('teardown exploded');
+        },
+      },
+    ]);
+    expect(() => teardown()).not.toThrow();
+  });
+});

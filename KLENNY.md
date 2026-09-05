@@ -32,7 +32,12 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   - `src/main/agent/plan/manager.ts` — Plan/agent mode system prompt builders + hardcoded
     personality guardrails (`PERSONA_GUARDRAILS_PROMPT`) and the truthful-narration guardrail
   - `src/main/agent/skills/`, `src/main/agent/subagents/` — Cursor-style `SKILL.md` skills and
-    built-in/custom subagent types (agent can author both itself via `write_skill`/`write_subagent`)
+    built-in/custom subagent types (agent can author both itself via `write_skill`/`write_subagent`);
+    `skills/bundled/` holds the default skills that ship with every install (inlined via `?raw`),
+    `skills/bundledSkills.ts` is their registry, and `skills/websiteReplicaTemplate.ts` maps the
+    34-file `website-replica` template
+  - `src/main/agent/frontmatter.ts` — shared safe YAML frontmatter parse/stringify used by *both*
+    the skills and subagents managers (see the escaping gotcha below)
   - `src/main/agent/codeindex/` — optional semantic codebase search (embeddings + vectra/Pinecone)
   - `src/main/workspace.ts` — global workspace singleton (`getWorkspace()`/`setWorkspace()`)
   - `src/main/shells.ts` — per-platform shell detection for run_command/terminal (shell picker)
@@ -75,6 +80,17 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   the workspace (embeddings + local Vectra or Pinecone), incremental via a manifest.
 - **Skill/subagent authoring**: the agent can write and read its own Cursor-style `SKILL.md`
   skills and custom subagent types (`write_skill`/`read_skill`, `write_subagent`/`read_subagent`).
+- **Bundled default skills**: `browser-automation`, `pawprint-authoring`, and `website-replica`
+  ship with every install — `.md` files under `skills/bundled/`, inlined at build time via Vite's
+  `?raw`, registered in `BUNDLED_SKILLS` as `{content, version, legacyVariants, assets?}` and
+  seeded by `seedBundledSkills()` into `~/.klenny/skills/<name>/`, with per-skill `{version, hash}`
+  tracked in `skills-seed-state.json` (re-written on a version bump only if the user hasn't edited
+  it; a skill the user *deletes* stays deleted). A bundled skill may also carry **multi-file
+  assets** (dest path → content): `website-replica` ships a 34-file Next.js + capture-pipeline
+  template that `seedSkillAssets()` writes with *per-file* edit detection
+  (`SeedRecord.assetHashes`), so a user edit to one template file is preserved while every other
+  file still upgrades. Unlike whole-skill deletion, a deleted *asset* is rewritten on
+  upgrade/repair — template internals aren't discrete user-facing units.
 - **Checkpoint-based long tasks**: configurable auto-pause every N steps (`turnCheckpointSteps`)
   with a one-click Continue, preventing runaway turns while avoiding premature stopping.
 - **Generalized live-progress checklists** (`create_checklist`/`update_checklist`): not just for
@@ -171,6 +187,10 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   `buildFindingsWarningBlock()`; wired in `loop.ts` via the `runAudit()`/`applyAuditEnforcement()`
   closures at three exit points (truncation-failed, no-tool-calls, post-tool-results). Ledger
   itself: `orchestrator/ledger.ts`. UI: `MessageBubble.tsx`'s `VerificationBadge`.
+- Bundled skills + seeding: `skills/bundledSkills.ts` (registry) → `skills/manager.ts`'s
+  `seedBundledSkills()`/`seedSkillAssets()`; frontmatter read/write for skills *and* subagent types
+  both go through `agent/frontmatter.ts` (`parseFrontmatterSafe`/`stringifyFrontmatter`). Tests:
+  `skills-seeding-*.test.ts`, `frontmatter.test.ts`.
 - IPC surface (main ↔ renderer): `src/main/ipc.ts` and `shared/ipcChannels.ts` (channel names)
 - Settings persistence: `src/main/settings.ts` and the `Settings` panel in renderer (category
   sidebar with 8 sections + scrollspy/deep-linking).
@@ -267,6 +287,32 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   ledger (`orchestrator/ledger.ts`) has to mirror just enough of this tolerance in
   `collectPathsFromArgs` (alias keys + map form), or a file genuinely written via one of the odd
   shapes gets hard-flagged by the fabrication guard's C3 as a nonexistent artifact.
+- **Never build YAML frontmatter by string interpolation — and beware gray-matter's content
+  cache**: `writeSkill`/`writeSubagentType` used to emit their `name:`/`description:` lines by raw
+  template-string interpolation, so *any* YAML metacharacter in a model-supplied description
+  (colon-space, `#`, `[`, `*`, `&`, `!`, `@`, `%`, a leading `-`, an embedded newline, a bare
+  `yes`/`123`) produced an unparseable file. Both writers now go through `stringifyFrontmatter`
+  (`agent/frontmatter.ts`), and every read path (`scanSkillsDir`, `readSkillBody`, `scanAgents`)
+  uses `parseFrontmatterSafe`, which never throws and degrades to line-wise salvage. Two
+  non-obvious parts: (1) `gray-matter` memoizes parse results by content string but **only
+  consults that cache when called with no options argument** — so a malformed file throws on the
+  first `matter(raw)` and then silently returns `{data: {}, content: raw}` on the second, which is
+  exactly why a broken skill showed up in the catalog with an *empty description* (name falling
+  back to the dirname) instead of failing loudly; always call `matter(raw, {})` to bypass it.
+  (2) `scanAgents` needs a per-file try/catch — one bad file used to abort the whole directory
+  scan. Covered by `frontmatter.test.ts`, which includes a guard that every bundled SKILL.md
+  parses with a non-empty name and description.
+- **Vendored skill template files must stay inert**: the `website-replica` template lives under
+  `skills/bundled/website-replica-template/` with **`.txt` appended to every filename**, and that
+  suffix is load-bearing rather than cosmetic. Under their real extensions inside `src/main/`,
+  `tsconfig.node.json` (which includes `src/main/**/*`) would type-check the template against
+  *this* repo's config — where `next`/`react`/`vitest` don't resolve — and `bun test` would
+  auto-discover the template's own `*.test.ts` files into this suite. `websiteReplicaTemplate.ts`
+  strips the suffix when mapping destination paths, `src/main/global.d.ts` therefore needs
+  `declare module '*.txt?raw'` (tsconfig.node.json doesn't pull in `vite/client`), and a
+  manifest-drift test pins the invariant in both directions. Because `?raw` inlines the content
+  into `out/main/index.js`, no electron-builder `files`/`extraResources`/`asarUnpack` entry is
+  needed. Vendor these by copying bytes (`cp`), never by retyping.
 - **Fuzzy edit matching** (`edit-match.ts`): handles CRLF, escaped chars, em-dash/hyphen variants
   — but line-number prefixes from `read_file` output are NOT in real file bytes, never include
   them in `old_string`.

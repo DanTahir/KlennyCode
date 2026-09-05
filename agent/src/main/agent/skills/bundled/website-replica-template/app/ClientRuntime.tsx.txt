@@ -1,0 +1,73 @@
+'use client';
+
+/**
+ * Re-applies the behaviours the original page's JavaScript provided.
+ *
+ * Codegen captures the DOM *before* scroll and strips runtime-added classes,
+ * so the markup starts in its pristine pre-animation state. Everything that
+ * made the page feel alive is re-implemented here.
+ *
+ * HOW TO TUNE THIS FILE (the one file you are expected to hand-edit):
+ *   1. Run `npm run codegen`, then read `scrape/analysis/summary.json` and
+ *      `scrape/features.json` — they report which libraries and effect classes
+ *      the original page actually used.
+ *   2. Uncomment / add the matching effects below.
+ *   3. If the site's finished-state class is not `faded-in`, pass the real one:
+ *      `createFadeIn({ activeClass: 'is-visible' })`.
+ *   4. For library-backed effects, install the version `npm run extras`
+ *      detected, then supply the dynamic import to the adapter.
+ */
+
+import { useEffect } from 'react';
+import {
+  createFadeIn,
+  initAccordion,
+  initCounters,
+  initForms,
+  initLazyImages,
+  initMarquee,
+  initNavDropdown,
+  initNavScroll,
+  initNavToggle,
+  initSmoothAnchors,
+  initTabs,
+  initEffects,
+  type RegisteredEffect,
+} from './lib';
+
+const effects: RegisteredEffect[] = [
+  // --- always safe: each no-ops when its targets are absent -----------------
+  { name: 'fadeIn', init: createFadeIn() },
+  { name: 'navToggle', init: initNavToggle },
+  { name: 'navScroll', init: initNavScroll },
+  { name: 'navDropdown', init: initNavDropdown },
+  { name: 'smoothAnchors', init: initSmoothAnchors },
+  { name: 'tabs', init: initTabs },
+  { name: 'accordion', init: initAccordion },
+  { name: 'counters', init: initCounters },
+  { name: 'marquee', init: initMarquee },
+  { name: 'lazyImages', init: initLazyImages },
+  { name: 'forms', init: initForms },
+
+  // --- opt-in: uncomment after installing the detected library --------------
+  // { name: 'carousel', init: createCarousel({ load: () => import('swiper/bundle') }) },
+  // { name: 'rive', init: createRive({ load: () => import('@rive-app/webgl2') }) },
+  // { name: 'lottie', init: createLottie({ load: () => import('lottie-web') }) },
+];
+
+export default function ClientRuntime() {
+  useEffect(() => {
+    // Deferred one frame so the generated markup is committed and laid out
+    // before any effect measures it (counters/parallax read geometry).
+    let teardown: (() => void) | undefined;
+    const raf = requestAnimationFrame(() => {
+      teardown = initEffects(effects);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      teardown?.();
+    };
+  }, []);
+
+  return null;
+}

@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "Copy to replica.config.json and set targetUrl. Everything else is optional;",
+    "the defaults in scripts/lib/config.mjs are used when a key is absent.",
+    "This file is the ONLY place site-specific knowledge lives — the scripts",
+    "themselves are entirely URL-agnostic."
+  ],
+
+  "targetUrl": "https://example.com/some/page",
+  "slug": "examplecomsomepage",
+  "port": 3300,
+
+  "_settleMs": "ms to wait after load before capturing (raise for slow hero animations)",
+  "settleMs": 3500,
+  "_scrollSettleMs": "ms to pause at each scroll step (raise for lazy-loading sites)",
+  "scrollSettleMs": 90,
+
+  "_links": "'absolute' rewrites every nav link to the live site; 'preserve' keeps them as-is",
+  "links": "absolute",
+
+  "_codegen": "All optional. Add site-specific runtime-artifact classes here as you find them.",
+  "codegen": {
+    "keepClasses": [],
+    "stripClasses": null,
+    "dropSelectors": null,
+    "splitMinChildren": 5,
+    "splitMinSections": 3
+  },
+
+  "_viewports": "Override only if the site has unusual breakpoints.",
+  "viewports": null
+}

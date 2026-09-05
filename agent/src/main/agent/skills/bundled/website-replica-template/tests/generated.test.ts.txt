@@ -1,0 +1,187 @@
+/**
+ * Integrity tests for the GENERATED output.
+ *
+ * These only run once `npm run codegen` has produced app/generated/manifest.json,
+ * so a fresh clone still reports green rather than failing on absent artifacts.
+ * Once generated, they are the automated half of the "self-hosted, nothing
+ * remote, nothing missing" guarantee — the browser half lives in
+ * scripts/viewport-check.mjs.
+ */
+import { describe, expect, it } from 'vitest';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+
+const root = resolve(__dirname, '..');
+const generatedDir = join(root, 'app', 'generated');
+const manifestPath = join(generatedDir, 'manifest.json');
+const publicDir = join(root, 'public');
+
+const hasManifest = existsSync(manifestPath);
+
+interface Manifest {
+  targetUrl: string;
+  generatedAt: string;
+  sections: Array<{ name: string; file: string; tag: string; nodes: number }>;
+  stylesheets: string[];
+  assets: { total: number; byKind: Record<string, number> };
+  sanitizer: {
+    strippedClasses: number;
+    strippedStyleProps: number;
+    droppedNodes: number;
+  };
+}
+
+const manifest: Manifest | null = hasManifest
+  ? (JSON.parse(readFileSync(manifestPath, 'utf8')) as Manifest)
+  : null;
+
+/** Every /-rooted asset URL referenced by generated TSX and CSS. */
+function collectLocalAssetRefs(): string[] {
+  const refs = new Set<string>();
+  if (!existsSync(generatedDir)) return [];
+
+  const files = readdirSync(generatedDir).filter((f) => /\.(tsx|ts|css)$/.test(f));
+  for (const file of files) {
+    const text = readFileSync(join(generatedDir, file), 'utf8');
+    for (const m of text.matchAll(/["'(](\/assets\/[^"')\s]+)["')]/g)) {
+      refs.add(decodeURIComponent(m[1].split('?')[0].split('#')[0]));
+    }
+  }
+  return [...refs];
+}
+
+describe.skipIf(!hasManifest)('generated manifest', () => {
+  it('records the target URL and a generation timestamp', () => {
+    expect(manifest!.targetUrl).toMatch(/^https?:\/\//);
+    expect(Number.isNaN(Date.parse(manifest!.generatedAt))).toBe(false);
+  });
+
+  it('produced at least one section, each with a real file', () => {
+    expect(manifest!.sections.length).toBeGreaterThan(0);
+    for (const section of manifest!.sections) {
+      expect(existsSync(join(generatedDir, section.file))).toBe(true);
+      // A section with no nodes means the splitter mis-fired.
+      expect(section.nodes).toBeGreaterThan(0);
+    }
+  });
+
+  it('exposes every section through the barrel', () => {
+    const barrel = readFileSync(join(generatedDir, 'index.ts'), 'utf8');
+    for (const section of manifest!.sections) {
+      expect(barrel).toContain(section.name);
+    }
+  });
+
+  it('imports every section in PageBody, in manifest order', () => {
+    const body = readFileSync(join(generatedDir, 'PageBody.tsx'), 'utf8');
+    const positions = manifest!.sections.map((s) => body.indexOf(`<${s.name}`));
+    for (const [i, pos] of positions.entries()) {
+      expect(pos, `section ${manifest!.sections[i].name} missing from PageBody`).toBeGreaterThan(-1);
+    }
+    // Document order is the whole point; out-of-order sections reorder the page.
+    const sorted = [...positions].sort((a, b) => a - b);
+    expect(positions).toEqual(sorted);
+  });
+
+  it('rebuilt the stylesheet cascade as an ordered @import list', () => {
+    // NB: no `length > 0` assertion — a page can legitimately ship zero
+    // stylesheets. The invariant that actually matters is that index.css
+    // imports exactly the manifest's sheets, in exactly that order, since
+    // cascade order determines specificity resolution.
+    const indexCss = readFileSync(join(generatedDir, 'index.css'), 'utf8');
+    const imported = [...indexCss.matchAll(/@import\s+['"]\.\/([^'"]+)['"]/g)].map((m) => m[1]);
+
+    expect(imported).toEqual(manifest!.stylesheets);
+    for (const sheet of manifest!.stylesheets) {
+      expect(existsSync(join(generatedDir, sheet))).toBe(true);
+    }
+  });
+});
+
+describe.skipIf(!hasManifest)('runtime-artifact sanitizer', () => {
+  it('left no runtime animation-state classes in the markup', () => {
+    // The captured DOM is post-load, so these WILL be present pre-sanitize.
+    // If any survive, entrance animations ship already-finished.
+    const banned = ['faded-in', 'aos-animate', 'swiper-initialized', 'is-inview'];
+    for (const file of readdirSync(generatedDir).filter((f) => f.endsWith('.tsx'))) {
+      const text = readFileSync(join(generatedDir, file), 'utf8');
+      for (const cls of banned) {
+        expect(text, `${file} still contains runtime class "${cls}"`).not.toContain(cls);
+      }
+    }
+  });
+
+  it('left no inline opacity/transform residue from the runtime', () => {
+    for (const file of readdirSync(generatedDir).filter((f) => f.endsWith('.tsx'))) {
+      const text = readFileSync(join(generatedDir, file), 'utf8');
+      // Frozen opacity:0 is the classic "whole section invisible" failure.
+      expect(text, `${file} has inline opacity residue`).not.toMatch(/opacity:\s*["']?0["']?[,}]/);
+    }
+  });
+});
+
+describe.skipIf(!hasManifest)('asset self-hosting', () => {
+  it('has every referenced local asset on disk', () => {
+    const missing = collectLocalAssetRefs().filter((ref) => !existsSync(join(publicDir, ref)));
+    expect(missing, `missing files under public/: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('references no remote origins from generated markup or CSS', () => {
+    const offenders: string[] = [];
+    for (const file of readdirSync(generatedDir).filter((f) => /\.(tsx|css)$/.test(f))) {
+      const text = readFileSync(join(generatedDir, file), 'utf8');
+      for (const m of text.matchAll(/https?:\/\/[^\s"')]+/g)) {
+        const url = m[0];
+        // Anchor hrefs are deliberately absolute (single-page replica);
+        // only sub-resource fetches break the offline guarantee.
+        const isSubresource = /(src|srcset|href)=["']?$/.test(
+          text.slice(Math.max(0, m.index! - 12), m.index!),
+        );
+        const isCssUrl = /url\(\s*['"]?$/.test(text.slice(Math.max(0, m.index! - 8), m.index!));
+        if (isCssUrl || (isSubresource && !/\.(html?|php)?$/.test(url) && file.endsWith('.css'))) {
+          offenders.push(`${file}: ${url}`);
+        }
+      }
+    }
+    expect(offenders, `remote sub-resources found: ${offenders.join(', ')}`).toEqual([]);
+  });
+
+  it('leaks no remote icon URLs through generated metadata', () => {
+    // Regression: the icon emitter used to fall back to the REMOTE url when an
+    // icon variant was absent from the asset map (scrape only downloads what
+    // the browser actually requested). That leaks a cross-origin request on
+    // every page load AND makes Chromium fall back to /favicon.ico -> 404.
+    // Scoped to the `icons` block on purpose: og:/twitter:/canonical URLs in
+    // metadata are crawler-facing strings, never fetched by the browser.
+    const meta = readFileSync(join(generatedDir, 'metadata.ts'), 'utf8');
+    const start = meta.indexOf('"icons"');
+    if (start === -1) return; // page declared no icons at all
+    const block = meta.slice(start, meta.indexOf('\n  }', start) + 1);
+    const remote = [...block.matchAll(/https?:\/\/[^"'\s]+/g)].map((m) => m[0]);
+    expect(remote, `remote icon URLs in metadata.ts: ${remote.join(', ')}`).toEqual([]);
+  });
+
+  it('agrees with the manifest asset count', () => {
+    // Deliberately NOT `> 0`: a page with no external sub-resources (or one
+    // that inlines everything) is a valid, fully-replicated page. The real
+    // invariant is that the per-kind breakdown reconciles with the total, so
+    // a silently dropped asset kind can't hide.
+    expect(manifest!.assets.total).toBeGreaterThanOrEqual(0);
+    const counted = Object.values(manifest!.assets.byKind).reduce((a, b) => a + b, 0);
+    expect(counted).toBe(manifest!.assets.total);
+
+    // Every self-hosted file recorded in the map must really be on disk.
+    const refs = collectLocalAssetRefs();
+    expect(refs.filter((r) => !existsSync(join(publicDir, r)))).toEqual([]);
+  });
+});
+
+describe('template scaffold', () => {
+  it('ships the placeholder files so a fresh clone builds', () => {
+    // Guards against a future refactor deleting the pre-codegen stubs, which
+    // would make `npm run build` fail before the pipeline has ever been run.
+    expect(existsSync(join(generatedDir, 'PageBody.tsx'))).toBe(true);
+    expect(existsSync(join(generatedDir, 'metadata.ts'))).toBe(true);
+    expect(existsSync(join(generatedDir, 'index.css'))).toBe(true);
+  });
+});

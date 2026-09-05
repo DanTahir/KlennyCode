@@ -1,0 +1,29 @@
+/**
+ * PLACEHOLDER — overwritten by `npm run codegen`.
+ *
+ * The generated version imports every per-section component in document order.
+ * This stub keeps `npm run build` and `tsc --noEmit` green on a fresh clone.
+ */
+export default function PageBody() {
+  return (
+    <main style={{ font: '16px/1.6 system-ui, sans-serif', padding: '4rem 1.5rem', maxWidth: 640 }}>
+      <h1 style={{ fontSize: '1.5rem', marginBottom: '1rem' }}>Replica not generated yet</h1>
+      <p style={{ marginBottom: '1rem' }}>Run the pipeline to build the page:</p>
+      <pre
+        style={{
+          background: '#f4f4f5',
+          padding: '1rem',
+          borderRadius: 8,
+          overflowX: 'auto',
+          fontSize: 14,
+        }}
+      >
+        npm run pipeline
+      </pre>
+      <p style={{ marginTop: '1rem', color: '#666' }}>
+        That runs capture &rarr; scrape &rarr; extras &rarr; analyze &rarr; codegen and replaces
+        this file.
+      </p>
+    </main>
+  );
+}

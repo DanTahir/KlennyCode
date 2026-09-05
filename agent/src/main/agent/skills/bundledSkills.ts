@@ -30,6 +30,8 @@ import browserAutomationLegacy1Md from './bundled/_legacy/browser-automation.leg
 import browserAutomationLegacy2Md from './bundled/_legacy/browser-automation.legacy-2.md?raw'
 import browserAutomationLegacy3Md from './bundled/_legacy/browser-automation.legacy-3.md?raw'
 import pawprintAuthoringMd from './bundled/pawprint-authoring.md?raw'
+import websiteReplicaMd from './bundled/website-replica.md?raw'
+import { WEBSITE_REPLICA_TEMPLATE } from './websiteReplicaTemplate'
 
 export interface BundledSkill {
   content: string
@@ -43,6 +45,13 @@ export interface BundledSkill {
    *  skill introduced after versioning already existed — it never shipped under the old
    *  marker-only scheme, so there's nothing to migrate from. */
   legacyVariants: string[]
+  /** Optional extra files seeded into this skill's directory alongside SKILL.md, keyed by path
+   *  relative to that directory (e.g. `template/app/page.tsx`). For skills that are useless
+   *  without shipped scaffolding — currently only `website-replica` and its project template.
+   *  Versioned by the same `version` field as `content`, but edit-detected per file, so a user
+   *  who customises one asset keeps it and still gets updates to the rest (see manager.ts's
+   *  seedSkillAssets). */
+  assets?: Record<string, string>
 }
 
 export const BUNDLED_SKILLS: Record<string, BundledSkill> = {
@@ -55,5 +64,11 @@ export const BUNDLED_SKILLS: Record<string, BundledSkill> = {
     content: pawprintAuthoringMd,
     version: 1,
     legacyVariants: []
+  },
+  'website-replica': {
+    content: websiteReplicaMd,
+    version: 1,
+    legacyVariants: [],
+    assets: WEBSITE_REPLICA_TEMPLATE
   }
 }

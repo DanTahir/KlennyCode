@@ -1,0 +1,246 @@
+#!/usr/bin/env node
+/**
+ * Stage 5 — runtime dependencies.
+ *
+ * Some assets are never referenced by markup or CSS: they are fetched by a JS
+ * runtime at execution time. The network log from `npm run capture` is the only
+ * reliable record of them, so this reads it and:
+ *
+ *  1. Self-hosts any WebAssembly runtime the page pulled (Rive, Lottie's
+ *     wasm builds, etc.) into public/assets/rive|wasm.
+ *  2. Detects the *versions* of animation/carousel libraries the original used
+ *     and writes scrape/runtime-requirements.json — the exact npm packages to
+ *     install so the replica's ported effects behave identically.
+ *  3. Self-hosts /favicon.ico from the origin root. Chromium requests this
+ *     unconditionally for the tab icon even when the page declares explicit
+ *     <link rel="icon"> tags, so without it every single page load logs a
+ *     404 that fails the viewport-check console-error gate.
+ *
+ * Rive note (learned the hard way, see the global memory note): if the page
+ * loads @rive-app/webgl2, the plain @rive-app/canvas renderer will silently
+ * fail to render the same .riv. The version and the *build* both matter.
+ */
+import { mkdir, readFile, writeFile, stat } from 'node:fs/promises';
+import path from 'node:path';
+import { loadConfig, paths, DESKTOP_UA } from './lib/config.mjs';
+
+async function exists(p) {
+  try {
+    await stat(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function fetchBuf(url) {
+  const res = await fetch(url, { headers: { 'User-Agent': DESKTOP_UA } });
+  if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+/** npm-ish version detection from CDN URLs (unpkg, jsdelivr, cdnjs, ?ver=). */
+const LIB_PATTERNS = [
+  { pkg: '@rive-app/webgl2', re: /@rive-app\/webgl2@([\d.]+)/ },
+  { pkg: '@rive-app/webgl', re: /@rive-app\/webgl@([\d.]+)/ },
+  { pkg: '@rive-app/canvas', re: /@rive-app\/canvas@([\d.]+)/ },
+  { pkg: 'swiper', re: /swiper@([\d.]+)/ },
+  { pkg: 'swiper', re: /swiper[/-](?:bundle|swiper)[^"']*?[?&]ver(?:sion)?=([\d.]+)/ },
+  { pkg: 'gsap', re: /gsap@([\d.]+)/ },
+  { pkg: 'gsap', re: /gsap\/([\d.]+)\// },
+  { pkg: 'lottie-web', re: /lottie-web@([\d.]+)/ },
+  { pkg: 'lottie-web', re: /lottie(?:_svg|_light)?[.-]?(?:min)?\.js\?.*?ver=([\d.]+)/ },
+  { pkg: 'three', re: /three@([\d.]+)/ },
+  { pkg: '@studio-freight/lenis', re: /lenis@([\d.]+)/ },
+  { pkg: 'locomotive-scroll', re: /locomotive-scroll@([\d.]+)/ },
+  { pkg: 'aos', re: /aos@([\d.]+)/ },
+  { pkg: 'splitting', re: /splitting@([\d.]+)/ },
+  { pkg: 'split-type', re: /split-type@([\d.]+)/ },
+  { pkg: '@fancyapps/ui', re: /@fancyapps\/ui@([\d.]+)/ },
+  { pkg: 'jquery', re: /jquery[/-]([\d.]+)/ },
+  { pkg: '@splidejs/splide', re: /@splidejs\/splide@([\d.]+)/ },
+  { pkg: '@glidejs/glide', re: /@glidejs\/glide@([\d.]+)/ },
+  { pkg: 'embla-carousel', re: /embla-carousel@([\d.]+)/ },
+  { pkg: 'typed.js', re: /typed\.js@([\d.]+)/ },
+];
+
+/** Libraries recognisable by URL even when no version is embedded. */
+const LIB_HINTS = [
+  { pkg: '@rive-app/webgl2', re: /rive.*webgl2|webgl2.*rive/i },
+  { pkg: 'swiper', re: /swiper/i },
+  { pkg: 'gsap', re: /gsap|ScrollTrigger/i },
+  { pkg: 'lottie-web', re: /lottie|bodymovin/i },
+  { pkg: 'three', re: /three(\.min)?\.js|three\/build/i },
+  { pkg: 'aos', re: /\baos\b/i },
+  { pkg: '@studio-freight/lenis', re: /lenis/i },
+];
+
+async function main() {
+  const cfg = await loadConfig();
+
+  let net = { requests: [] };
+  try {
+    net = JSON.parse(await readFile(paths.network, 'utf8'));
+  } catch {
+    console.log('No network.json — run `npm run capture` first. Nothing to do.');
+    return;
+  }
+
+  const urls = (net.requests ?? []).filter((r) => r.status < 400).map((r) => r.url);
+  const uniqueUrls = [...new Set(urls)];
+
+  // ---- 1. self-host wasm runtimes ---------------------------------------
+  const wasmUrls = uniqueUrls.filter((u) => /\.wasm(\?|$)/i.test(u));
+  const wasmResults = [];
+  const riveDir = path.join(paths.publicAssets, 'rive');
+  await mkdir(riveDir, { recursive: true });
+
+  for (const url of wasmUrls) {
+    // Give Rive's wasm a stable, meaningful filename: the ported effect module
+    // points RuntimeLoader at it explicitly.
+    const isRive = /rive/i.test(url);
+    const base = isRive
+      ? (/webgl2/i.test(url) ? 'rive-webgl2.wasm' : /webgl/i.test(url) ? 'rive-webgl.wasm' : 'rive-canvas.wasm')
+      : path.basename(url.split('?')[0]);
+    const dest = path.join(riveDir, base);
+
+    if (await exists(dest)) {
+      const buf = await readFile(dest);
+      wasmResults.push({ url, file: `/assets/rive/${base}`, bytes: buf.length, cached: true });
+      console.log(`wasm: ${base} cached (${buf.length}b)`);
+      continue;
+    }
+    try {
+      const buf = await fetchBuf(url);
+      await writeFile(dest, buf);
+      wasmResults.push({ url, file: `/assets/rive/${base}`, bytes: buf.length });
+      console.log(`wasm: ${base} ${buf.length}b -> public/assets/rive/${base}`);
+    } catch (err) {
+      wasmResults.push({ url, error: err.message });
+      console.log(`wasm: FAILED ${url} — ${err.message}`);
+    }
+  }
+
+  // ---- 1b. self-host /favicon.ico ---------------------------------------
+  // Not discoverable from markup or the network log: the browser derives it
+  // from the origin root by convention. Absent upstream (404/redirect to
+  // nothing) is fine and expected — only a real file is worth copying.
+  let faviconResult = null;
+  try {
+    const icoUrl = new URL('/favicon.ico', cfg.targetUrl).href;
+    const dest = path.join(paths.root, 'public', 'favicon.ico');
+    if (await exists(dest)) {
+      faviconResult = { url: icoUrl, file: '/favicon.ico', cached: true };
+      console.log('favicon.ico: cached');
+    } else {
+      const buf = await fetchBuf(icoUrl);
+      await mkdir(path.dirname(dest), { recursive: true });
+      await writeFile(dest, buf);
+      faviconResult = { url: icoUrl, file: '/favicon.ico', bytes: buf.length };
+      console.log(`favicon.ico: ${buf.length}b -> public/favicon.ico`);
+    }
+  } catch (err) {
+    // Upstream doesn't serve /favicon.ico (many modern sites only ship SVG/PNG
+    // icons). Chromium still probes the origin root for the tab icon, and that
+    // probe is issued by the BROWSER process, so it never appears in Playwright's
+    // page-level request events — it only surfaces as an unattributable console
+    // 404 that trips the console-error gate. We already have real icons on disk,
+    // so serve the best one at the conventional path. This affects no rendered
+    // pixel of the page; it just stops a phantom 404 and fixes the tab icon.
+    const imgDir = path.join(paths.publicAssets, 'img');
+    let fallback = null;
+    try {
+      const { readdir, copyFile } = await import('node:fs/promises');
+      const files = await readdir(imgDir);
+      // Prefer a real .ico, then the largest square PNG, then any SVG.
+      const pick =
+        files.find((f) => /\.ico$/i.test(f)) ??
+        files.find((f) => /favicon-32x32.*\.png$/i.test(f)) ??
+        files.find((f) => /favicon.*\.png$/i.test(f)) ??
+        files.find((f) => /apple-touch-icon.*\.png$/i.test(f)) ??
+        files.find((f) => /favicon.*\.svg$/i.test(f));
+      if (pick) {
+        const dest = path.join(paths.root, 'public', 'favicon.ico');
+        await mkdir(path.dirname(dest), { recursive: true });
+        await copyFile(path.join(imgDir, pick), dest);
+        fallback = pick;
+      }
+    } catch { /* no icons downloaded — nothing to fall back to */ }
+
+    faviconResult = { error: err.message, fallbackFrom: fallback };
+    console.log(
+      fallback
+        ? `favicon.ico: not served upstream — served local ${fallback} at /favicon.ico instead`
+        : `favicon.ico: not served upstream (${err.message}) and no local icon to fall back to`,
+    );
+  }
+
+  // ---- 2. detect library versions ---------------------------------------
+  const detected = new Map();
+  for (const url of uniqueUrls) {
+    for (const { pkg, re } of LIB_PATTERNS) {
+      const m = url.match(re);
+      if (m && !detected.has(pkg)) detected.set(pkg, { version: m[1], evidence: url });
+    }
+  }
+  for (const url of uniqueUrls) {
+    for (const { pkg, re } of LIB_HINTS) {
+      if (re.test(url) && !detected.has(pkg)) {
+        detected.set(pkg, { version: null, evidence: url });
+      }
+    }
+  }
+
+  let features = {};
+  try {
+    features = JSON.parse(await readFile(paths.features, 'utf8'));
+  } catch { /* optional */ }
+
+  const requirements = {
+    generatedAt: new Date().toISOString(),
+    targetUrl: cfg.targetUrl,
+    wasm: wasmResults,
+    favicon: faviconResult,
+    packages: [...detected.entries()].map(([pkg, info]) => ({
+      package: pkg,
+      version: info.version,
+      install: info.version ? `${pkg}@${info.version}` : pkg,
+      evidence: info.evidence.slice(0, 160),
+    })),
+    detectedGlobals: Object.entries(features.globals ?? {})
+      .filter(([, v]) => v)
+      .map(([k]) => k),
+    featureCounts: features.counts ?? {},
+  };
+  await writeFile(
+    path.join(paths.scrape, 'runtime-requirements.json'),
+    JSON.stringify(requirements, null, 2),
+  );
+
+  console.log('\n--- runtime requirements ---');
+  if (!requirements.packages.length) {
+    console.log('no third-party animation/carousel libraries detected');
+  }
+  for (const p of requirements.packages) {
+    console.log(`  ${p.install.padEnd(34)} (from ${p.evidence.slice(0, 70)})`);
+  }
+  if (requirements.packages.length) {
+    console.log(
+      '\nInstall the ones whose behaviour the page actually uses:\n  npm i ' +
+        requirements.packages.map((p) => p.install).join(' '),
+    );
+  }
+  if (wasmResults.some((w) => /webgl2/.test(w.file ?? ''))) {
+    console.log(
+      '\nRive: the page loaded the WEBGL2 build. Use @rive-app/webgl2 with\n' +
+        "RuntimeLoader.setWasmUrl('/assets/rive/rive-webgl2.wasm') and\n" +
+        'useOffscreenRenderer: true. The canvas build will not render it.',
+    );
+  }
+  console.log(`\nwrote ${path.join(paths.scrape, 'runtime-requirements.json')}`);
+}
+
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

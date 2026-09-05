@@ -1,7 +1,7 @@
 import { readFile, writeFile, mkdir, readdir, access, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
-import matter from 'gray-matter'
+import { parseFrontmatterSafe, stringifyFrontmatter } from '../frontmatter'
 import type { SkillSummary } from '@shared/types'
 import { getWorkspace } from '../../workspace'
 import { globalKlennyDir } from '../../dataDir'
@@ -23,10 +23,29 @@ import { BUNDLED_SKILLS } from './bundledSkills'
  *      permanently, for that skill, until they delete it (which makes it re-seed fresh) or
  *      manually match the new bundled content.
  *    - User deleted the skill file entirely -> NOT re-seeded (matches the old marker-file
- *      behavior's intent: deletion is a deliberate, respected choice, not "reset to defaults"). */
+ *      behavior's intent: deletion is a deliberate, respected choice, not "reset to defaults").
+ *
+ *  Multi-file skills: a bundled skill may also ship `assets` (see BundledSkill.assets) — extra
+ *  files written into its seeded skill dir alongside SKILL.md, used by `website-replica`, whose
+ *  SKILL.md is useless without the project template it tells the agent to copy. Assets follow the
+ *  same never-clobber-an-edit contract, but tracked *per file* (`assetHashes`) rather than as one
+ *  blob, so a user who customises one template file keeps that file and still receives updates to
+ *  all the others. Two deliberate differences from SKILL.md:
+ *    - A deleted asset IS rewritten during a version-upgrade or repair pass (a half-present
+ *      template is broken, and template internals aren't discrete user-facing units the way a
+ *      whole skill is — deleting the *skill* still keeps everything gone).
+ *    - Assets whose write failed leave their hash unrecorded, which is what the repair pass keys
+ *      off (see seedSkillAssets), so a partially-written template self-heals on the next launch
+ *      without needing to stat every asset on every launch. */
 interface SeedRecord {
   version: number
+  /** Hash of the SKILL.md content we last wrote — unchanged in meaning by the addition of
+   *  assets below, so older seed-state.json files stay readable as-is. */
   hash: string
+  /** Asset relative path -> hash of the content we last wrote for it. Absent for skills that
+   *  ship no assets, and for records written before asset support existed (an absent/partial map
+   *  is exactly what triggers the repair pass). */
+  assetHashes?: Record<string, string>
 }
 interface SeedState {
   skills: Record<string, SeedRecord>
@@ -48,6 +67,64 @@ function legacyMarkerPath(): string {
 
 function hashContent(content: string): string {
   return createHash('sha256').update(content).digest('hex')
+}
+
+/** Writes a bundled skill's `assets` into its seeded skill dir and returns the asset->hash map to
+ *  record. Never throws: each file is best-effort, and a failed write is simply left out of the
+ *  returned map so the next launch's repair pass retries it.
+ *
+ *  Per-file decisions, given the hash we last wrote for that file (`prevHashes`):
+ *    - on disk, but its content doesn't match what we last wrote -> user customised it. Keep their
+ *      file, and keep re-reporting the *old* hash so it stays classified as edited on every future
+ *      pass instead of being silently re-adopted as pristine.
+ *    - missing, or present and pristine -> write the current bundled content.
+ *  Callers decide *when* a pass happens (fresh seed / version upgrade / repair); this function
+ *  only decides what to do with each individual file once a pass is underway. */
+async function seedSkillAssets(
+  skillDir: string,
+  assets: Record<string, string> | undefined,
+  prevHashes: Record<string, string>
+): Promise<Record<string, string>> {
+  const hashes: Record<string, string> = {}
+  if (!assets) return hashes
+  const root = resolve(skillDir)
+
+  for (const [rel, content] of Object.entries(assets)) {
+    const dest = resolve(skillDir, rel)
+    // Defence in depth: asset keys are hardcoded in-repo rather than user input, but this is a
+    // filesystem write path, so refuse anything that resolves outside the skill's own directory
+    // instead of trusting the manifest to be well-formed.
+    if (dest !== root && !dest.startsWith(root + sep)) continue
+
+    const prev = prevHashes[rel]
+    let onDisk: string | null = null
+    try {
+      onDisk = await readFile(dest, 'utf8')
+    } catch {
+      onDisk = null // never written, write failed previously, or user deleted it
+    }
+
+    if (onDisk !== null && prev !== undefined && hashContent(onDisk) !== prev) {
+      hashes[rel] = prev
+      continue
+    }
+
+    const target = hashContent(content)
+    if (onDisk !== null && hashContent(onDisk) === target) {
+      hashes[rel] = target // already current — no write needed
+      continue
+    }
+
+    try {
+      await mkdir(dirname(dest), { recursive: true })
+      await writeFile(dest, content, 'utf8')
+      hashes[rel] = target
+    } catch {
+      // best-effort — hash deliberately left unrecorded so the repair pass retries next launch
+    }
+  }
+
+  return hashes
 }
 
 async function readSeedState(): Promise<SeedState> {
@@ -125,7 +202,12 @@ async function seedBundledSkills(): Promise<void> {
         try {
           await mkdir(join(globalDir, name), { recursive: true })
           await writeFile(path, skill.content, 'utf8')
-          state.skills[name] = { version: skill.version, hash: hashContent(skill.content) }
+          const assetHashes = await seedSkillAssets(join(globalDir, name), skill.assets, {})
+          state.skills[name] = {
+            version: skill.version,
+            hash: hashContent(skill.content),
+            ...(skill.assets ? { assetHashes } : {})
+          }
           stateChanged = true
         } catch {
           // best-effort — this skill just won't be offered this run
@@ -162,13 +244,34 @@ async function seedBundledSkills(): Promise<void> {
     }
 
     const record = state.skills[name]
+
+    // Repair pass: bundled assets with no recorded hash were never successfully written — either a
+    // previous launch's write failed partway, or this install's record predates the skill gaining
+    // assets at all. Top those up without touching SKILL.md (which is already current at this
+    // version). Keyed purely off recorded state, so the common steady-state case costs no
+    // filesystem calls; only genuinely-unrecorded files are touched.
+    if (skill.assets && onDisk !== null && skill.version <= record.version) {
+      const recorded = record.assetHashes ?? {}
+      const unrecorded = Object.keys(skill.assets).filter((rel) => !(rel in recorded))
+      if (unrecorded.length) {
+        const assetHashes = await seedSkillAssets(join(globalDir, name), skill.assets, recorded)
+        state.skills[name] = { ...record, assetHashes }
+        stateChanged = true
+      }
+    }
+
     if (skill.version <= record.version) continue // nothing newer to offer
     if (onDisk === null) continue // user deleted it — respect that, don't resurrect
     if (hashContent(onDisk) !== record.hash) continue // user edited it — never overwrite
 
     try {
       await writeFile(path, skill.content, 'utf8')
-      state.skills[name] = { version: skill.version, hash: hashContent(skill.content) }
+      const assetHashes = await seedSkillAssets(join(globalDir, name), skill.assets, record.assetHashes ?? {})
+      state.skills[name] = {
+        version: skill.version,
+        hash: hashContent(skill.content),
+        ...(skill.assets ? { assetHashes } : {})
+      }
       stateChanged = true
     } catch {
       // best-effort — retried next launch since state.skills[name] wasn't updated
@@ -200,7 +303,11 @@ async function scanSkillsDir(dir: string, scope: 'project' | 'global'): Promise<
       const skillPath = join(dir, ent.name, 'SKILL.md')
       try {
         const raw = await readFile(skillPath, 'utf8')
-        const { data } = matter(raw)
+        // parseFrontmatterSafe never throws on invalid YAML (see frontmatter.ts). It has to not:
+        // a skill whose description happens to contain a colon-space used to make gray-matter
+        // throw here, and this catch then dropped it from the catalog entirely — a skill that
+        // silently doesn't exist is a far worse failure than one with an ugly description.
+        const { data } = parseFrontmatterSafe(raw)
         out.push({
           name: String(data.name ?? ent.name),
           description: String(data.description ?? ''),
@@ -208,7 +315,7 @@ async function scanSkillsDir(dir: string, scope: 'project' | 'global'): Promise<
           path: skillPath
         })
       } catch {
-        // skip
+        // unreadable or missing SKILL.md — genuinely nothing to list for this directory
       }
     }
   } catch {
@@ -332,7 +439,9 @@ export async function resolveSkill(rawRef: unknown): Promise<ResolvedSkill | nul
 async function readSkillBody(skillPath: string): Promise<string | null> {
   try {
     const raw = await readFile(skillPath, 'utf8')
-    const { content } = matter(raw)
+    // Safe parse for the same reason as scanSkillsDir: broken frontmatter must not make an
+    // otherwise-fine skill body unreadable via read_skill.
+    const { content } = parseFrontmatterSafe(raw)
     return content.trim()
   } catch {
     return null
@@ -375,8 +484,10 @@ export async function writeSkill(
     base = join(ws, '.klenny', 'skills', name)
   }
   await mkdir(base, { recursive: true })
-  const frontmatter = `---\nname: ${name}\ndescription: ${description}\n---\n\n`
-  await writeFile(join(base, 'SKILL.md'), frontmatter + body.trim() + '\n', 'utf8')
+  // Must go through stringifyFrontmatter, not string interpolation: `description` is free text
+  // from the model, and any YAML metacharacter in it (a colon-space, a leading `#`/`-`/`[`, a
+  // newline) would otherwise emit a SKILL.md that can't be parsed back — see frontmatter.ts.
+  await writeFile(join(base, 'SKILL.md'), stringifyFrontmatter({ name, description }, body), 'utf8')
 }
 
 export function skillsCatalogPrompt(skills: SkillSummary[]): string {

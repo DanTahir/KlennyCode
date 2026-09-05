@@ -1,0 +1,18 @@
+/*
+ * PLACEHOLDER - overwritten by `npm run codegen`.
+ *
+ * The generated version is a pure @import list that reproduces the captured
+ * page's stylesheet cascade in EXACT document order:
+ *
+ *   @import './vendor-00-normalize.css';
+ *   @import './vendor-01-webflow.css';
+ *   @import './inline-02.css';
+ *   ...
+ *
+ * Order is load-bearing: reordering these changes specificity outcomes and
+ * silently breaks the layout. Never hand-sort them.
+ */
+
+:root {
+  --replica-placeholder: 1;
+}

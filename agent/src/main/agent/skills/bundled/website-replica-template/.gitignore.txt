@@ -1,0 +1,15 @@
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+.env*
+
+# Capture cache: large, re-downloadable, and not source.
+# public/assets IS committed — it is what makes the replica self-hosted.
+scrape/raw/
+scrape/shots/
+scrape/analysis/
+scrape/viewport-report.json
+scrape/compare-report.json

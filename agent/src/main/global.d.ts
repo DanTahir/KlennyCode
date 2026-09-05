@@ -6,3 +6,14 @@ declare module '*.md?raw' {
   const content: string
   export default content
 }
+
+// `*.txt?raw` is for websiteReplicaTemplate.ts, which vendors the website-replica skill's project
+// template with a `.txt` suffix appended to every file. That suffix is deliberate: the template
+// contains real .ts/.tsx/.mjs sources for a *different* project, and under their true extensions
+// inside src/main/ they'd be type-checked by tsconfig.node.json (whose `include` covers
+// src/main/**/*) and collected by `bun test` (which auto-discovers *.test.ts). See
+// websiteReplicaTemplate.ts's file-level comment.
+declare module '*.txt?raw' {
+  const content: string
+  export default content
+}
