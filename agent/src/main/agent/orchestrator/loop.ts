@@ -534,7 +534,7 @@ export async function agentLoop(
     : tabApprovalMode && tabApprovalMode !== 'default'
       ? tabApprovalMode
       : settings.approvalMode
-  const results = await Promise.all(
+  const toolExecution = Promise.all(
     toolCalls.map((tc) =>
       executeTool(
         tc,
@@ -554,8 +554,33 @@ export async function agentLoop(
       )
     )
   )
+  // We may stop observing this on abort (below); claim any later rejection so an abandoned tool
+  // call can't surface as an unhandled rejection and take down the main process.
+  void toolExecution.catch(() => undefined)
 
-  if (signal.aborted) return 'aborted'
+  // Race tool execution against the abort signal rather than awaiting it unconditionally.
+  // Not every tool internal is cancellable — Playwright's page.evaluate() in particular cannot
+  // be killed once it's waiting on a busy renderer main thread — so a wedged tool call may never
+  // return at all. Without this race, one hung call blocks the turn forever, and because
+  // launchAgentLoop() (turn-lifecycle.ts) serializes a tab's runs, it *also* holds up the next
+  // queued user message until the hang clears: that is what made an earlier browser-inspect hang
+  // present as "the app silently swallowed my chat messages", with Stop appearing to do nothing.
+  // Stop now always unwinds the turn promptly. The abandoned call settles unobserved and its
+  // result is discarded — which changes no mutation semantics, since the pre-existing
+  // `if (signal.aborted)` check already discarded results after an abort.
+  let onAbort: (() => void) | undefined
+  const outcome = await Promise.race([
+    toolExecution.then((results) => ({ aborted: false as const, results })),
+    new Promise<{ aborted: true }>((resolve) => {
+      onAbort = () => resolve({ aborted: true })
+      signal.addEventListener('abort', onAbort, { once: true })
+    })
+  ]).finally(() => {
+    if (onAbort) signal.removeEventListener('abort', onAbort)
+  })
+
+  if (outcome.aborted || signal.aborted) return 'aborted'
+  const results = outcome.results
 
   for (let i = 0; i < toolCalls.length; i++) {
     const tc = toolCalls[i]

@@ -112,6 +112,68 @@ export interface BrowserToolContext {
  *  finish something" while still bounded. */
 const MAX_WAIT_MS = 5 * 60_000
 
+/** Deadline for the best-effort DOM resync on a failed mint (see recoverRefCounterFromDom). Short
+ *  on purpose: it runs on an error path we already can't fully trust, and the page's main thread
+ *  is very likely still blocked by whatever just timed out. */
+const REF_RECOVERY_TIMEOUT_MS = 2_000
+
+/** Deadline for `snapshot`'s in-page pass. Same leash as inspect — it's a tool call the model is
+ *  waiting on synchronously, not a deliberate wait. */
+const SNAPSHOT_TIMEOUT_MS = 15_000
+
+/** Deadline for `evaluate`. More generous than inspect/snapshot because it runs arbitrary
+ *  user-approved code that may legitimately do real work, but still bounded. */
+const EVALUATE_TIMEOUT_MS = 30_000
+
+/** Rejects if `promise` hasn't settled within `ms`, or as soon as `signal` aborts.
+ *
+ *  **Every `page.evaluate()` in this file must go through this.** Playwright's `page.evaluate()`
+ *  has no timeout option and needs the page's main thread to be free in order to run at all, so
+ *  it can wait forever: a snippet that's still looping — or just a heavy render loop — blocks
+ *  every evaluate queued behind it. An unbounded evaluate anywhere here is therefore a potential
+ *  permanent hang of the entire turn, and because a hung turn also delays the next queued user
+ *  message (launchAgentLoop in turn-lifecycle.ts waits for the previous run to unwind), it
+ *  presents to the user as "the app swallowed my chat messages".
+ *
+ *  That is not hypothetical: it happened via inspect's own *error-recovery* path, where the 15s
+ *  inspect timeout fired correctly and then the unbounded recovery evaluate hung forever behind
+ *  the very snippet that had just timed out. Only closing the browser window broke the deadlock.
+ *
+ *  Note the underlying operation is **not** cancelled — Playwright offers no way to kill an
+ *  in-flight evaluate. We stop *waiting* on it and let it settle unobserved, so callers must
+ *  assume the page-side code may still be running (hence the DOM resync on the mint paths). */
+export async function raceDeadline<T>(promise: Promise<T>, ms: number, label: string, signal?: AbortSignal): Promise<T> {
+  if (signal?.aborted) throw new Error(`${label} cancelled by user`)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `${label} timed out after ${Math.round(ms / 1000)}s — the page's main thread is likely blocked by a still-running script or a heavy render loop`
+              )
+            ),
+          ms
+        )
+        if (signal) {
+          onAbort = () => reject(new Error(`${label} cancelled by user`))
+          signal.addEventListener('abort', onAbort, { once: true })
+        }
+      })
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+    if (onAbort) signal?.removeEventListener('abort', onAbort)
+    // We may have stopped observing `promise` while it was still pending; if it later rejects,
+    // an unhandled rejection would take down the main process. Claim it here.
+    void promise.catch(() => undefined)
+  }
+}
+
 const REF_PATTERN = /^e\d+$/
 
 function isValidRef(ref: unknown): ref is string {
@@ -175,14 +237,23 @@ export function commitRefCounter(session: BrowserSession, tabLabel: string, next
  *  to prevent. Must be called while holding the lock. */
 async function recoverRefCounterFromDom(session: BrowserSession, page: Page, tabLabel: string): Promise<void> {
   try {
-    const highest = await page.evaluate(() => {
-      let max = -1
-      for (const el of Array.from(document.querySelectorAll('[data-klenny-ref]'))) {
-        const matched = /^e(\d+)$/.exec(el.getAttribute('data-klenny-ref') ?? '')
-        if (matched) max = Math.max(max, Number(matched[1]))
-      }
-      return max
-    })
+    // Deliberately bounded and deliberately NOT given the run's abort signal: this is the exact
+    // call that once hung the app forever (an unbounded evaluate, queued behind the timed-out
+    // snippet that made recovery necessary in the first place). A short hard deadline is what
+    // makes the failure path finite; skipping recovery entirely on Stop would leave the counter
+    // stale, so it keeps its own small budget even when the user has stopped the run.
+    const highest = await raceDeadline(
+      page.evaluate(() => {
+        let max = -1
+        for (const el of Array.from(document.querySelectorAll('[data-klenny-ref]'))) {
+          const matched = /^e(\d+)$/.exec(el.getAttribute('data-klenny-ref') ?? '')
+          if (matched) max = Math.max(max, Number(matched[1]))
+        }
+        return max
+      }),
+      REF_RECOVERY_TIMEOUT_MS,
+      'Ref-counter recovery'
+    )
     if (highest >= 0) commitRefCounter(session, tabLabel, highest + 1)
   } catch {
     // Page closed/navigated out from under us — nothing better available, and commitRefCounter's
@@ -408,12 +479,27 @@ async function doSnapshot(ctx: BrowserToolContext, tabLabel: string): Promise<To
 
   // Read→evaluate→commit has to be atomic per tab, or a parallel snapshot/inspect on the same tab
   // mints colliding refs (see withRefLock).
-  const { elements } = await withRefLock(session, tabLabel, async () => {
+  const outcome = await withRefLock(session, tabLabel, async () => {
     const startCounter = session.refCounters.get(tabLabel) ?? 0
-    const outcome = await page.evaluate(snapshotInPage, startCounter)
-    commitRefCounter(session, tabLabel, outcome.nextCounter)
-    return outcome
+    try {
+      const result = await raceDeadline(
+        page.evaluate(snapshotInPage, startCounter),
+        SNAPSHOT_TIMEOUT_MS,
+        'Snapshot',
+        ctx.signal
+      )
+      commitRefCounter(session, tabLabel, result.nextCounter)
+      return { ok: true as const, elements: result.elements }
+    } catch (e) {
+      // Same hazard as inspect: an abandoned evaluate may still tag elements whose counter never
+      // made it back to us, so resync before the next mint can re-issue a live ref.
+      await recoverRefCounterFromDom(session, page, tabLabel)
+      return { ok: false as const, error: e instanceof Error ? e.message : String(e) }
+    }
   })
+
+  if (!outcome.ok) return { ok: false, summary: 'Snapshot failed', error: outcome.error }
+  const { elements } = outcome
 
   const tree = elements.map((e) => `- [${e.ref}] ${e.role} "${e.name}"${e.value ? ` (value: "${e.value}")` : ''}`).join('\n')
 
@@ -591,7 +677,7 @@ async function doEvaluate(args: Record<string, unknown>, ctx: BrowserToolContext
   if ('ok' in ensured) return ensured
   const { page } = ensured
   try {
-    const result = await page.evaluate(code)
+    const result = await raceDeadline(page.evaluate(code), EVALUATE_TIMEOUT_MS, 'Evaluate', ctx.signal)
     return { ok: true, summary: 'Evaluated JavaScript', data: { result } }
   } catch (e) {
     return { ok: false, summary: 'Evaluate failed', error: e instanceof Error ? e.message : String(e) }
@@ -873,10 +959,12 @@ async function doInspect(args: Record<string, unknown>, ctx: BrowserToolContext,
   return withRefLock(session, tabLabel, async () => {
     const startCounter = session.refCounters.get(tabLabel) ?? 0
     try {
-      const outcome = await Promise.race([
+      const outcome = await raceDeadline(
         page.evaluate(inspectInPage, { code, start: startCounter }),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('inspect timed out (15s) — likely an infinite loop or unresolved await')), INSPECT_TIMEOUT_MS))
-      ])
+        INSPECT_TIMEOUT_MS,
+        'Inspect',
+        ctx.signal
+      )
       commitRefCounter(session, tabLabel, outcome.nextCounter)
       if (!outcome.ok) {
         return { ok: false, summary: 'Inspect failed', error: outcome.error ?? 'inspect_failed' }
