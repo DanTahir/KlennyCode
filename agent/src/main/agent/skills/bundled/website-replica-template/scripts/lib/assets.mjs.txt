@@ -110,9 +110,29 @@ export function absolutize(ref, baseUrl) {
 
 export function makeHostBlocker(blockHosts) {
   const lowered = blockHosts.map((h) => h.toLowerCase());
+  // Entries like 'facebook.com/tr' or 'gstatic.com/recaptcha' target a specific
+  // PATH on an otherwise-legitimate host, so those must still be matched
+  // against host+path. Bare entries ('optimizely', 'amplitude', ...) are host
+  // names and must be matched against the HOSTNAME ONLY.
+  //
+  // Matching a bare entry against the whole URL blocks first-party assets whose
+  // filename merely mentions a vendor -- a logo wall naming the tools a product
+  // integrates with (`.../68227d34_optimizely.svg`) is exactly that, and it got
+  // silently dropped from the asset map, leaving live CDN <img> URLs in the
+  // generated markup and breaking the no-remote-requests guarantee.
+  const hostOnly = lowered.filter((h) => !h.includes('/'));
+  const withPath = lowered.filter((h) => h.includes('/'));
   return (url) => {
     const u = url.toLowerCase();
-    return lowered.some((h) => u.includes(h));
+    let hostname;
+    try {
+      hostname = new URL(u).hostname;
+    } catch {
+      // Not an absolute URL — fall back to the old whole-string behaviour so a
+      // relative ref can never sneak past the blocker.
+      return lowered.some((h) => u.includes(h));
+    }
+    return hostOnly.some((h) => hostname.includes(h)) || withPath.some((h) => u.includes(h));
   };
 }
 

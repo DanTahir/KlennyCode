@@ -156,9 +156,38 @@ export function createNavDropdown(
   };
 }
 
-/** Smooth scrolling for same-page #anchor links. */
+/**
+ * Anchors that look like same-page links but are really WIDGET CONTROLS.
+ *
+ * A Webflow tab link is `<a href="#w-tabs-0-data-w-pane-0" role="tab">`: the
+ * href names the pane to *reveal*, not a location to scroll to. Lightbox and
+ * dropdown triggers are the same shape. On the live site `webflow.js` calls
+ * `preventDefault()` on these, but the sanitizer strips `webflow.js`, so
+ * without this exclusion they fall through to the smooth-scroll handler below.
+ */
+const WIDGET_CONTROL_ANCHORS = [
+  '.w-tab-link',
+  '[role="tab"]',
+  '[data-w-tab]',
+  '[aria-controls]',
+  '[data-tab]',
+  '.w-dropdown-toggle',
+  '.w-lightbox',
+  '[data-fancybox]',
+].join(',');
+
+/**
+ * Smooth scrolling for same-page #anchor links.
+ *
+ * Widget controls are excluded (see above). This matters far more than it
+ * looks: carousel/tab autoplay scripts routinely synthesise `tab.click()` on a
+ * timer, so treating a tab link as a scroll target makes the page yank itself
+ * back to that widget every few seconds, permanently trapping the reader.
+ */
 export function initSmoothAnchors(root: ParentNode = document): Teardown | void {
-  const links = $all<HTMLAnchorElement>('a[href^="#"]:not([href="#"])', root);
+  const links = $all<HTMLAnchorElement>('a[href^="#"]:not([href="#"])', root).filter(
+    (a) => !a.matches(WIDGET_CONTROL_ANCHORS),
+  );
   if (!links.length) return;
 
   const onClick = (e: Event) => {

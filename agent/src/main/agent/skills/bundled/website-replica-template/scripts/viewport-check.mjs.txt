@@ -15,6 +15,9 @@
  *   - carousels initialising
  *   - broken images, console errors, failed requests, remote (non-self-hosted)
  *     requests
+ *   - duplicated VISIBLE headings (a rendered-DOM capture can bake runtime-
+ *     generated clones into the markup; the sanitizer strips their opacity:0 so
+ *     they ship as permanently visible duplicates of real copy)
  *
  * Exit code is non-zero if the LOCAL replica has problems, so this doubles as
  * a CI gate. The live site is a reference, never a gate.
@@ -63,6 +66,36 @@ function collectMetrics() {
     }
   }
 
+  // --- duplicated visible text -------------------------------------------
+  // Sites legitimately create transient clones of a heading (fade/retype
+  // effects) and leave them in the DOM at opacity:0, so counting NODES gives
+  // false positives. Only a heading rendered visibly MORE THAN ONCE is a bug —
+  // that is the signature of a runtime clone baked into the captured markup and
+  // then un-hidden by style sanitising.
+  const isActuallyVisible = (el) => {
+    let node = el;
+    while (node && node.nodeType === 1) {
+      const s = getComputedStyle(node);
+      if (s.display === 'none' || s.visibility === 'hidden') return false;
+      if (parseFloat(s.opacity) <= 0.05) return false;
+      node = node.parentElement;
+    }
+    return true;
+  };
+
+  const headingTally = new Map();
+  for (const h of Array.from(document.querySelectorAll('h1, h2, h3'))) {
+    const text = (h.textContent || '').replace(/\s+/g, ' ').trim();
+    if (text.length < 8) continue; // ignore short/generic labels
+    const r = h.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) continue;
+    if (!isActuallyVisible(h)) continue;
+    headingTally.set(text, (headingTally.get(text) ?? 0) + 1);
+  }
+  const dupVisibleText = [...headingTally.entries()]
+    .filter(([, n]) => n > 1)
+    .map(([text, n]) => ({ text: text.slice(0, 70), count: n }));
+
   const canvases = Array.from(document.querySelectorAll('canvas')).map((c) => {
     const r = c.getBoundingClientRect();
     return {
@@ -94,6 +127,8 @@ function collectMetrics() {
     overflowBy: de.scrollWidth - vw,
     tooWide: tooWide.slice(0, 8),
     tooWideCount: tooWide.length,
+    dupVisibleText: dupVisibleText.slice(0, 8),
+    dupVisibleTextCount: dupVisibleText.length,
     burgerDisplay: burger ? getComputedStyle(burger).display : null,
     menuDisplay: menu ? getComputedStyle(menu).display : null,
     canvases,
@@ -239,6 +274,10 @@ async function main() {
       if (badImages) problems.push('broken-images');
       if (consoleErrors.length) problems.push('console-errors');
       if (isLocal && remoteRequests.length) problems.push('remote-requests');
+      // Duplicated visible copy => runtime-generated nodes were baked into the
+      // capture. Compared against live so genuine site behaviour never fails.
+      const liveDupes = baseline.duplicateVisibleText?.[viewport.name] ?? 0;
+      if (afterScroll.dupVisibleTextCount > liveDupes) problems.push('duplicate-visible-text');
 
       if (isLocal && problems.length) failures += 1;
 
@@ -270,6 +309,16 @@ async function main() {
       console.log(`  images        ${afterScroll.images} (${badImages} broken)`);
       console.log(`  body font     ${afterScroll.bodyFont} (fonts: ${afterScroll.fontsLoaded})`);
       console.log(`  h1            ${afterScroll.h1 ?? '(none)'}`);
+
+      if (afterScroll.dupVisibleTextCount) {
+        console.log(
+          `  DUPLICATE visible headings: ${afterScroll.dupVisibleTextCount}` +
+            (liveDupes ? ` (baselined: ${liveDupes})` : ''),
+        );
+        for (const d of afterScroll.dupVisibleText) {
+          console.log(`    x${d.count}  ${d.text}`);
+        }
+      }
 
       if (afterScroll.tooWideCount) {
         console.log(`  elements wider than viewport: ${afterScroll.tooWideCount}`);

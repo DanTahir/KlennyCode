@@ -175,6 +175,73 @@ animated page, the strip list is wrong for this site and every entrance
 animation will ship frozen. Add the real class names to
 `codegen.stripClasses` and re-run `npm run codegen`.
 
+### `captureMode` — which markup codegen builds from (read this)
+
+The capture writes **two** HTML files, and choosing wrong causes a whole class
+of visible duplication bugs:
+
+| File | What it is |
+|---|---|
+| `scrape/raw/index.static.html` | The pre-JS server response. Pristine. |
+| `scrape/raw/index.html` | The **rendered** DOM after the page's JS ran. |
+
+A rendered capture contains whatever the site's own JS had already *done*:
+clone nodes appended into containers, headings split into per-word spans,
+absolutely-positioned overlay clones left mid-animation. **Stripping runtime
+classes and inline styles does not remove those — they are nodes, not state.**
+They then ship as permanent copies *and* get regenerated at runtime, so the
+replica renders animated elements twice. Worse, the sanitizer strips the
+`opacity: 0` that was keeping a transient clone invisible, so a clone the real
+site never shows becomes permanently visible.
+
+`captureMode` (top level of `replica.config.json`) controls the source:
+
+- `"auto"` (default) — uses the static file only when it passes **two**
+  independent ratio tests against the rendered DOM: ≥70% as many elements, and
+  ≥90% as many *asset-bearing* nodes (`img`/`video`/`source`/`iframe` etc.).
+  Right for nearly every server-rendered site (Webflow, WordPress, Framer,
+  Astro, Next SSG).
+
+  The asset ratio exists because element count alone is a bad proxy. On
+  cash.app/bank the static file had 97% of the elements (comfortably over the
+  element threshold) but only **5 of 31** images — the promo-card `<img>` nodes
+  are injected after hydration into `<figure>` hosts that carry
+  `background-color:#000000`. `auto` picked `static` and shipped five hero/promo
+  cards as **solid black empty boxes**. Nothing errored; `typecheck`, `test`,
+  `build` and even `viewports` all passed, because the boxes were laid out
+  correctly — they just had no image in them. Only the pixel diff caught it.
+  A near-perfect element ratio therefore proves nothing about assets; judge them
+  separately.
+- `"static"` — always use the pre-JS response. Best when you have confirmed
+  the site is server-rendered.
+- `"rendered"` — always use the rendered DOM. Necessary for genuine
+  client-rendered SPAs where the static file is an empty shell.
+
+Codegen prints the choice and **both** ratios every run; check that line. If it
+used `rendered` on a site you believe is server-rendered, investigate before
+building on top of it. If it used `static` and any hero/card area renders as a
+flat block of one colour, suspect the asset ratio first.
+
+Switching to `rendered` on a Next.js target can bake in that framework's own
+runtime a11y node, `<next-route-announcer>`, as a bogus top-level section — it
+fails `tsc` as an unknown JSX intrinsic. It is in `DEFAULT_DROP_SELECTORS`; if
+you meet another framework's equivalent, add it there rather than hand-editing
+generated output.
+
+When you are stuck on `rendered` (real SPA), two config-driven escape hatches
+remove baked runtime nodes generically:
+
+- `codegen.emptySelectors` — elements that are pure **hosts** for runtime
+  children (a clone container). Shipped childless and stripped of inline
+  `style`.
+- `codegen.unwrapSelectors` — runtime-generated **wrappers** around authored
+  content (per-word/per-letter split spans, typewriter carets). Replaced by
+  their own children, restoring the pristine text so the site's JS can re-split
+  it at runtime.
+
+Both default to a marker attribute only (`[data-replica-empty]` /
+`[data-replica-unwrap]`), so they are inert until you name real selectors.
+
 ---
 
 ## Step 5 — Tune `app/ClientRuntime.tsx`
@@ -200,6 +267,83 @@ this is where the page comes back to life.
    `EffectInit` contract (no-op without targets, return a teardown, idempotent
    under React strict mode).
 
+### Viewport-swapped assets: the capture only ever saw one width
+
+The capture runs at **one** viewport (desktop). Any asset the site chooses
+*client-side by media query* is therefore captured in its desktop variant only,
+and the other variants were never even requested — so they are not in
+`asset-map.json` and not on disk. The replica then shows desktop media at phone
+widths. This is invisible to `typecheck`/`test`/`build`/`viewports` (the images
+load fine, they are simply the wrong ones); only `compare` at a phone viewport
+reveals it.
+
+Two flavours, both seen on cash.app/bank:
+
+- **`<video>` with `sources[{mediaQuery, src}]`** — the elements ship with no
+  `src` at all, so the replica shows blank boxes until you re-implement the
+  chooser.
+- **`<img>` swapped to a genuinely different file** — the mobile hero was a
+  *different photograph*, not a rescale or a smart crop. Do not assume
+  responsive images are the same picture at another size.
+
+Handling it:
+
+1. Confirm it is a real swap, not CSS. Probe the **live** page at several widths
+   with a throwaway script in `scrape/` (gitignored) and read back
+   `img.currentSrc` / `naturalWidth`. Import Playwright from
+   `scripts/lib/chromium.mjs` (`findChromium()`/`launch()`) — the project
+   vendors `playwright-core`, so a bare `import 'playwright'` fails.
+2. Pin the breakpoint from the site's **own source**, not by bisecting. Grep the
+   captured JS for the breakpoint table; cash.app defined
+   `let i="760px"` then `parseInt(i,10)-1`, giving `max-width:759px`, which also
+   appears verbatim in its CSS. A guessed breakpoint is a permanent 1px-off bug.
+3. Add every missing variant URL to `extraAssets` in `replica.config.json` (with
+   a `_extraAssets` comment saying why) and re-run `npm run scrape`. Confirm the
+   file count on disk actually grew.
+4. Derive the desktop→variant path mapping **mechanically** from
+   `scrape/asset-map.json`, never by hand. Filenames lie: the mobile asset for
+   one card was literally named `Bank_Desktop_2UP_001_2.png`.
+5. Write the effect with a `matchMedia` listener so it also reacts to live
+   resize/rotation, keying off a `data-` attribute that remembers the original
+   src so repeated init is idempotent.
+6. Add a drift test that re-derives the table from the build artifacts: assert
+   every desktop path is actually present in `app/generated/*.tsx` (asset hashes
+   change on re-scrape, and a stale path silently matches nothing), every
+   variant resolves through `asset-map.json`, every file exists in `public/`, and
+   every variant is listed in `extraAssets` so a future scrape cannot drop it.
+
+### Beware: the sanitizer strips `webflow.js`, and it was suppressing clicks
+
+Webflow widget controls are anchors whose href names an element to *reveal*, not
+a place to scroll: a tab link is `<a href="#w-tabs-0-data-w-pane-0" role="tab">`,
+and lightbox/dropdown triggers have the same shape. On the live site `webflow.js`
+binds these and calls `preventDefault()`. The sanitizer drops `webflow.js`, so in
+the replica **nothing suppresses that href any more**. Two failure modes follow,
+and they are easy to miss because neither logs an error:
+
+1. **A generic smooth-anchor effect will bind them.** `initSmoothAnchors` now
+   excludes `.w-tab-link, [role="tab"], [data-w-tab], [aria-controls]`,
+   `[data-tab], .w-dropdown-toggle, .w-lightbox, [data-fancybox]`. Keep that
+   exclusion list in sync if you add widget effects.
+2. **Any handler you hand-write for a widget control must call
+   `preventDefault()` itself** to stand in for the `webflow.js` that no longer
+   exists, or the browser performs native fragment navigation.
+
+This is nastier than a normal cosmetic bug because carousel/tab autoplay scripts
+routinely synthesise `tab.click()` on a timer (coframe.com fires one every 4s).
+Either failure mode then re-scrolls the page to that widget *forever*, so a
+reader who scrolls past it is dragged back every few seconds and effectively
+cannot read the rest of the page. Nothing in `tsc`, the unit tests, or the
+viewport gate catches it — the page is structurally perfect and simply refuses to
+stay scrolled.
+
+**How to check:** with the section's autoplay confirmed *armed* (park on it until
+the active tab advances on its own — the `IntersectionObserver` usually needs it
+50% visible), scroll well past it, wait through 3+ autoplay ticks, then assert
+`window.scrollY` has not moved and `location.hash` is still empty. Verifying from
+a cold jump past the section proves nothing: autoplay never armed, so the timer
+that causes the bug never ran.
+
 ---
 
 ## Step 6 — The verification gate (all of it, in order)
@@ -214,7 +358,16 @@ npm run viewports   # 7-viewport browser audit — must exit 0
 `npm run viewports` gates on: horizontal overflow, oversized elements, the
 burger/desktop nav swap, canvas backing-store and paint state, animation trigger
 counts pre/post scroll, carousel init, broken images, console errors, failed
-requests, and **any remote (non-self-hosted) request**.
+requests, **duplicated visible headings**, and **any remote (non-self-hosted)
+request**.
+
+The `duplicate-visible-text` check is the gate for the baked-runtime-node bug
+described under `captureMode` in Step 4. It tallies `h1/h2/h3` text and flags
+any string rendered **visibly more than once**, walking ancestors for
+`display`/`visibility`/`opacity` so transient clones parked at `opacity: 0`
+(which real sites legitimately keep in the DOM) do not false-positive. If the
+live site genuinely shows duplicate headings, baseline it in
+`replica.baseline.json` under `duplicateVisibleText` per viewport.
 
 Then the side-by-side visual comparison:
 
@@ -241,6 +394,14 @@ original's bugs is no longer a replica.
 - Generated vitest suite green.
 - 7/7 viewports pass (`npm run viewports` exits 0).
 - Zero broken images, zero remote requests, zero console errors.
+- Zero duplicated visible headings beyond what live itself shows.
+- **Verify duplication against the live site, in the browser, not by counting
+  nodes.** Element/attribute counts are not evidence: the site's own JS creates
+  transient clones, so a raw count differs from live for entirely correct
+  reasons. Measure whether text is *visibly* rendered twice, run the identical
+  measurement on the live page, and treat live as the arbiter. Also check the
+  live DOM, not just generated JSX — codegen and the runtime port can each
+  produce this symptom independently.
 - Side-by-side comparison screenshots produced, reviewed, and any residual
   difference explained.
 

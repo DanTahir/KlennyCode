@@ -53,6 +53,25 @@ function findAll(node, pred, acc = []) {
 
 const countElements = (node) => findAll(node, () => true).length;
 
+// Tags that carry a visual asset reference.
+const ASSET_NODE_TAGS = new Set(['img', 'source', 'video', 'picture']);
+const ASSET_NODE_ATTRS = ['src', 'srcset', 'data-src', 'data-srcset', 'poster'];
+
+/**
+ * Count nodes that actually reference a visual asset. Used to detect a static
+ * (pre-JS) response that is missing images a client component injects after
+ * hydration -- see the AUTO_STATIC_MIN_ASSET_RATIO rationale in main().
+ */
+const countAssetNodes = (node) =>
+  findAll(
+    node,
+    (n) =>
+      ASSET_NODE_TAGS.has(n.tagName) &&
+      (n.attrs ?? []).some(
+        (a) => ASSET_NODE_ATTRS.includes(a.name) && String(a.value ?? '').trim() !== '',
+      ),
+  ).length;
+
 // ---------------------------------------------------------------------------
 // Minimal CSS-selector matcher (parse5 has no querySelector)
 // Supports: tag, #id, .class, [attr], [attr=v], [attr*=v], [attr^=v], [attr$=v]
@@ -373,7 +392,12 @@ const DROP_ATTRS = new Set(['xmlns:svgjs']);
 
 function cssPropToCamel(prop) {
   const p = prop.trim();
-  if (p.startsWith('--')) return p; // CSS custom property: keep verbatim
+  // CSS custom property: keep verbatim. React hands unknown `--*` keys to
+  // `style.setProperty`, so this is correct at runtime — but csstype's
+  // `Properties` has no index signature, so the emitted object literal needs
+  // the module augmentation in `types/css-custom-properties.d.ts` to satisfy
+  // `tsc` (otherwise: TS2353 "'--foo' does not exist in type 'Properties'").
+  if (p.startsWith('--')) return p;
   if (p.startsWith('-')) {
     const parts = p.slice(1).split('-');
     return (
@@ -453,6 +477,9 @@ const stats = {
   rewritten: { asset: 0, href: 0 },
   strippedClasses: 0,
   strippedInlineStyleProps: 0,
+  emptiedRuntimeHosts: 0,
+  emptiedRuntimeNodes: 0,
+  unwrappedRuntimeWrappers: 0,
   fadeIn: 0,
   swiperRoots: 0,
   swiperSlides: 0,
@@ -478,8 +505,21 @@ const stats = {
  */
 function sanitizeTree(root) {
   const dropParsed = cfg.codegen.dropSelectors.map(parseSelector).filter(Boolean);
+  const emptyParsed = cfg.codegen.emptySelectors.map(parseSelector).filter(Boolean);
+  const unwrapParsed = cfg.codegen.unwrapSelectors.map(parseSelector).filter(Boolean);
   const stripClasses = new Set(cfg.codegen.stripClasses);
   const keepClasses = new Set(cfg.codegen.keepClasses);
+
+  /** Strip runtime-added classes from one element, dropping an emptied attr. */
+  const stripClassesOn = (el) => {
+    const clsAttr = el.attrs?.find((a) => a.name === 'class');
+    if (!clsAttr) return;
+    const before = clsAttr.value.trim().split(/\s+/).filter(Boolean);
+    const after = before.filter((c) => keepClasses.has(c) || !stripClasses.has(c));
+    if (after.length !== before.length) stats.strippedClasses += before.length - after.length;
+    if (after.length) clsAttr.value = after.join(' ');
+    else el.attrs = el.attrs.filter((a) => a.name !== 'class');
+  };
 
   const walk = (node) => {
     const children = [...(node.childNodes ?? [])];
@@ -495,15 +535,41 @@ function sanitizeTree(root) {
         }
       }
 
-      // Strip runtime-added classes.
-      const clsAttr = child.attrs?.find((a) => a.name === 'class');
-      if (clsAttr) {
-        const before = clsAttr.value.trim().split(/\s+/).filter(Boolean);
-        const after = before.filter((c) => keepClasses.has(c) || !stripClasses.has(c));
-        if (after.length !== before.length) stats.strippedClasses += before.length - after.length;
-        if (after.length) clsAttr.value = after.join(' ');
-        else child.attrs = child.attrs.filter((a) => a.name !== 'class');
+      // Runtime clone HOST: ship it empty. The capture caught whatever clones
+      // the page's JS happened to have appended; keeping them means the replica
+      // renders a frozen copy of a transient animation node forever, on top of
+      // the ones its own runtime creates.
+      if (emptyParsed.some((p) => matchesSelector(child, p))) {
+        if (child.childNodes?.length) {
+          stats.emptiedRuntimeHosts += 1;
+          // countElements includes `child` itself; descendants is that minus one.
+          stats.emptiedRuntimeNodes += Math.max(0, countElements(child) - 1);
+          child.childNodes = [];
+        }
+        // Inline geometry/positioning on a pure runtime host is runtime state.
+        if (child.attrs?.some((a) => a.name === 'style')) {
+          child.attrs = child.attrs.filter((a) => a.name !== 'style');
+        }
+        stripClassesOn(child);
+        continue; // nothing left to recurse into
       }
+
+      // Runtime-generated WRAPPER: replace it with its own children, so the
+      // authored text/markup underneath is restored to its pristine shape and
+      // the site's own JS can re-split it at runtime.
+      if (unwrapParsed.some((p) => matchesSelector(child, p))) {
+        const idx = node.childNodes.indexOf(child);
+        const kids = child.childNodes ?? [];
+        for (const k of kids) k.parentNode = node;
+        node.childNodes.splice(idx, 1, ...kids);
+        stats.unwrappedRuntimeWrappers += 1;
+        // The promoted children were not in this loop's snapshot, so walk them
+        // explicitly (a wrapper may itself contain wrappers).
+        for (const k of kids) if (isEl(k)) walk(k);
+        continue;
+      }
+
+      stripClassesOn(child);
 
       // Webflow/GSAP leave inline `style` residue; the style serializer strips
       // the animation props, and an emptied style attr is dropped there too.
@@ -519,7 +585,18 @@ function sanitizeTree(root) {
 // ---------------------------------------------------------------------------
 function serializeAttrs(node) {
   const out = [];
-  for (const { name, value } of node.attrs ?? []) {
+  for (const attr of node.attrs ?? []) {
+    const { value } = attr;
+
+    // parse5 splits namespaced attributes on foreign content (SVG/MathML) into
+    // `prefix` + `name`, so `xmlns:xlink="..."` arrives as
+    // `{ prefix: 'xmlns', name: 'xlink' }`. Looking up only `name` therefore
+    // missed every namespaced entry in ATTR_RENAME / DROP_ATTRS, and the bare
+    // `xlink`/`space` names fell through as invalid React props (TS2322:
+    // "Property 'xlink' does not exist on type 'SVGProps<SVGSVGElement>'").
+    // Reconstruct the qualified name so those table entries are reachable.
+    const name = attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name;
+
     if (DROP_ATTRS.has(name)) continue;
 
     if (name === 'style') {
@@ -528,7 +605,14 @@ function serializeAttrs(node) {
       continue;
     }
 
-    let propName = ATTR_RENAME[name] ?? name;
+    // parse5 applies the HTML spec's "adjust SVG attributes" table, so foreign
+    // content arrives ALREADY camelCased (`viewBox`, `preserveAspectRatio`,
+    // `gradientTransform`, ...). A case-SENSITIVE lookup misses those (the map
+    // is keyed lowercase), and the guard further down would then lowercase them
+    // back into invalid React props -- emitting `viewbox` and breaking every
+    // inline SVG. Look the name up case-insensitively so both spellings hit.
+    const renamed = ATTR_RENAME[name] ?? ATTR_RENAME[name.toLowerCase()];
+    let propName = renamed ?? name;
     let propValue = value;
 
     if (name === 'srcset' || name === 'imagesrcset') {
@@ -557,7 +641,7 @@ function serializeAttrs(node) {
     }
 
     // React refuses unknown camelCase-ish attrs; data-*/aria-* are always fine.
-    if (!/^(data-|aria-)/.test(propName) && /[A-Z]/.test(propName) && !ATTR_RENAME[name] && name === propName) {
+    if (!/^(data-|aria-)/.test(propName) && /[A-Z]/.test(propName) && !renamed && name === propName) {
       propName = propName.toLowerCase();
     }
 
@@ -963,8 +1047,99 @@ async function main() {
     features = JSON.parse(await readFile(paths.features, 'utf8'));
   } catch { /* optional */ }
 
-  const html = await readFile(paths.rawHtml, 'utf8');
-  const doc = parse(html);
+  // Which markup to build from. A RENDERED capture contains whatever the
+  // page's own JS had already done: clone nodes appended, headings split into
+  // per-word spans, absolutely-positioned overlay clones left mid-animation.
+  // Stripping runtime classes/styles does not remove those -- they ship as
+  // permanent copies AND get regenerated at runtime, so the replica renders
+  // every animated element twice.
+  //
+  // The pre-JS server response has none of that, but on a client-rendered SPA
+  // it is an empty shell. So: 'static' forces it, 'rendered' forces the old
+  // behaviour, and 'auto' (default) uses static only when it is substantially
+  // complete relative to the rendered DOM.
+  const AUTO_STATIC_MIN_RATIO = 0.7;
+  // Asset parity is judged separately, and far more strictly, than element
+  // count. A static response can match the rendered DOM almost exactly by
+  // element count while still missing every <img> that a client-side component
+  // injects after hydration: on cash.app/bank, 20 missing images among ~700
+  // nodes still scored a 0.97 element ratio, comfortably over the 0.7 bar, so
+  // codegen picked the static markup and shipped five promo cards as empty
+  // black boxes. Element count simply cannot see a defect like that, because
+  // images are a rounding error in the total. Requiring near-parity on
+  // asset-bearing nodes catches it and falls back to the rendered DOM.
+  const AUTO_STATIC_MIN_ASSET_RATIO = 0.9;
+
+  const renderedHtml = await readFile(paths.rawHtml, 'utf8');
+  const renderedDoc = parse(renderedHtml);
+  const renderedCount = countElements(renderedDoc);
+  const renderedAssetCount = countAssetNodes(renderedDoc);
+
+  let staticHtml = null;
+  let staticDoc = null;
+  let staticCount = 0;
+  let staticAssetCount = 0;
+  try {
+    staticHtml = await readFile(paths.rawHtmlStatic, 'utf8');
+    staticDoc = parse(staticHtml);
+    staticCount = countElements(staticDoc);
+    staticAssetCount = countAssetNodes(staticDoc);
+  } catch {
+    /* index.static.html is optional (older captures) */
+  }
+
+  const staticRatio = renderedCount > 0 ? staticCount / renderedCount : 0;
+  // A page with no assets at all satisfies parity trivially (ratio 1), so a
+  // purely textual page is never pushed onto the rendered path by this check.
+  const staticAssetRatio = renderedAssetCount > 0 ? staticAssetCount / renderedAssetCount : 1;
+  const staticUsable = Boolean(staticDoc) && staticCount > 0;
+
+  let markupSource;
+  if (cfg.captureMode === 'static') {
+    if (!staticUsable) {
+      throw new Error(
+        'captureMode "static" requires scrape/raw/index.static.html — re-run `npm run capture`.',
+      );
+    }
+    markupSource = 'static';
+  } else if (cfg.captureMode === 'rendered') {
+    markupSource = 'rendered';
+  } else {
+    markupSource =
+      staticUsable &&
+      staticRatio >= AUTO_STATIC_MIN_RATIO &&
+      staticAssetRatio >= AUTO_STATIC_MIN_ASSET_RATIO
+        ? 'static'
+        : 'rendered';
+  }
+
+  const html = markupSource === 'static' ? staticHtml : renderedHtml;
+  const doc = markupSource === 'static' ? staticDoc : renderedDoc;
+  const sourceFile =
+    markupSource === 'static'
+      ? 'scrape/raw/index.static.html (pre-JS server response)'
+      : 'scrape/raw/index.html (rendered, pre-scroll)';
+
+  console.log(
+    `\nmarkup source      : ${sourceFile}\n` +
+      `  captureMode                  : ${cfg.captureMode}\n` +
+      `  static/rendered elements     : ${staticCount}/${renderedCount}` +
+      ` (ratio ${staticRatio.toFixed(2)}, auto threshold ${AUTO_STATIC_MIN_RATIO})\n` +
+      `  static/rendered asset nodes  : ${staticAssetCount}/${renderedAssetCount}` +
+      ` (ratio ${staticAssetRatio.toFixed(2)}, auto threshold ${AUTO_STATIC_MIN_ASSET_RATIO})`,
+  );
+  if (markupSource === 'rendered' && staticUsable && cfg.captureMode === 'auto') {
+    const reason =
+      staticRatio < AUTO_STATIC_MIN_RATIO
+        ? 'too few elements (likely client-rendered)'
+        : `too few asset nodes -- ${renderedAssetCount - staticAssetCount} image/video ` +
+          'node(s) are injected after hydration';
+    console.log(
+      `  NOTE: static markup looked incomplete: ${reason},\n` +
+        '        so the rendered DOM was used. Runtime-generated nodes may be baked\n' +
+        '        in -- check codegen.emptySelectors / codegen.unwrapSelectors.',
+    );
+  }
 
   await mkdir(paths.appGenerated, { recursive: true });
 
@@ -1089,7 +1264,9 @@ async function main() {
   const manifest = {
     generatedAt: new Date().toISOString(),
     targetUrl: cfg.targetUrl,
-    source: 'scrape/raw/index.html (rendered, pre-scroll)',
+    source: sourceFile,
+    captureMode: cfg.captureMode,
+    markupSource,
     htmlLang: headInfo.lang ?? 'en',
     bodyClasses: (headInfo.bodyClass ?? '').split(/\s+/).filter(Boolean),
     title: headInfo.title,

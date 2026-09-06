@@ -152,13 +152,25 @@ async function main() {
     try {
       const { readdir, copyFile } = await import('node:fs/promises');
       const files = await readdir(imgDir);
-      // Prefer a real .ico, then the largest square PNG, then any SVG.
+      // Downloaded icons are hash-prefixed by the asset pipeline
+      // (`<hash>_coframe-icon-256.<hash>.jpg`) and are very often named
+      // `icon` / `<brand>-icon-256` rather than `favicon`, in any of several
+      // formats. Matching only `favicon*.png` therefore finds nothing on most
+      // sites and no icon gets served at all. Match "icon" anywhere in the
+      // name across every raster format, preferring a real .ico, then a
+      // favicon-named file, then the largest declared pixel size.
+      const scoreOf = (f) => {
+        const m = f.match(/(\d{2,4})x\d{2,4}/) ?? f.match(/icon[-_]?(\d{2,4})/i);
+        return (/favicon/i.test(f) ? 100000 : 0) + Number(m?.[1] ?? 0);
+      };
+      const rasters = files
+        .filter((f) => /icon/i.test(f) && /\.(png|jpe?g|avif|webp)$/i.test(f))
+        .sort((a, b) => scoreOf(b) - scoreOf(a));
       const pick =
         files.find((f) => /\.ico$/i.test(f)) ??
-        files.find((f) => /favicon-32x32.*\.png$/i.test(f)) ??
-        files.find((f) => /favicon.*\.png$/i.test(f)) ??
-        files.find((f) => /apple-touch-icon.*\.png$/i.test(f)) ??
-        files.find((f) => /favicon.*\.svg$/i.test(f));
+        rasters[0] ??
+        files.find((f) => /favicon.*\.svg$/i.test(f)) ??
+        files.find((f) => /icon.*\.svg$/i.test(f));
       if (pick) {
         const dest = path.join(paths.root, 'public', 'favicon.ico');
         await mkdir(path.dirname(dest), { recursive: true });

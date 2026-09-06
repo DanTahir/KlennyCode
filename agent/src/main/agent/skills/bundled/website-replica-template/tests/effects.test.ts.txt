@@ -277,6 +277,29 @@ describe('smoothAnchors', () => {
     document.getElementById('bad')!.dispatchEvent(bad);
     expect(bad.defaultPrevented).toBe(false);
   });
+
+  // Regression guard. A Webflow tab link is `<a href="#pane" role="tab">`: the
+  // href names a pane to reveal, not a place to scroll. Carousel autoplay
+  // synthesises `tab.click()` on a timer, so if smooth-scroll binds to one the
+  // page yanks itself back to that carousel every few seconds forever.
+  it('ignores widget-control anchors like Webflow tab links', () => {
+    document.body.innerHTML = `
+      <a href="#pane-0" id="tab" class="w-tab-link" role="tab" aria-controls="pane-0">step</a>
+      <a href="#sec" id="plain">to section</a>
+      <div id="pane-0"></div>
+      <div id="sec"></div>`;
+    Element.prototype.scrollIntoView = () => {};
+    initSmoothAnchors(document);
+
+    const onTab = new MouseEvent('click', { cancelable: true, bubbles: true });
+    document.getElementById('tab')!.dispatchEvent(onTab);
+    expect(onTab.defaultPrevented).toBe(false);
+
+    // A genuine navigation anchor must still get smooth scrolling.
+    const onPlain = new MouseEvent('click', { cancelable: true, bubbles: true });
+    document.getElementById('plain')!.dispatchEvent(onPlain);
+    expect(onPlain.defaultPrevented).toBe(true);
+  });
 });
 
 describe('initEffects', () => {

@@ -35,7 +35,7 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
     built-in/custom subagent types (agent can author both itself via `write_skill`/`write_subagent`);
     `skills/bundled/` holds the default skills that ship with every install (inlined via `?raw`),
     `skills/bundledSkills.ts` is their registry, and `skills/websiteReplicaTemplate.ts` maps the
-    34-file `website-replica` template
+    35-file `website-replica` template
   - `src/main/agent/frontmatter.ts` — shared safe YAML frontmatter parse/stringify used by *both*
     the skills and subagents managers (see the escaping gotcha below)
   - `src/main/agent/codeindex/` — optional semantic codebase search (embeddings + vectra/Pinecone)
@@ -86,7 +86,7 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   seeded by `seedBundledSkills()` into `~/.klenny/skills/<name>/`, with per-skill `{version, hash}`
   tracked in `skills-seed-state.json` (re-written on a version bump only if the user hasn't edited
   it; a skill the user *deletes* stays deleted). A bundled skill may also carry **multi-file
-  assets** (dest path → content): `website-replica` ships a 34-file Next.js + capture-pipeline
+  assets** (dest path → content): `website-replica` ships a 35-file Next.js + capture-pipeline
   template that `seedSkillAssets()` writes with *per-file* edit detection
   (`SeedRecord.assetHashes`), so a user edit to one template file is preserved while every other
   file still upgrades. Unlike whole-skill deletion, a deleted *asset* is rewritten on

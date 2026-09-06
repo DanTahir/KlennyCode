@@ -1,7 +1,7 @@
 /** Asset manifest for the bundled `website-replica` skill's project template.
  *
  *  Unlike every other bundled skill, `website-replica` is not just a SKILL.md: the skill is
- *  useless without the 34-file Next.js project template it tells the agent to copy. That template
+ *  useless without the 35-file Next.js project template it tells the agent to copy. That template
  *  therefore has to ship with the app and be seeded to disk alongside the SKILL.md (see
  *  manager.ts's seedBundledSkills + BundledSkill.assets).
  *
@@ -69,6 +69,8 @@ import tplTestSetup from './bundled/website-replica-template/tests/setup.ts.txt?
 import tplTestEffects from './bundled/website-replica-template/tests/effects.test.ts.txt?raw'
 import tplTestGenerated from './bundled/website-replica-template/tests/generated.test.ts.txt?raw'
 
+import tplTypesCssCustomProperties from './bundled/website-replica-template/types/css-custom-properties.d.ts.txt?raw'
+
 /** Destination path (relative to the seeded skill's own directory, i.e.
  *  `<global skills dir>/website-replica/`) -> file content.
  *
@@ -114,5 +116,11 @@ export const WEBSITE_REPLICA_TEMPLATE: Record<string, string> = {
 
   'template/tests/setup.ts': tplTestSetup,
   'template/tests/effects.test.ts': tplTestEffects,
-  'template/tests/generated.test.ts': tplTestGenerated
+  'template/tests/generated.test.ts': tplTestGenerated,
+
+  // Ambient csstype augmentation so generated JSX may set CSS custom properties (`--foo`) in
+  // `style` objects without failing the template's own `tsc` run. Vendored with the same `.txt`
+  // suffix as every other asset — a bare `.d.ts` under src/main/ would be picked up by this
+  // repo's own tsconfig.node.json and augment *KlennyCode's* csstype instead.
+  'template/types/css-custom-properties.d.ts': tplTypesCssCustomProperties
 }

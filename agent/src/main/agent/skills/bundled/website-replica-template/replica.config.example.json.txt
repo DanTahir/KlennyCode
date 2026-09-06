@@ -28,5 +28,14 @@
   },
 
   "_viewports": "Override only if the site has unusual breakpoints.",
-  "viewports": null
+  "viewports": null,
+
+  "_extraAssets": [
+    "Absolute URLs to download that the capture browser never requested.",
+    "Capture runs at ONE viewport, so a responsive <source media> / srcset",
+    "variant for another breakpoint is never fetched — and 404s at exactly the",
+    "viewport the harness audits. Especially needed when the site selects the",
+    "source in JS (matchMedia) instead of letting the browser choose."
+  ],
+  "extraAssets": []
 }

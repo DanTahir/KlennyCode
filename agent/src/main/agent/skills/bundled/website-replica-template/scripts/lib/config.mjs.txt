@@ -64,6 +64,26 @@ const DEFAULT_STRIP_INLINE_STYLE_PROPS = [
   'visibility', 'will-change',
 ];
 
+/**
+ * Elements that are pure *hosts* for runtime-generated children: the page's own
+ * JS appends clones/nodes into them after load. A rendered-DOM capture bakes
+ * those children in, so the replica ships with permanent copies of transient
+ * animation nodes AND then generates its own at runtime -> visible duplicates.
+ * Matching elements are shipped empty (and lose their inline `style`, which on
+ * a pure runtime host is by definition runtime state).
+ */
+const DEFAULT_EMPTY_SELECTORS = ['[data-replica-empty]'];
+
+/**
+ * Elements that are runtime-generated *wrappers* around authored content
+ * (per-word/per-letter split spans, typewriter carets). The capture bakes them
+ * in; stripping their runtime state class leaves a bare wrapper that CSS
+ * renders in its finished state, so the animation appears already-played and
+ * frozen. Matching elements are replaced by their own children, restoring the
+ * pristine text the site's JS would have split itself.
+ */
+const DEFAULT_UNWRAP_SELECTORS = ['[data-replica-unwrap]'];
+
 /** Elements injected by third parties that are not part of the design. */
 const DEFAULT_DROP_SELECTORS = [
   'script', 'noscript',
@@ -73,6 +93,13 @@ const DEFAULT_DROP_SELECTORS = [
   '.ot-sdk-container', '#usercentrics-root', '#hs-web-interactives-top-anchor',
   '#intercom-frame', '.intercom-lightweight-app', '#drift-frame-controller',
   '#crisp-chatbox', '#tawkchat-container', '.grecaptcha-badge',
+  // Framework-injected a11y/runtime artifacts, not part of the design. Next.js
+  // appends <next-route-announcer> to <body> at runtime to announce client-side
+  // route changes; a rendered capture bakes it in, where it becomes a bogus
+  // top-level section AND an unknown JSX element (TS2339: Property
+  // 'next-route-announcer' does not exist on type 'JSX.IntrinsicElements').
+  // The replica's own Next runtime recreates it, so dropping is correct.
+  'next-route-announcer',
   '[data-replica-drop]',
 ];
 
@@ -142,7 +169,12 @@ export async function loadConfig() {
     host: target.host,
     slug: cfg.slug ?? target.host.replace(/[^a-z0-9]/gi, '').toLowerCase(),
     port: cfg.port ?? 3300,
-    captureMode: cfg.captureMode ?? 'rendered',
+    // Which captured markup codegen builds the JSX from:
+    // 'auto'     - use the pre-JS server response when it is substantially
+    //              complete, else the rendered DOM (see codegen.mjs).
+    // 'static'   - always use scrape/raw/index.static.html.
+    // 'rendered' - always use scrape/raw/index.html (bakes in runtime nodes).
+    captureMode: cfg.captureMode ?? 'auto',
     settleMs: cfg.settleMs ?? 3500,
     scrollSettleMs: cfg.scrollSettleMs ?? 90,
     codegen: {
@@ -150,6 +182,8 @@ export async function loadConfig() {
       stripInlineStyleProps:
         cfg.codegen?.stripInlineStyleProps ?? DEFAULT_STRIP_INLINE_STYLE_PROPS,
       dropSelectors: cfg.codegen?.dropSelectors ?? DEFAULT_DROP_SELECTORS,
+      emptySelectors: cfg.codegen?.emptySelectors ?? DEFAULT_EMPTY_SELECTORS,
+      unwrapSelectors: cfg.codegen?.unwrapSelectors ?? DEFAULT_UNWRAP_SELECTORS,
       keepClasses: cfg.codegen?.keepClasses ?? [],
       splitMinChildren: cfg.codegen?.splitMinChildren ?? 5,
       splitMinSections: cfg.codegen?.splitMinSections ?? 3,
@@ -161,6 +195,13 @@ export async function loadConfig() {
     blockHosts: cfg.blockHosts ?? DEFAULT_BLOCK_HOSTS,
     viewports: cfg.viewports ?? DEFAULT_VIEWPORTS,
     links: cfg.links ?? 'absolute',
+    // Absolute URLs to download even though the capture browser never
+    // requested them. Capture happens at ONE viewport, so responsive media
+    // for other breakpoints (a <source media="..."> or srcset variant the
+    // browser declined, especially when the site picks the source in JS via
+    // matchMedia rather than letting the browser do it) is never fetched and
+    // then 404s at exactly the viewports the harness audits.
+    extraAssets: cfg.extraAssets ?? [],
   };
 
   return cached;

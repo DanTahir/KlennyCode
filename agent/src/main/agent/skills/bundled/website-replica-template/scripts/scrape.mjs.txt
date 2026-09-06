@@ -10,6 +10,9 @@
  *      (e.g. an <img> below the fold with a `srcset` the browser skipped, or a
  *      preload the browser declined).
  *   3. one recursion pass into every downloaded CSS/JS file, for url() refs.
+ *   4. `extraAssets` from replica.config.json — absolute URLs the capture
+ *      viewport never requested (responsive <source>/srcset variants for other
+ *      breakpoints). Opt-in, and the only site-specific input here.
  *
  * Everything lands in scrape/raw/<kind>/ (cache) and public/assets/<kind>/
  * (served), and is recorded in scrape/asset-map.json as remoteUrl -> localPath.
@@ -120,10 +123,23 @@ async function main() {
     } catch { /* optional */ }
   }
 
-  const queue = [...new Set([...fromNetwork, ...fromMarkup])];
+  // ---- source 3: config-declared extras ---------------------------------
+  // Responsive variants the capture viewport never requested. Kept generic:
+  // the script knows nothing about which URLs these are, only that config
+  // named them.
+  const fromExtras = (cfg.extraAssets ?? []).filter((u) => {
+    if (!/^https?:/i.test(u)) {
+      console.log(`warning: extraAssets entry is not an absolute URL, skipping: ${u}`);
+      return false;
+    }
+    return !isBlocked(u);
+  });
+
+  const queue = [...new Set([...fromNetwork, ...fromMarkup, ...fromExtras])];
   console.log(
     `stage 1: ${queue.length} candidate assets ` +
-      `(${new Set(fromNetwork).size} from network log, ${new Set(fromMarkup).size} from markup)`,
+      `(${new Set(fromNetwork).size} from network log, ${new Set(fromMarkup).size} from markup` +
+      `${fromExtras.length ? `, ${new Set(fromExtras).size} from config extraAssets` : ''})`,
   );
 
   const map = {};
