@@ -1,5 +1,5 @@
 import type { ChatMessage, DocumentBlock, ToolCallBlock, ToolResultPayload } from '@shared/types'
-import type { ChatMessage as ORMessage } from '../openrouter/client'
+import type { ChatMessage as ORMessage, ReasoningDetail } from '../openrouter/client'
 
 /** Wraps a user-attached document's extracted text in clear delimiters so the model can tell
  *  where the attachment starts/ends within the surrounding text content parts, and knows its
@@ -101,13 +101,36 @@ export function toORMessages(
         out.push({ role: 'user', content: textParts.join('\n') })
       }
     } else if (m.role === 'assistant') {
+      // `thinking` is deliberately NOT folded into `content` here. It used to be, and that was a
+      // real behavioral bug rather than a cosmetic one: replaying private reasoning as assistant
+      // *content* presents it to the model as something it said out loud to the user, so its own
+      // history reads as a worked example of "think, narrate a sentence, then make exactly one
+      // tool call" — and models imitate the transcript they're shown. That few-shot effect is a
+      // prime suspect for the serial one-read_file-per-turn rhythm this codebase exhibited.
+      // Reasoning now travels in its own wire field instead (see below), which is both where
+      // providers expect it and invisible as "speech".
       const text = m.blocks
-        .filter((b) => b.type === 'text' || b.type === 'thinking')
+        .filter((b) => b.type === 'text')
+        .map((b) => (b as { text: string }).text)
+        .join('')
+      const thinking = m.blocks
+        .filter((b) => b.type === 'thinking')
         .map((b) => (b as { text: string }).text)
         .join('')
       const tcs = [...new Map(
         (m.blocks.filter((b) => b.type === 'tool_call') as ToolCallBlock[]).map((tc) => [tc.id, tc])
       ).values()]
+      // Prefer the provider's own structured blocks when we captured them: encrypted/summarized
+      // reasoning carries signatures that a flattened plaintext string would destroy, and
+      // OpenRouter requires the replayed sequence to match what the model originally emitted.
+      // The plaintext `reasoning` field is the documented fallback for models that only ever
+      // returned a raw string (which is all our UI-facing ThinkingBlock preserves).
+      const reasoningFields: { reasoning?: string; reasoning_details?: ReasoningDetail[] } = {}
+      if (m.reasoningDetails?.length) {
+        reasoningFields.reasoning_details = m.reasoningDetails as ReasoningDetail[]
+      } else if (thinking) {
+        reasoningFields.reasoning = thinking
+      }
       if (tcs.length) {
         out.push({
           role: 'assistant',
@@ -116,11 +139,15 @@ export function toORMessages(
             id: tc.id,
             type: 'function' as const,
             function: { name: tc.toolName, arguments: JSON.stringify(tc.args) }
-          }))
+          })),
+          ...reasoningFields
         })
       } else if (text) {
-        out.push({ role: 'assistant', content: text })
+        out.push({ role: 'assistant', content: text, ...reasoningFields })
       }
+      // A turn with reasoning but neither text nor tool calls is intentionally dropped: there's no
+      // content to attach the reasoning to, and an empty-content assistant message is rejected by
+      // some providers. Such a turn has no effect on the conversation anyway.
     } else if (m.role === 'tool') {
       const tc = m.blocks.find((b) => b.type === 'tool_call') as ToolCallBlock | undefined
       if (tc?.result && !sentToolResults.has(tc.id)) {

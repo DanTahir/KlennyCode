@@ -154,6 +154,13 @@ export interface PendingDocument {
   sizeBytes: number
 }
 
+/** One provider-returned reasoning block, persisted verbatim so it can be replayed on later turns.
+ *  Opaque by design — see ReasoningDetail in openrouter/client.ts for why we never reshape these. */
+export interface ReasoningDetailRecord {
+  type: string
+  [key: string]: unknown
+}
+
 export interface ChatMessage {
   id: string
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -161,6 +168,14 @@ export interface ChatMessage {
   createdAt: number
   /** OpenRouter usage for this specific assistant turn, if applicable */
   usage?: UsageInfo
+  /**
+   * Structured reasoning blocks this assistant turn produced, captured from the stream and handed
+   * back to the provider on subsequent turns to preserve reasoning continuity across tool calls.
+   * Distinct from the ThinkingBlock in `blocks`: that one exists to render thinking in the UI,
+   * whereas this is the wire-faithful payload. Never merged into message content — see
+   * toORMessages in agent/messages.ts for the bug that caused.
+   */
+  reasoningDetails?: ReasoningDetailRecord[]
   /** marks a synthetic message inserted by context-compaction */
   isCompactionSummary?: boolean
   /** reasoning effort level automatically chosen for this assistant turn, if the model supports reasoning */

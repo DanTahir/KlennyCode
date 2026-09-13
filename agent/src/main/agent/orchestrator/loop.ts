@@ -34,7 +34,7 @@ import { resolveDocumentsDirectory } from '../../documentsDir'
 import { globalKlennyDir, userDataDir } from '../../dataDir'
 import { getWorkspace } from '../../workspace'
 import { sessionStore } from '../../session/store'
-import { streamChatCompletion, fetchModels, type ToolCall } from '../../openrouter/client'
+import { streamChatCompletion, fetchModels, type ToolCall, type ReasoningDetail } from '../../openrouter/client'
 import { modelSupportsCaching, computeCacheSavings } from '../../openrouter/caching'
 import { getToolDefinitions } from '../tools/definitions'
 import {
@@ -243,6 +243,9 @@ export async function agentLoop(
   let textBuf = ''
   let thinkingBuf = ''
   let finishReason: string | undefined
+  // Provider-structured reasoning for this turn, captured so it can be replayed on later turns to
+  // preserve reasoning continuity across tool calls (see ChatMessage.reasoningDetails).
+  let streamedReasoningDetails: ReasoningDetail[] | undefined
   const toolCallsById = new Map<string, ToolCall>()
 
   // Skip the "last message" cache breakpoint on the very first request of a
@@ -331,8 +334,11 @@ export async function agentLoop(
     if (chunk.type === 'tool_calls' && chunk.toolCalls) {
       for (const tc of chunk.toolCalls) toolCallsById.set(tc.id, tc)
     }
-    if (chunk.type === 'done' && chunk.finishReason) {
-      finishReason = chunk.finishReason
+    if (chunk.type === 'done') {
+      // Checked independently of finishReason: the reasoning payload rides the same 'done' chunk
+      // but a stream can finish without a finish_reason, and we still want the reasoning.
+      if (chunk.finishReason) finishReason = chunk.finishReason
+      if (chunk.reasoningDetails?.length) streamedReasoningDetails = chunk.reasoningDetails
     }
     if (chunk.type === 'usage' && chunk.usage) {
       const { costWithoutCacheUsd, cacheSavingsUsd } = computeCacheSavings(modelInfo, chunk.usage)
@@ -381,8 +387,11 @@ export async function agentLoop(
     }
   }
 
+  // The ThinkingBlock is for the UI; reasoningDetails is the wire-faithful copy replayed to the
+  // provider on later turns. Both are recorded, and neither is ever merged into message content.
   if (thinkingBuf) assistantMsg.blocks.push({ type: 'thinking', text: thinkingBuf })
   if (textBuf) assistantMsg.blocks.push({ type: 'text', text: textBuf })
+  if (streamedReasoningDetails?.length) assistantMsg.reasoningDetails = streamedReasoningDetails
 
   // ---- Fabrication guard ---------------------------------------------------------------------
   // Cross-checks what this message CLAIMS against the harness's own execution records. Runs only

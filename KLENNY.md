@@ -178,7 +178,13 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   marker text found in free-text/thinking blocks before it reaches the summarizer (see poisoning
   gotcha below).
 - Message wiring: `agent/messages.ts` → `toORMessages()` — flattens `ChatMessage[]` to OpenRouter
-  wire format, batches tool-result images into one trailing synthetic user message.
+  wire format, batches tool-result images into one trailing synthetic user message, and round-trips
+  prior-turn reasoning in the dedicated `reasoning_details`/`reasoning` wire fields (never merged
+  into `content` — see the reasoning-round-trip gotcha below).
+- Parallel tool calling: the batching instruction lives in all three prompt bodies in
+  `plan/manager.ts` (agent/plan/assistant), plus a short turn-scoped `BATCHING_NUDGE` appended at
+  the very end of `buildCurrentTimeNote()`'s trailing note (`orchestrator/system-prompt.ts`).
+  Actual concurrent execution is already handled by the `Promise.all` dispatch in `loop.ts`.
 - Live checklists: `orchestrator/checklist.ts` → `buildChecklist()` (shared by `approvePlan()` in
   turn-lifecycle.ts and the `create_checklist` dispatch case in loop.ts); rendering/reinjection in
   `orchestrator/system-prompt.ts` → `buildCurrentTimeNote()`; UI in `ChecklistWidget.tsx`.
@@ -201,6 +207,35 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   turn's last-message cache breakpoint must be explicitly re-marked in the *current* wire
   payload, or Anthropic's lookback misses it when routed through OpenRouter. Verify with `[cache]`
   debug logs (breakpointsAt vs. cachedTokens trend) — implicit behavior is unreliable here.
+- **Never merge `thinking` into assistant `content` — it few-shots the model into serial tool
+  calling**: `toORMessages()` used to concatenate thinking blocks and text blocks into one
+  `content` string. That looks cosmetic but is a real behavioral bug: replaying private reasoning
+  as assistant *content* presents it to the model as something it said out loud, so its own history
+  reads as a worked example of "think a paragraph, narrate a sentence, make exactly one tool call"
+  — and models imitate the transcript they are shown. This was a prime suspect for the
+  one-`read_file`-per-turn rhythm the app exhibited despite parallel dispatch already working.
+  Reasoning now travels in its own wire fields, with three non-obvious parts:
+  1. **Structured beats plaintext.** `reasoning_details` (captured verbatim from the stream) is
+     preferred over the plaintext `reasoning` fallback, because encrypted/summarized reasoning
+     carries signatures that flattening to a string destroys. OpenRouter's contract is that the
+     replayed sequence must *match what the model originally produced*, so blocks are treated as
+     opaque: `mergeReasoningDetails()` concatenates only the known text-bearing fields
+     (`text`/`summary`/`data`) keyed by (index, type), replaces everything else (signatures, ids)
+     wholesale, and carries unknown provider fields through untouched rather than dropping them.
+  2. **The ledger-style "recompute after streaming" rule applies here too.** `reasoningDetails`
+     rides the `'done'` chunk and is read independently of `finishReason` — a stream can finish
+     without a finish_reason and we still want the reasoning.
+  3. **Rejection is remembered per model, not retried per request.** If a provider 400s on
+     replayed reasoning, `client.ts` strips the fields and retries once *and* adds the model to a
+     process-lived `reasoningRejectedModels` set, so later requests skip reasoning outright.
+     Without that set the recovery retry would fire on every single turn for an incompatible
+     model, doubling round-trips — strictly worse than never round-tripping, given the whole point
+     is to cut wall-clock time. Covered by `tests/reasoning-roundtrip.test.ts`.
+- **A reasoning-only assistant turn is deliberately dropped on the wire**: if a turn produced
+  reasoning but neither text nor tool calls, `toORMessages()` emits nothing for it (there's no
+  content to attach reasoning to, and empty-content assistant messages are rejected by some
+  providers). Such a turn has no effect on the conversation anyway — don't "fix" this by emitting
+  an empty-content message.
 - **Compaction-summary poisoning — fixed, three layers deep (now also covering tool-call
   args/results, not just free-text)**: if the model narrates a tool call as done without actually
   calling it, that fabrication could get folded into `compactionSummary` and trusted forever after
@@ -338,6 +373,12 @@ user-editable personality (`SOUL.md`) layered under hardcoded rigor guardrails.
   design (AppImage is fine).
 - Per-tab workspace tracking (currently a single global workspace singleton — see gotcha above).
 - MCP-style tool integration scaling — researched (OpenClaw/OpenCode patterns) but not built.
+- Confirming OpenRouter's *upstream* translation of consecutive `role: 'tool'` messages. Anthropic
+  documents splitting batched tool results across separate/interleaved messages as the #1 cause of
+  degraded parallel tool use. Our own wire output is verified correct and pinned by a regression
+  test (tool results stay strictly adjacent, ids in order, nothing interleaved), but whether
+  OpenRouter coalesces them into a single Anthropic `user` turn as required has only been reasoned
+  about from the docs, never observed on the wire. Needs a live capture to close out.
 - GitHub integration (`gh` CLI connect/browse/clone) — plan drafted, not started.
 - `system-prompt.test.ts` has a pre-existing test-isolation weakness (predates the fabrication
   guard): the "sections are separated by a blank line" test passes in a full `bun test` run but

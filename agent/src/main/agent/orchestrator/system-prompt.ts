@@ -65,6 +65,27 @@ import type { ChecklistItem } from '@shared/types'
  * is already right there in the model's own immediate context, so reminding it again would just
  * be redundant noise on an otherwise ordinary turn.
  */
+/**
+ * Turn-scoped nudge to batch independent tool calls, kept deliberately short and placed at the
+ * very END of the trailing note (i.e. the last text the model reads before generating).
+ *
+ * Why here and not in the big system-prompt prefix: the prefix already carries a full batching
+ * instruction (see AGENT_MODE_PROMPT_BODY in plan/manager.ts), but it sits tens of thousands of
+ * tokens back, and a single buried behavioral rule competes with everything else in that prefix.
+ * Anthropic's own guidance for this exact failure mode — models issuing one implied tool call per
+ * turn in long coding/agent loops instead of batching — is a one-sentence nudge at the end of the
+ * current request, not a stronger rule further up. This is the end-of-request slot.
+ *
+ * The "first privately list what you need" framing is load-bearing: it redirects reasoning toward
+ * enumerating the whole batch up front, instead of reasoning its way to a single next action.
+ *
+ * Cache-safe for the same reason as the clock/ledger/checklist above: this slot is the deliberately
+ * uncached trailing part, so adding text here costs nothing in prefix-cache terms. It is a constant
+ * rather than a per-turn computed string, so it never varies within a session.
+ */
+const BATCHING_NUDGE =
+  `\n\nBefore you call tools this turn: first privately list what you need next, then request every item on that list that doesn't depend on another item's result — all in this one response, not one per turn.`
+
 export async function buildCurrentTimeNote(
   assistantTabId?: string,
   activeChecklist?: { title: string; items: ChecklistItem[] },
@@ -95,12 +116,16 @@ export async function buildCurrentTimeNote(
       timeNote += `\n\nNote: the items already checked off above are self-reported (from a prior turn, before this compaction) and were never independently re-verified — spot-check them if you're about to rely on "already done" to decide what still needs doing, rather than assuming they're correct.`
     }
   }
-  if (!assistantTabId) return timeNote
+  if (!assistantTabId) return `${timeNote}${BATCHING_NUDGE}`
   const digest = await buildAssistantMemoryDigestForTab(assistantTabId)
   // Framed as recollection ("Recently, in your other Assistant windows"), not as a labeled
   // document/log — see ASSISTANT_MODE_PROMPT_BODY's instruction to talk about this as its own
   // memory (e.g. "I fetched a ball") rather than citing it ("according to my memory notes...").
-  return digest ? `${timeNote}\n\nRecently, in your other Assistant windows:\n${digest}` : timeNote
+  const withDigest = digest
+    ? `${timeNote}\n\nRecently, in your other Assistant windows:\n${digest}`
+    : timeNote
+  // Appended at both exits so it is always the very last thing in the note — see BATCHING_NUDGE.
+  return `${withDigest}${BATCHING_NUDGE}`
 }
 
 export async function buildSystemPrompt(

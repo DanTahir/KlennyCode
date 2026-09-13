@@ -296,6 +296,63 @@ describe('buildCurrentTimeNote — verification ledger digest (cache-safety crit
   })
 })
 
+describe('buildCurrentTimeNote — turn-scoped batching nudge (cache-safety critical)', () => {
+  test('appears at the very END of the trailing note, after the clock', async () => {
+    // Placement is the point: this is the last text the model reads before generating, which is
+    // where a short behavioral nudge actually lands. If it drifts earlier (or into the cached
+    // prefix), it loses the recency that makes it work at all.
+    const { buildCurrentTimeNote } = await import('../src/main/agent/orchestrator/system-prompt')
+    const note = await buildCurrentTimeNote()
+    expect(note).toContain('first privately list what you need next')
+    expect(note.trimEnd().endsWith('not one per turn.')).toBe(true)
+    expect(note).toContain('Current date/time:')
+  })
+
+  test('stays last even when a ledger digest and a checklist precede it', async () => {
+    const { buildCurrentTimeNote } = await import('../src/main/agent/orchestrator/system-prompt')
+    const note = await buildCurrentTimeNote(
+      undefined,
+      { title: 'Some task', items: [{ text: 'step one', done: false }] as never },
+      undefined,
+      'Tool calls actually made so far this turn: read_file'
+    )
+    const nudgeIdx = note.indexOf('first privately list what you need next')
+    expect(nudgeIdx).toBeGreaterThan(-1)
+    expect(nudgeIdx).toBeGreaterThan(note.indexOf('Current live checklist'))
+    expect(nudgeIdx).toBeGreaterThan(note.indexOf('Tool calls actually made'))
+  })
+
+  test('never leaks into the CACHED system-prompt prefix', async () => {
+    // Same invariant as the ledger digest: the trailing note is the deliberately uncached slot.
+    // The prefix keeps its own (longer) batching instruction; this short nudge must not appear
+    // there, and the prefix must stay byte-identical across builds.
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent', undefined, undefined, 'project')
+    expect(prompt).not.toContain('first privately list what you need next')
+    const again = await buildSystemPrompt('agent', undefined, undefined, 'project')
+    expect(again).toBe(prompt)
+  })
+})
+
+describe('system prompt — parallel tool-call instruction strength', () => {
+  test('agent mode tells the model to maximize parallel calls, without a general serialize escape hatch', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent', undefined, undefined, 'project')
+    expect(prompt).toContain('invoke all relevant tools simultaneously rather than sequentially')
+    expect(prompt).toContain('maximizing parallel tool calls')
+    // The old wording invited serialization as a co-equal option ("Only serialize when...").
+    // The replacement narrows it to a single genuine-dependency exception.
+    expect(prompt).not.toContain('Only serialize when')
+  })
+
+  test('plan mode carries the same strengthened instruction for read-only tools', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('plan', undefined, undefined, 'project')
+    expect(prompt).toContain('invoke all relevant tools simultaneously rather than sequentially')
+    expect(prompt).not.toContain('Only serialize when')
+  })
+})
+
 describe('buildSystemPrompt — shell selection', () => {
   test('names the resolved shell (falls back to the platform default when shellId is invalid/omitted)', async () => {
     const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
