@@ -369,6 +369,26 @@ export async function* streamChatCompletion(opts: {
       let finishReason: string | undefined
       const reasoningDetails: ReasoningDetail[] = []
 
+      /**
+       * Diagnostics for the truncated/invalid tool-call-arguments failure mode. Logged at BOTH
+       * stream exits so the two are distinguishable in the wild: a stream that ends without the
+       * SSE [DONE] sentinel (proxy/network cut, or an upstream that just stops) carries no
+       * finish_reason at all, which is one of the ways a cut-off argument payload reaches the
+       * orchestrator looking like a normally-completed generation. `argChars` is the thing to
+       * correlate against a failed multi_write/multi_edit: it shows how much of the arguments
+       * actually arrived before the stream ended.
+       */
+      const logStreamEnd = (sawDoneSentinel: boolean): void => {
+        const argChars = [...toolCalls.values()]
+          .map((tc) => `${tc.function.name || '?'}:${tc.function.arguments.length}`)
+          .join(', ')
+        console.log(
+          `[stream] end model=${opts.model} sawDone=${sawDoneSentinel} finishReason=${finishReason ?? 'none'} ` +
+            `maxTokens=${opts.maxTokens ?? 'provider-default'} toolCalls=${toolCalls.size}` +
+            (argChars ? ` argChars=[${argChars}]` : '')
+        )
+      }
+
       while (true) {
         if (opts.signal?.aborted) {
           await reader.cancel().catch(() => {})
@@ -385,6 +405,7 @@ export async function* streamChatCompletion(opts: {
           if (!trimmed.startsWith('data:')) continue
           const data = trimmed.slice(5).trim()
           if (data === '[DONE]') {
+            logStreamEnd(true)
             if (toolCalls.size) yield { type: 'tool_calls', toolCalls: [...toolCalls.values()] }
             yield {
               type: 'done',
@@ -464,6 +485,8 @@ export async function* streamChatCompletion(opts: {
         }
       }
 
+      // Reached only when the reader hit end-of-body without ever seeing [DONE].
+      logStreamEnd(false)
       if (toolCalls.size) yield { type: 'tool_calls', toolCalls: [...toolCalls.values()] }
       yield {
         type: 'done',

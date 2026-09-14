@@ -200,6 +200,16 @@ export interface ChatMessage {
    * (orchestrator/ledger.ts), tab titling, and renderer styling.
    */
   isAuditNote?: boolean
+  /**
+   * Which kind of harness-authored note this is, when `isAuditNote` is set. Purely
+   * presentational: it selects the renderer's header text and nothing else, so every existing
+   * consumer of `isAuditNote` (the ledger's turn-boundary walk, the compaction transcript's
+   * labelling, renderer styling) keeps treating both kinds identically as "not real user input".
+   *  'fabrication' (default) — the fabrication guard's forced-correction note.
+   *  'truncation'            — the retry nudge injected when a tool call's arguments arrived
+   *                            truncated/unparsable (see turnControl.ts buildToolArgsRetryNudge).
+   */
+  noteKind?: 'fabrication' | 'truncation'
 }
 
 /** One fabrication-guard finding. `code` is the stable check id (C1/C2a/C3/…) so findings can be

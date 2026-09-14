@@ -3,7 +3,10 @@ import {
   checkStepLimit,
   isSubagentBudgetExceeded,
   isTruncatedEmpty,
-  isTruncatedToolCallJson,
+  classifyToolCallJsonFailure,
+  looksLikeTruncatedJson,
+  describeToolArgsFailure,
+  buildToolArgsRetryNudge,
   truncateSummary,
   HARD_STEP_LIMIT,
   SUBAGENT_STEP_BUDGET,
@@ -55,11 +58,93 @@ describe('truncation detection', () => {
     expect(isTruncatedEmpty(undefined, false, false)).toBe(false)
   })
 
-  test('isTruncatedToolCallJson only fires when finish_reason is length AND args failed to parse', () => {
-    expect(isTruncatedToolCallJson('length', true)).toBe(true)
-    expect(isTruncatedToolCallJson('length', false)).toBe(false)
-    expect(isTruncatedToolCallJson('stop', true)).toBe(false)
-    expect(isTruncatedToolCallJson(undefined, true)).toBe(false)
+  test('classifyToolCallJsonFailure reports none when every call parsed', () => {
+    expect(classifyToolCallJsonFailure('length', false)).toBe('none')
+    expect(classifyToolCallJsonFailure('stop', false)).toBe('none')
+    expect(classifyToolCallJsonFailure(undefined, false)).toBe('none')
+  })
+
+  test('unparsable args are a recoverable failure regardless of the reported finish_reason', () => {
+    // The regression this replaced: the retry used to be gated on finishReason === 'length', so a
+    // stream ending with 'stop', 'tool_calls', or no finish_reason at all fell straight through to
+    // an opaque 'Invalid JSON args' tool error instead of retrying. That is the single biggest
+    // cause of "multi_write just fails sometimes" — keep all four of these non-'none'.
+    expect(classifyToolCallJsonFailure('length', true)).toBe('truncated')
+    expect(classifyToolCallJsonFailure('stop', true)).toBe('invalid')
+    expect(classifyToolCallJsonFailure('tool_calls', true)).toBe('invalid')
+    expect(classifyToolCallJsonFailure(undefined, true)).toBe('invalid')
+  })
+})
+
+describe('looksLikeTruncatedJson', () => {
+  test('complete JSON is not flagged', () => {
+    expect(looksLikeTruncatedJson('{"files":[{"path":"a.ts","content":"x"}]}')).toBe(false)
+    expect(looksLikeTruncatedJson('{}')).toBe(false)
+  })
+
+  test('empty or whitespace-only args are not flagged as truncated', () => {
+    expect(looksLikeTruncatedJson('')).toBe(false)
+    expect(looksLikeTruncatedJson('   ')).toBe(false)
+  })
+
+  test('args cut off mid-string are flagged', () => {
+    expect(looksLikeTruncatedJson('{"files":[{"path":"a.ts","content":"import Re')).toBe(true)
+  })
+
+  test('args cut off between entries (unclosed array/object) are flagged', () => {
+    expect(looksLikeTruncatedJson('{"files":[{"path":"a.ts","content":"x"},')).toBe(true)
+  })
+
+  test('braces and escaped quotes inside a string value do not confuse the scan', () => {
+    // File contents routinely contain both — a naive brace count would call this truncated.
+    expect(looksLikeTruncatedJson('{"content":"function f() { return \\"}\\" }"}')).toBe(false)
+  })
+})
+
+describe('describeToolArgsFailure', () => {
+  test('names the tool, the size, that nothing ran, and what to do differently', () => {
+    const raw = '{"files":[{"path":"a.ts","content":"import Re'
+    const msg = describeToolArgsFailure('multi_write', raw)
+    expect(msg).toContain('multi_write')
+    expect(msg).toContain(`${raw.length} chars received`)
+    expect(msg).toContain('Nothing was executed')
+    expect(msg).toContain('output token limit')
+    expect(msg).toContain('split it into several smaller calls')
+  })
+
+  test('an empty payload is described as such rather than as a truncation', () => {
+    const msg = describeToolArgsFailure('multi_edit', '')
+    expect(msg).toContain('no arguments were received at all')
+    expect(msg).not.toContain('Last characters received')
+  })
+
+  test('structurally complete but invalid JSON is not blamed on the token limit', () => {
+    const msg = describeToolArgsFailure('multi_write', '{"files": oops}')
+    expect(msg).toContain('not valid JSON')
+    expect(msg).not.toContain('output token limit')
+  })
+})
+
+describe('buildToolArgsRetryNudge', () => {
+  test('marks itself as harness-authored so it is never read as a user instruction', () => {
+    expect(buildToolArgsRetryNudge('truncated', ['multi_write'])).toContain('not by the user')
+  })
+
+  test('names the affected tools (deduped) and asks for a smaller batch', () => {
+    const nudge = buildToolArgsRetryNudge('truncated', ['multi_write', 'multi_write', 'multi_edit'])
+    expect(nudge).toContain('multi_write, multi_edit')
+    expect(nudge).toContain('split it into several calls')
+    expect(nudge).toContain('Nothing ran')
+  })
+
+  test('the empty-truncation variant asks for concision instead of a smaller batch', () => {
+    const nudge = buildToolArgsRetryNudge('empty')
+    expect(nudge).toContain('before it produced any text or any tool call')
+    expect(nudge).not.toContain('multi_write')
+  })
+
+  test('the invalid variant does not claim the provider reported hitting the limit', () => {
+    expect(buildToolArgsRetryNudge('invalid', ['multi_edit'])).toContain('did not report hitting the limit')
   })
 })
 

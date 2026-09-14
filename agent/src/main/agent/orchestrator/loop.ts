@@ -92,7 +92,10 @@ import {
   checkStepLimit,
   isSubagentBudgetExceeded,
   isTruncatedEmpty,
-  isTruncatedToolCallJson,
+  classifyToolCallJsonFailure,
+  looksLikeTruncatedJson,
+  describeToolArgsFailure,
+  buildToolArgsRetryNudge,
   truncateSummary
 } from '../turnControl'
 import { buildSystemPrompt, buildCurrentTimeNote } from './system-prompt'
@@ -377,15 +380,26 @@ export async function agentLoop(
   // block) so we can also detect, upfront, whether any of them look like they were cut off
   // mid-JSON by the provider's output token limit.
   const parsedArgsByCallId = new Map<string, Record<string, unknown>>()
-  let anyArgsUnparsable = false
+  const unparsableToolNames: string[] = []
   for (const tc of toolCalls) {
     try {
       parsedArgsByCallId.set(tc.id, JSON.parse(tc.function.arguments || '{}') as Record<string, unknown>)
-    } catch {
-      anyArgsUnparsable = true
+    } catch (e) {
+      // Diagnostics for the multi_write/multi_edit "it just fails sometimes" failure mode: without
+      // the arg length, the finish_reason and the tail, this is indistinguishable from a tool bug.
+      // Pairs with the `[stream] end` line in openrouter/client.ts, which reports whether the SSE
+      // [DONE] sentinel ever arrived (i.e. whether the stream was cut rather than capped).
+      const raw = tc.function.arguments ?? ''
+      console.error(
+        `[toolargs] unparsable model=${tab.model} tool=${tc.function.name} chars=${raw.length} ` +
+          `finishReason=${finishReason ?? 'none'} looksTruncated=${looksLikeTruncatedJson(raw)} ` +
+          `err=${e instanceof Error ? e.message : String(e)} tail=${JSON.stringify(raw.slice(-80))}`
+      )
+      unparsableToolNames.push(tc.function.name)
       parsedArgsByCallId.set(tc.id, {})
     }
   }
+  const anyArgsUnparsable = unparsableToolNames.length > 0
 
   // The ThinkingBlock is for the UI; reasoningDetails is the wire-faithful copy replayed to the
   // provider on later turns. Both are recorded, and neither is ever merged into message content.
@@ -469,13 +483,16 @@ export async function agentLoop(
   }
 
   // A generation truncated by the provider's output token limit used to look identical to a
-  // normal "model is done" stop (no tool calls, or tool calls with garbage args dispatched
-  // straight through) — silently ending the turn or failing tools with a confusing error.
-  // Detect it and retry instead, up to MAX_TRUNCATION_RETRIES.
-  const truncated =
-    isTruncatedEmpty(finishReason, toolCalls.length > 0, Boolean(textBuf)) ||
-    isTruncatedToolCallJson(finishReason, anyArgsUnparsable)
-  if (truncated) {
+  // normal "model is done" stop (no tool calls, or tool calls whose arguments failed to parse and
+  // then died on an opaque 'Invalid JSON args') — silently ending the turn or failing tools with a
+  // confusing error. Detect it and retry instead, up to MAX_TRUNCATION_RETRIES.
+  //
+  // The args arm is deliberately NO LONGER gated on finishReason === 'length': see
+  // classifyToolCallJsonFailure's doc comment for why that gate made this recovery miss the most
+  // common shapes of the failure (no finish_reason at all, or a mislabelled 'stop'/'tool_calls').
+  const argsFailure = classifyToolCallJsonFailure(finishReason, anyArgsUnparsable)
+  const emptyTruncation = isTruncatedEmpty(finishReason, toolCalls.length > 0, Boolean(textBuf))
+  if (emptyTruncation || argsFailure !== 'none') {
     emit({ type: 'message_end', tabId: tab.id, messageId: assistantId, usage: assistantMsg.usage })
     await sessionStore.updateTab(tab)
     if (signal.aborted) return 'aborted'
@@ -494,8 +511,21 @@ export async function agentLoop(
       return 'truncation_failed'
     }
     // Discard this attempt's (possibly garbage) tool calls entirely rather than dispatching
-    // them, and re-issue the same request. Doesn't count as a new step — it's a retry of the
-    // same one.
+    // them, and re-issue. Doesn't count as a new step — it's a retry of the same one.
+    //
+    // The re-issued request is deliberately NOT byte-identical to the one that just failed: a
+    // harness-authored nudge is appended first, naming what failed and telling the model to send
+    // the work in smaller pieces. A blind retry (the old behavior) tended to reproduce the same
+    // oversized payload until the retry budget ran out, turning one failure into four.
+    //
+    // The partial assistant message is intentionally left in tab.messages: message_end has
+    // already been emitted for it, so removing it would desync the UI, and it carries no
+    // tool_call blocks at this point (those are only pushed further down). Worst case on the wire
+    // is a half-finished sentence immediately followed by the nudge that explains it.
+    tab.messages.push(
+      buildToolArgsRetryNudgeMessage(argsFailure === 'none' ? 'empty' : argsFailure, unparsableToolNames)
+    )
+    await sessionStore.updateTab(tab)
     return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount, truncationRetries + 1, auditCorrections)
   }
 
@@ -666,6 +696,29 @@ export async function agentLoop(
   )
 }
 
+/**
+ * Wraps buildToolArgsRetryNudge's text as a history message.
+ *
+ * Same `role: 'user'` + `isAuditNote` mechanics as the fabrication guard's audit note (see
+ * buildAuditNoteMessage in verify/audit.ts): toORMessages() only emits system messages for the
+ * prompt/summary prefix, so a 'system'-role entry mid-history would never reach the model at all,
+ * and `isAuditNote` is what stops every "what did the user last say" consumer from mistaking it
+ * for real user input. `noteKind` only selects the renderer's header text.
+ */
+function buildToolArgsRetryNudgeMessage(
+  kind: 'truncated' | 'invalid' | 'empty',
+  toolNames: string[]
+): ChatMessage {
+  return {
+    id: nanoid(),
+    role: 'user',
+    blocks: [{ type: 'text', text: buildToolArgsRetryNudge(kind, toolNames) }],
+    createdAt: Date.now(),
+    isAuditNote: true,
+    noteKind: 'truncation'
+  }
+}
+
 async function executeTool(
   tc: ToolCall,
   tab: TabSession,
@@ -686,7 +739,25 @@ async function executeTool(
   try {
     args = JSON.parse(tc.function.arguments || '{}') as Record<string, unknown>
   } catch {
-    return { payload: { ok: false, summary: 'Invalid JSON args', error: 'parse' }, status: 'error' }
+    // Reached only once the retry path above is exhausted. Two rules here: never dispatch a tool
+    // whose arguments didn't parse (a tolerant normalizer would otherwise turn `{}` into a
+    // confusing "called with no files"), and never report it as the bare 'Invalid JSON args' this
+    // replaced — that named neither the tool, the size, the cause, nor what to do differently, so
+    // it read like an internal bug instead of "that payload was too big, send less".
+    const raw = tc.function.arguments ?? ''
+    return {
+      payload: {
+        ok: false,
+        summary: describeToolArgsFailure(tc.function.name, raw),
+        error: 'parse',
+        data: {
+          toolName: tc.function.name,
+          argChars: raw.length,
+          looksTruncated: looksLikeTruncatedJson(raw)
+        }
+      },
+      status: 'error'
+    }
   }
 
   const name = tc.function.name

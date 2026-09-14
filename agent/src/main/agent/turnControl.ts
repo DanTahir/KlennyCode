@@ -83,10 +83,125 @@ export function isTruncatedEmpty(finishReason: string | undefined, hasToolCalls:
 }
 
 /**
- * A generation that produced tool calls but got cut off mid tool-call-arguments JSON used to
- * dispatch the tool with empty/garbage args and a confusing "Invalid JSON args" error. This
- * flags that case so the caller can discard the attempt and retry instead.
+ * Why a generation's tool-call arguments failed to JSON.parse.
+ *
+ *  'none'      — every call's arguments parsed fine.
+ *  'truncated' — arguments didn't parse AND the provider reported hitting the output token limit.
+ *  'invalid'   — arguments didn't parse and the provider did NOT report 'length'.
+ *
+ * Both failure kinds are recoverable by retrying, and that is exactly why this replaced the old
+ * `isTruncatedToolCallJson`, which gated the retry on `finishReason === 'length'`. A cut-off
+ * argument payload was therefore only ever recovered when the provider labelled it correctly —
+ * and it frequently isn't: a stream can end with no finish_reason at all (see the missing-[DONE]
+ * path in openrouter/client.ts), and some upstreams report 'stop'/'tool_calls' even after
+ * truncating. In those cases the turn died on an opaque "Invalid JSON args" tool error instead of
+ * retrying, which presented as "multi_write/multi_edit is broken" and correlated only loosely
+ * with batch size (reasoning tokens and per-request provider routing move the real ceiling around
+ * turn to turn). Valid JSON is a contract the model owes us regardless of the stop label, so
+ * unparsable arguments alone now justify a retry; the kind is kept only to word the log line and
+ * the retry nudge accurately.
  */
-export function isTruncatedToolCallJson(finishReason: string | undefined, anyArgsUnparsable: boolean): boolean {
-  return finishReason === 'length' && anyArgsUnparsable
+export type ToolArgsFailureKind = 'none' | 'truncated' | 'invalid'
+
+export function classifyToolCallJsonFailure(
+  finishReason: string | undefined,
+  anyArgsUnparsable: boolean
+): ToolArgsFailureKind {
+  if (!anyArgsUnparsable) return 'none'
+  return finishReason === 'length' ? 'truncated' : 'invalid'
+}
+
+/**
+ * Best-effort structural check for "this JSON text stops in the middle of itself" — it ends inside
+ * an unterminated string, or with objects/arrays still unclosed.
+ *
+ * Used ONLY to word an error message and to decide whether to advise splitting a batch. It is
+ * deliberately never used to attempt a repair: completing a truncated write argument into
+ * syntactically valid JSON would write a half-finished file to disk (`{"content":"half a fi` ->
+ * a real file containing `half a fi`), which is strictly worse than failing the call outright.
+ */
+export function looksLikeTruncatedJson(raw: string): boolean {
+  const s = raw.trim()
+  if (!s) return false
+  let depth = 0
+  let inString = false
+  let escaped = false
+  for (const ch of s) {
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
+    }
+    if (ch === '"') inString = true
+    else if (ch === '{' || ch === '[') depth++
+    else if (ch === '}' || ch === ']') depth--
+  }
+  return inString || depth > 0
+}
+
+/** How much of the argument payload's tail to quote back in diagnostics. Enough to see where it
+ *  stopped, short enough not to dump a whole file into the transcript. */
+const ARGS_TAIL_CHARS = 80
+
+/**
+ * The tool-result summary for a call whose arguments never parsed. Replaces the old bare
+ * 'Invalid JSON args', which named neither the tool, nor the size, nor the cause, nor what to do
+ * differently — so it read like an internal bug rather than "that payload was too big, send less".
+ */
+export function describeToolArgsFailure(toolName: string, raw: string): string {
+  const len = raw.length
+  const cause =
+    len === 0
+      ? 'no arguments were received at all'
+      : looksLikeTruncatedJson(raw)
+        ? "they stop mid-JSON, so the payload was almost certainly cut off at the model's output token limit"
+        : 'they are not valid JSON'
+  const tail = len > 0 ? ` Last characters received: ${JSON.stringify(raw.slice(-ARGS_TAIL_CHARS))}.` : ''
+  return (
+    `${toolName}: the tool-call arguments never arrived as valid JSON — ${cause} (${len} chars received). ` +
+    `Nothing was executed and no file was touched.${tail} ` +
+    'Re-send this call; if it was a large batch (multi_write/multi_edit), split it into several smaller calls.'
+  )
+}
+
+/**
+ * The harness-authored nudge injected before a truncation/invalid-args retry.
+ *
+ * Without it the retry re-issues a byte-identical request (same messages, no feedback), so the
+ * model tends to reproduce the same oversized output until MAX_TRUNCATION_RETRIES is exhausted
+ * and the turn hard-fails. Telling it *what* happened and *what to do differently* is what makes
+ * the retry actually likely to succeed rather than just costing three more round-trips.
+ */
+export function buildToolArgsRetryNudge(
+  kind: 'truncated' | 'invalid' | 'empty',
+  toolNames: string[] = []
+): string {
+  const header = 'Automatic retry notice (written by the harness, not by the user):'
+  if (kind === 'empty') {
+    return [
+      header,
+      '',
+      'Your previous response was cut off at the output token limit before it produced any text or any tool call, so nothing was executed. That attempt has been discarded and you are being re-run on the same request.',
+      '',
+      'Keep this attempt tighter: go straight to the tool calls you need instead of a long preamble.'
+    ].join('\n')
+  }
+  const names = [...new Set(toolNames)].filter(Boolean)
+  const which = names.length ? ` (${names.join(', ')})` : ''
+  const plural = names.length === 1 ? '' : 's'
+  const cause =
+    kind === 'truncated'
+      ? 'was cut off at the output token limit'
+      : 'did not arrive as valid JSON — most likely cut off mid-generation, even though the provider did not report hitting the limit'
+  return [
+    header,
+    '',
+    `Your previous tool call${plural}${which} could not be executed: the arguments payload ${cause}. Nothing ran, no file was created or modified, and that attempt has been discarded.`,
+    '',
+    'Re-issue the work now, in smaller pieces. Concretely:',
+    '- If it was a batch (multi_write / multi_edit), split it into several calls of a few files each rather than one large one.',
+    '- Prefer multi_edit over multi_write when changing part of an existing file: sending only the changed fragments costs far fewer output tokens than re-sending whole files.',
+    '- Skip any preamble before the call so the whole output budget goes to the arguments.'
+  ].join('\n')
 }
