@@ -205,3 +205,70 @@ export function buildToolArgsRetryNudge(
     '- Skip any preamble before the call so the whole output budget goes to the arguments.'
   ].join('\n')
 }
+
+/** How many times one turn may be auto-resumed after context compaction ended a step with no
+ *  tool calls. Exactly one: the resume exists to get past a single "the summary looked like a
+ *  wrap-up point" stall, not to argue with a model that has genuinely decided it is finished. */
+export const MAX_COMPACTION_RESUMES = 1
+
+/**
+ * Whether the turn should be resumed instead of ending as a clean 'natural' completion, at the
+ * no-tool-calls exit of a step where compaction ran.
+ *
+ * Background: compaction injects a summary system message mid-turn, and models routinely read
+ * that as a natural stopping point — replying with a short text-only progress note and no tool
+ * calls. The orchestrator cannot distinguish that from a genuinely finished task, so the turn
+ * ends silently mid-work and the user just sees the spinner stop. This was observed three times
+ * in one session, always at a phase boundary with an unfinished checklist.
+ *
+ * The prior mitigation was prompt-only (a one-shot cue appended to the summary when
+ * `justCompacted`), and prompt-only is exactly what failed: the cue reaches the model for
+ * exactly ONE request, and if that reply has no tool calls there is no retry, no event and no
+ * warning. Worse, the cue asked for a one-sentence acknowledgment, which primes the very
+ * text-only-reply shape that triggers the stop. Hence this harness-owned structural check.
+ *
+ * Deliberately conservative — an unfinished checklist is required. With no checklist (or a fully
+ * checked one) there is no harness-side evidence that work remains, and forcing another step
+ * would just pressure the model to invent something to do. `compactedThisStep` must be the
+ * compaction result for THIS step, which is why the caller has to carry the resume count across
+ * the recursion: on the resumed step `maybeCompact` returns false (already summarized through
+ * that point), so "did compaction fire" is not recoverable after the fact.
+ */
+export function shouldResumeAfterCompaction(opts: {
+  compactedThisStep: boolean
+  unfinishedChecklistItems: number
+  compactionResumes: number
+  /** True when the fabrication guard already forced a self-correction turn for this message —
+   *  that recursion takes precedence, so the resume must not also fire and double-recurse. */
+  auditForcedCorrection: boolean
+}): boolean {
+  const { compactedThisStep, unfinishedChecklistItems, compactionResumes, auditForcedCorrection } = opts
+  if (!compactedThisStep) return false
+  if (unfinishedChecklistItems <= 0) return false
+  if (auditForcedCorrection) return false
+  return compactionResumes < MAX_COMPACTION_RESUMES
+}
+
+/**
+ * The harness-authored note injected before a post-compaction resume.
+ *
+ * Careful with the wording: this fires precisely when the model believes it is done, so it must
+ * push the work forward WITHOUT pressuring it to claim progress it hasn't made. Hence the
+ * explicit escape hatch (say so plainly if genuinely complete/blocked) and the explicit
+ * reminder not to mark checklist items done unverified — a nudge that only said "keep going"
+ * would trade a silent stop for a fabricated completion.
+ */
+export function buildCompactionResumeNudge(opts: { unfinishedItems: number; nextItem?: string }): string {
+  const { unfinishedItems, nextItem } = opts
+  const plural = unfinishedItems === 1 ? '' : 's'
+  const next = nextItem ? ` The next unfinished item is: "${nextItem}".` : ''
+  return [
+    'Automatic continuation notice (written by the harness, not by the user):',
+    '',
+    `Your context was compacted earlier in this turn, and your reply just now contained no tool calls — which would normally end the turn. But the live checklist still has ${unfinishedItems} unfinished item${plural}, so the task does not look finished.${next}`,
+    '',
+    'Compaction is routine background maintenance, not a stopping point, so the turn has been resumed for you automatically. Pick the work back up now: put the next concrete tool call in this reply. Do not re-summarize what you have already done, and do not stop again for the same reason.',
+    '',
+    'If the remaining work is genuinely complete, genuinely blocked, or actually needs a decision from the user, then say so plainly and explain why — that is a perfectly good answer here. What you must not do is mark anything done that you have not actually verified, or describe work you have not actually performed. This notice is a request to continue, never a request to claim progress.'
+  ].join('\n')
+}

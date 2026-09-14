@@ -214,8 +214,12 @@ export interface ChatMessage {
    *  'fabrication' (default) — the fabrication guard's forced-correction note.
    *  'truncation'            — the retry nudge injected when a tool call's arguments arrived
    *                            truncated/unparsable (see turnControl.ts buildToolArgsRetryNudge).
+   *  'compaction_resume'     — the continuation note injected when a step on which context
+   *                            compaction ran ended with no tool calls while the live checklist
+   *                            still had unfinished items (see turnControl.ts
+   *                            shouldResumeAfterCompaction / buildCompactionResumeNudge).
    */
-  noteKind?: 'fabrication' | 'truncation'
+  noteKind?: 'fabrication' | 'truncation' | 'compaction_resume'
 }
 
 /** One fabrication-guard finding. `code` is the stable check id (C1/C2a/C3/…) so findings can be

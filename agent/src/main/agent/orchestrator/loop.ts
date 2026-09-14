@@ -98,6 +98,8 @@ import {
   looksLikeTruncatedJson,
   describeToolArgsFailure,
   buildToolArgsRetryNudge,
+  shouldResumeAfterCompaction,
+  buildCompactionResumeNudge,
   truncateSummary
 } from '../turnControl'
 import { buildSystemPrompt, buildCurrentTimeNote } from './system-prompt'
@@ -124,7 +126,12 @@ export async function agentLoop(
   truncationRetries = 0,
   /** How many forced fabrication-guard self-correction turns have already happened in this turn.
    *  Bounded by MAX_AUDIT_CORRECTIONS so a model that won't retract can't loop forever. */
-  auditCorrections = 0
+  auditCorrections = 0,
+  /** How many times this turn has already been auto-resumed after a step on which compaction ran
+   *  ended with no tool calls (see shouldResumeAfterCompaction). Must be carried across the
+   *  recursion explicitly: `maybeCompact` returns `compacted: false` on the resumed step, so
+   *  "compaction fired here" is not re-derivable after the fact. */
+  compactionResumes = 0
 ): Promise<LoopStopReason> {
   // Defensive nesting guard only — in practice subagentDepth can only be 0 or 1 since the
   // `task` tool is filtered out once already inside a subagent context (see the tools filter
@@ -198,6 +205,23 @@ export async function agentLoop(
       summary: compacted.summary
     })
   }
+
+  // How much of the live checklist is still outstanding. Read here (rather than at the exit that
+  // uses it) so the diagnostic below and the post-compaction resume decision see the same value.
+  const unfinishedChecklistItems = tab.activeChecklist?.items.filter((it) => !it.done).length ?? 0
+  const nextUnfinishedChecklistItem = tab.activeChecklist?.items.find((it) => !it.done)?.text
+
+  // Logged on EVERY step, not just when compaction fires, and deliberately including the name of
+  // the preceding tool call. The post-compaction stall was observed three times in one session,
+  // every time immediately after an `update_checklist` call at a phase boundary, and two readings
+  // were left unresolved: either phase boundaries are simply the token-heaviest moments (benign
+  // correlation), or a "milestone closed" transcript shape genuinely makes the next reply more
+  // likely to be text-only. These four numbers together settle it from real logs instead of
+  // another anecdote: if compaction clusters on post-update_checklist steps at token counts where
+  // other steps don't compact, that's aggravation; if it tracks tokenEstimate alone, it's benign.
+  console.log(
+    `[compaction] step=${stepCount} tokens~${compacted.tokenEstimate} threshold=${Math.round(compacted.threshold)} fired=${compacted.compacted} prevTool=${lastToolCallName(tab.messages) ?? 'none'} unfinishedChecklist=${unfinishedChecklistItems} resumes=${compactionResumes}`
+  )
 
   const systemPrompt = await buildSystemPrompt(
     tab.mode,
@@ -529,7 +553,7 @@ export async function agentLoop(
       buildToolArgsRetryNudgeMessage(argsFailure === 'none' ? 'empty' : argsFailure, unparsableToolNames)
     )
     await sessionStore.updateTab(tab)
-    return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount, truncationRetries + 1, auditCorrections)
+    return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount, truncationRetries + 1, auditCorrections, compactionResumes)
   }
 
   if (!toolCalls.length) {
@@ -541,7 +565,43 @@ export async function agentLoop(
     const action = await applyAuditEnforcement(outcome)
     if (action === 'audit_failed') return 'audit_failed'
     if (action === 'correct') {
-      return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount + 1, 0, auditCorrections + 1)
+      return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount + 1, 0, auditCorrections + 1, compactionResumes)
+    }
+    // Structural defense against the "froze after compaction" bug: compaction injects a summary
+    // system message mid-turn, models read it as a wrap-up point, and a text-only reply with no
+    // tool calls lands right here — which is indistinguishable from a genuinely finished task, so
+    // the turn used to end silently mid-work (spinner stops, no error, no event). Observed three
+    // times in one session, always at a phase boundary with an unfinished checklist.
+    //
+    // Note this is checked AFTER the audit: a forced correction takes precedence (it already
+    // recurses), and `auditForcedCorrection` is therefore passed as a literal false rather than
+    // `action === 'correct'` — that branch returned above, so TS has already narrowed it away.
+    if (
+      shouldResumeAfterCompaction({
+        compactedThisStep: compacted.compacted,
+        unfinishedChecklistItems,
+        compactionResumes,
+        auditForcedCorrection: false
+      })
+    ) {
+      console.log(
+        `[compaction] resuming turn (tab=${tab.id}): step with compaction ended with no tool calls, ${unfinishedChecklistItems} checklist item(s) still unfinished`
+      )
+      tab.messages.push(buildCompactionResumeMessage(unfinishedChecklistItems, nextUnfinishedChecklistItem))
+      await sessionStore.updateTab(tab)
+      return agentLoop(
+        tab,
+        apiKey,
+        subagentModel,
+        emit,
+        signal,
+        subagentDepth,
+        subagentCtx,
+        stepCount + 1,
+        0,
+        auditCorrections,
+        compactionResumes + 1
+      )
     }
     return 'natural'
   }
@@ -709,7 +769,8 @@ export async function agentLoop(
     subagentCtx,
     stepCount + 1,
     0,
-    mixedAction === 'correct' ? auditCorrections + 1 : auditCorrections
+    mixedAction === 'correct' ? auditCorrections + 1 : auditCorrections,
+    compactionResumes
   )
 }
 
@@ -734,6 +795,35 @@ function buildToolArgsRetryNudgeMessage(
     isAuditNote: true,
     noteKind: 'truncation'
   }
+}
+
+/**
+ * Wraps buildCompactionResumeNudge's text as a history message. Same `role: 'user'` +
+ * `isAuditNote` mechanics as the truncation nudge above — see that function's comment for why
+ * a 'system'-role entry mid-history would never reach the model at all.
+ */
+function buildCompactionResumeMessage(unfinishedItems: number, nextItem?: string): ChatMessage {
+  return {
+    id: nanoid(),
+    role: 'user',
+    blocks: [{ type: 'text', text: buildCompactionResumeNudge({ unfinishedItems, nextItem }) }],
+    createdAt: Date.now(),
+    isAuditNote: true,
+    noteKind: 'compaction_resume'
+  }
+}
+
+/** Name of the most recent tool call anywhere in the history, for the `[compaction]` diagnostic
+ *  (specifically: was this step preceded by an `update_checklist` call?). Walks backwards and
+ *  stops at the first hit, so it's O(1) in practice on a long history. */
+function lastToolCallName(messages: ChatMessage[]): string | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const blocks = messages[i].blocks
+    for (let j = blocks.length - 1; j >= 0; j--) {
+      if (blocks[j].type === 'tool_call') return (blocks[j] as ToolCallBlock).toolName
+    }
+  }
+  return undefined
 }
 
 /**

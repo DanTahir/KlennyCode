@@ -32,7 +32,17 @@ export async function maybeCompact(opts: {
    *  the summarizer beyond however it already naturally appears in the transcript being folded)
    *  so the exact approved plan text is guaranteed to survive compaction unchanged. */
   activePlan?: { title: string; markdown: string }
-}): Promise<{ compacted: boolean; summary?: string; compactedThroughMessageId?: string }> {
+}): Promise<{
+  compacted: boolean
+  summary?: string
+  compactedThroughMessageId?: string
+  /** Always reported, including on the no-op paths, purely so the caller can log why compaction
+   *  did or didn't fire on this step (see the `[compaction]` diagnostic in orchestrator/loop.ts).
+   *  Needed to settle whether compaction really does cluster on post-update_checklist steps or
+   *  just tracks token count — the open question behind the post-compaction stall bug. */
+  tokenEstimate: number
+  threshold: number
+}> {
   const {
     messages,
     model,
@@ -55,12 +65,12 @@ export async function maybeCompact(opts: {
 
   const tokenEstimate = estimateContextTokens(tail, priorSummary)
   const threshold = Math.min(model.contextLength * 0.75, MAX_TOKENS_BEFORE_COMPACTION)
-  if (tokenEstimate < threshold) return { compacted: false }
+  if (tokenEstimate < threshold) return { compacted: false, tokenEstimate, threshold }
 
-  if (tail.length <= KEEP_RECENT + 2) return { compacted: false }
+  if (tail.length <= KEEP_RECENT + 2) return { compacted: false, tokenEstimate, threshold }
 
   const old = tail.slice(0, -KEEP_RECENT)
-  if (old.length === 0) return { compacted: false }
+  if (old.length === 0) return { compacted: false, tokenEstimate, threshold }
 
   const transcript = old
     .map((m) => transcriptLineForMessage(m))
@@ -100,6 +110,8 @@ export async function maybeCompact(opts: {
 
   return {
     compacted: true,
+    tokenEstimate,
+    threshold,
     // Append the currently-active plan's exact markdown back onto the LLM-produced summary —
     // never generated or touched by the summarizer itself, so it can't be paraphrased, trimmed,
     // or dropped no matter what the utility model does with the rest of the transcript.
