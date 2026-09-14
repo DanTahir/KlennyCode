@@ -5,6 +5,7 @@ import type {
   ArchivedTabSession,
   ChatMessage,
   ContentBlock,
+  ImageModelInfo,
   IndexStatus,
   ModelInfo,
   PendingAction,
@@ -37,6 +38,9 @@ interface AppState {
   customRunningGifUrl: string | null
   setCustomRunningGifUrl: (url: string | null) => void
   models: ModelInfo[]
+  /** Image-generation model catalog (OpenRouter's `/images/models`), kept separate from `models`
+   *  because it's a different shape entirely — see KlennyApi.listImageModels. */
+  imageModels: ImageModelInfo[]
   shells: ShellInfo[]
   tabs: TabSession[]
   activeTabId: string | null
@@ -77,6 +81,7 @@ interface AppState {
   setSettings: (s: AppSettings) => void
   setWorkspace: (w: string | null) => void
   setModels: (m: ModelInfo[]) => void
+  setImageModels: (m: ImageModelInfo[]) => void
   setShells: (s: ShellInfo[]) => void
   setTabs: (tabs: TabSession[]) => void
   setActiveTab: (id: string) => void
@@ -102,6 +107,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   customRunningGifUrl: null,
   setCustomRunningGifUrl: (customRunningGifUrl) => set({ customRunningGifUrl }),
   models: [],
+  imageModels: [],
   shells: [],
   tabs: [],
   activeTabId: null,
@@ -134,6 +140,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSettings: (settings) => set({ settings }),
   setWorkspace: (workspace) => set({ workspace, openPlanTabs: [], activePlanSlug: null }),
   setModels: (models) => set({ models }),
+  setImageModels: (imageModels) => set({ imageModels }),
   setShells: (shells) => set({ shells }),
   setTabs: (tabs) =>
     set((s) => {

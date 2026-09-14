@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useAppStore } from '../store/useAppStore'
-import { BRAND_NAME_MAX_LENGTH, DEFAULT_BRAND_NAME, DEFAULT_EMBEDDINGS_MODEL } from '@shared/types'
+import { BRAND_NAME_MAX_LENGTH, DEFAULT_BRAND_NAME, DEFAULT_EMBEDDINGS_MODEL, DEFAULT_IMAGE_MODEL } from '@shared/types'
 import type { ScheduledTask } from '@shared/types'
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -16,10 +16,12 @@ export function SettingsPanel() {
   const {
     settings,
     models,
+    imageModels,
     shells,
     indexStatus,
     setSettings,
     setModels,
+    setImageModels,
     setShells,
     setIndexStatus,
     settingsFocusSection,
@@ -88,6 +90,7 @@ export function SettingsPanel() {
 
   useEffect(() => {
     void window.klenny.listModels(true).then(setModels)
+    void window.klenny.listImageModels(true).then(setImageModels)
     void window.klenny.listShells().then(setShells)
     void window.klenny.getIndexStatus().then(setIndexStatus)
     void window.klenny.getDiscordStatus().then(setDiscordStatus)
@@ -149,6 +152,9 @@ export function SettingsPanel() {
   if (!settings) return null
   const filtered = models.filter((m) => m.name.toLowerCase().includes(search.toLowerCase()) || m.id.includes(search))
   const embeddingModels = models.filter((m) => m.supportsEmbeddings)
+  // Image-to-image-only models can't serve a plain text-to-image prompt at all, so offering them
+  // here would just sell the user a guaranteed provider-side failure (see requiresInputReferences).
+  const textToImageModels = imageModels.filter((m) => !m.requiresInputReferences)
 
   const patch = async (p: Partial<typeof settings>) => {
     const next = await window.klenny.setSettings(p)
@@ -288,6 +294,28 @@ export function SettingsPanel() {
               here doesn't affect your main answers.
             </p>
             <p className="text-xs text-klenny-muted">⚡ marks models that support OpenRouter prompt caching.</p>
+
+            <label className="block text-sm">Image generation model</label>
+            <select
+              className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
+              value={settings.imageModel ?? ''}
+              onChange={(e) => void patch({ imageModel: e.target.value || null })}
+            >
+              <option value="">Disabled — hide the image generation tool</option>
+              {textToImageModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id === DEFAULT_IMAGE_MODEL ? '★ ' : ''}
+                  {m.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-klenny-muted">
+              Picking a model here enables the agent's <code>generate_image</code> tool, which writes generated images
+              into your project as real files. This is a separate model from your chat model above and is billed per
+              image. The thumbnail shown in chat is never re-sent to the model on later turns, so it costs nothing to
+              keep around. ★ recommended — the speed/cost tier of the gpt-image-2.5 family.
+            </p>
+
             <button
               className="px-3 py-1 rounded border border-klenny-border text-sm"
               onClick={() => useAppStore.getState().setPanel('cost-report')}

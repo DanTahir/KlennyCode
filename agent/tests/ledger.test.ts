@@ -206,6 +206,20 @@ describe('buildSessionWritePaths', () => {
     expect(touches[0].status).toBe('rejected')
   })
 
+  test('records a generate_image destination as a real write artifact', () => {
+    // Without 'generate_image' in WRITE_TOOLS, the fabrication guard's C3 check would hard-flag a
+    // TRUTHFUL "I generated assets/hero.png", inject an audit note and burn a forced correction
+    // turn — the artifact exists, the harness just wouldn't know who made it.
+    const messages: ChatMessage[] = [
+      userMsg('u1', 'make me a hero image'),
+      assistantWithCalls('a1', 'generating', [
+        toolCall('tc1', 'generate_image', { path: 'assets/hero.png', prompt: 'a corgi' })
+      ])
+    ]
+    const paths = buildSessionWritePaths(messages).map((p) => p.path)
+    expect(paths).toContain('assets/hero.png')
+  })
+
   test('ignores delete_file (deleting a file is not a claim that it exists)', () => {
     const messages: ChatMessage[] = [
       userMsg('u1', 'go'),

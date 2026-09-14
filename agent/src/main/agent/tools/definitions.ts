@@ -33,6 +33,12 @@ export interface ToolGatingOptions {
    *  isAssistant-specific override like docx's, since browser automation isn't scoped to a
    *  workspace either way. */
   browserAutomationAvailable?: boolean
+  /** AppSettings.imageModel != null — generate_image is hidden until the user has actually picked
+   *  an image model, since without one every call would fail. Same "never advertise a tool that
+   *  can only error" posture as codebaseSearchAvailable. Applies to project and Assistant tabs
+   *  alike; plan mode never includes generate_image in planAllowed at all (planning shouldn't
+   *  spend money), so this gate is a no-op there. */
+  imageGenerationAvailable?: boolean
 }
 
 export function getToolDefinitions(
@@ -259,6 +265,52 @@ export function getToolDefinitions(
           type: 'object',
           properties: { path: { type: 'string' } },
           required: ['path']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'generate_image',
+        description:
+          'Generate an image from a text prompt using the separately-configured OpenRouter image model (independent of your own chat model) and save it to disk at `path`. This spends real money per call — typically a few cents, and a generation can take up to a minute or two — so call it deliberately, not speculatively. The result is a normal file you can reference from code, CSS, or HTML. A thumbnail is shown to the user, but the image is deliberately NOT added to your context: if you actually need to see what was produced, read it back with read_image.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description:
+                'Destination file path, relative to the workspace (or an absolute path inside it). Must end in .png, .jpg/.jpeg or .webp — the extension selects the output format. Missing parent directories are created automatically.'
+            },
+            prompt: {
+              type: 'string',
+              description:
+                'What to generate. Be specific about subject, style, composition, colours, and any text that must appear in the image.'
+            },
+            model: {
+              type: 'string',
+              description:
+                "Optional OpenRouter image-model id, overriding the user's configured default for this one call. Omit unless you have a specific reason."
+            },
+            aspect_ratio: {
+              type: 'string',
+              description: "Optional, e.g. '1:1', '16:9', '3:2'. Silently ignored by models that don't support it."
+            },
+            resolution: {
+              type: 'string',
+              description: "Optional, e.g. '1024x1024' or '2K'. Only supported by some models (not the default one); ignored otherwise."
+            },
+            quality: {
+              type: 'string',
+              description: "Optional quality tier, e.g. 'low' / 'medium' / 'high'. Support and accepted values vary by model."
+            },
+            background: {
+              type: 'string',
+              description:
+                "Optional, e.g. 'transparent' or 'opaque'. Transparency only works for .png/.webp output and only on models that support it."
+            }
+          },
+          required: ['path', 'prompt']
         }
       }
     },
@@ -948,6 +1000,7 @@ export function getToolDefinitions(
     'multi_write',
     'delete_file',
     'read_image',
+    'generate_image',
     'read_docx',
     'write_docx',
     'edit_docx',
@@ -1031,6 +1084,13 @@ export function getToolDefinitions(
   // call that's guaranteed to fail because the caller forgot to check availability first.
   if (!codebaseSearchAvailable) {
     defs = defs.filter((t) => t.function.name !== 'codebase_search')
+  }
+
+  // generate_image: only surfaced once the user has actually configured an image model, for the
+  // same reason as codebase_search above — without one, every call is guaranteed to fail, and a
+  // tool that can only error is worse than no tool at all. See imageGenerationAvailable.
+  if (!gating.imageGenerationAvailable) {
+    defs = defs.filter((t) => t.function.name !== 'generate_image')
   }
 
   // update_checklist: only ever offered once this tab actually has an active checklist to

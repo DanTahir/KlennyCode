@@ -105,7 +105,17 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
           }
           if (block.type === 'thinking') return <ThinkingBlock key={i} text={block.text} />
           if (block.type === 'image') {
-            return <img key={i} src={block.dataUrl} alt="uploaded" className="max-h-48 rounded mt-2" />
+            // `uiOnly` marks an image that exists purely for display here and is deliberately
+            // never sent to the model (generate_image's output — see ImageBlock.uiOnly), as
+            // opposed to an image the user actually attached to their message.
+            return (
+              <img
+                key={i}
+                src={block.dataUrl}
+                alt={block.uiOnly ? 'generated image' : 'uploaded'}
+                className="max-h-48 rounded mt-2"
+              />
+            )
           }
           if (block.type === 'document') {
             return (

@@ -63,6 +63,7 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set<ToolName>([
   'multi_write',
   'write_docx',
   'edit_docx',
+  'generate_image',
   'write_skill',
   'write_subagent',
   'write_memory',

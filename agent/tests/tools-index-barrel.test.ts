@@ -16,6 +16,12 @@ describe('tools/index.ts barrel completeness', () => {
     expect(typeof mod.deleteFileTool).toBe('function')
   })
 
+  test('re-exports the image tools (read_image + generate_image)', async () => {
+    const mod = await import('../src/main/agent/tools/index')
+    expect(typeof mod.readImageTool).toBe('function')
+    expect(typeof mod.generateImageTool).toBe('function')
+  })
+
   test('re-exports every search function', async () => {
     const mod = await import('../src/main/agent/tools/index')
     expect(typeof mod.grepTool).toBe('function')

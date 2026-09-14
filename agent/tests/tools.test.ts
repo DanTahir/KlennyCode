@@ -188,6 +188,43 @@ describe('tool definitions', () => {
   })
 })
 
+describe('generate_image gating (hidden until an image model is configured)', () => {
+  test('hidden in agent mode by default (imageGenerationAvailable absent)', () => {
+    expect(getToolDefinitions('agent').map((t) => t.function.name)).not.toContain('generate_image')
+  })
+
+  test('appears in agent mode once imageGenerationAvailable is true', () => {
+    const tools = getToolDefinitions('agent', undefined, false, true, false, {
+      imageGenerationAvailable: true
+    }).map((t) => t.function.name)
+    expect(tools).toContain('generate_image')
+  })
+
+  test('available on an Assistant tab too', () => {
+    const tools = getToolDefinitions('agent', undefined, false, false, true, {
+      imageGenerationAvailable: true
+    }).map((t) => t.function.name)
+    expect(tools).toContain('generate_image')
+  })
+
+  test('never offered in plan mode, even with a model configured — planning must not spend money', () => {
+    const tools = getToolDefinitions('plan', undefined, false, true, false, {
+      imageGenerationAvailable: true
+    }).map((t) => t.function.name)
+    expect(tools).not.toContain('generate_image')
+  })
+
+  test('its schema requires both path and prompt', () => {
+    const def = getToolDefinitions('agent', undefined, false, true, false, {
+      imageGenerationAvailable: true
+    }).find((t) => t.function.name === 'generate_image')
+    expect(def).toBeDefined()
+    const params = def!.function.parameters as { required: string[] }
+    expect(params.required).toContain('path')
+    expect(params.required).toContain('prompt')
+  })
+})
+
 describe('docx/Gmail/Discord tool gating (default-closed, per-option opt-in)', () => {
   test('docx tools are hidden on a project-kind tab by default (docxAvailableInCoding defaults to false/absent)', () => {
     const tools = getToolDefinitions('agent').map((t) => t.function.name)

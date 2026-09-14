@@ -87,7 +87,11 @@ export function toORMessages(
     if (m.role === 'user') {
       const textParts = m.blocks.filter((b) => b.type === 'text').map((b) => (b as { text: string }).text)
       const documents = m.blocks.filter((b) => b.type === 'document') as DocumentBlock[]
-      const images = m.blocks.filter((b) => b.type === 'image') as Array<{ dataUrl: string }>
+      // `uiOnly` blocks are dropped here for symmetry with the tool-message path below: a UI-only
+      // image is UI-only everywhere, never on the wire.
+      const images = (m.blocks.filter((b) => b.type === 'image') as Array<{ dataUrl: string; uiOnly?: boolean }>).filter(
+        (img) => !img.uiOnly
+      )
       if (images.length || documents.length) {
         out.push({
           role: 'user',
@@ -157,8 +161,12 @@ export function toORMessages(
           tool_call_id: tc.id,
           content: compactToolResult(tc.result)
         })
-        const images = m.blocks.filter((b) => b.type === 'image') as Array<{ dataUrl: string }>
-        pendingToolImages.push(...images.map((img) => img.dataUrl))
+        // Skip `uiOnly` images (generate_image): they're rendered as a chat thumbnail but must
+        // never reach the model. A generated 2K PNG would otherwise be re-uploaded as ~1-2 MB of
+        // base64 on every single subsequent turn — for an image the model itself specified and
+        // can always read back off disk via read_image if it genuinely needs to see it.
+        const images = m.blocks.filter((b) => b.type === 'image') as Array<{ dataUrl: string; uiOnly?: boolean }>
+        pendingToolImages.push(...images.filter((img) => !img.uiOnly).map((img) => img.dataUrl))
       }
     }
   }

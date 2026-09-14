@@ -5,6 +5,7 @@ import type {
   ArchivedTabSession,
   AssistantMemoryPool,
   CostReport,
+  ImageModelInfo,
   IndexStatus,
   MemoryCompactionResult,
   ModelInfo,
@@ -66,6 +67,7 @@ export const IPC = {
   documentsDirectoryPick: 'documentsDirectory:pick',
 
   modelsList: 'models:list',
+  imageModelsList: 'imageModels:list',
   shellsList: 'shells:list',
 
   terminalCreate: 'terminal:create',
@@ -221,6 +223,11 @@ export interface KlennyApi {
   pickDocumentsDirectory: () => Promise<string | null>
 
   listModels: (forceRefresh?: boolean) => Promise<ModelInfo[]>
+  /** Image-generation models from OpenRouter's dedicated `/images/models` endpoint — a separate
+   *  catalog from listModels(), NOT a filtered view of it: image models describe
+   *  `supported_parameters` as an object of capability descriptors and price per-image rather
+   *  than per-token, so they can't be represented as ModelInfo. Returns [] with no API key. */
+  listImageModels: (forceRefresh?: boolean) => Promise<ImageModelInfo[]>
   listShells: () => Promise<ShellInfo[]>
 
   createTerminal: (cols: number, rows: number) => Promise<{ id: string; shellName: string }>

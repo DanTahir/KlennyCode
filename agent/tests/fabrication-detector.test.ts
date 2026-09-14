@@ -167,6 +167,25 @@ describe('false positives (must NOT be flagged)', () => {
     expect(codes(r.hard)).not.toContain('C3')
   })
 
+  test('a truthful generate_image claim is not C3-flagged', () => {
+    const writes: PathTouch[] = [
+      { path: 'assets/hero.png', toolName: 'generate_image', status: 'success' }
+    ]
+    const r = detectFabrication(
+      input({ text: 'I generated assets/hero.png for the landing page.', sessionWritePaths: writes })
+    )
+    expect(codes(r.hard)).not.toContain('C3')
+  })
+
+  test('positive control: the same generated-image claim with NO write behind it IS flagged', () => {
+    // Guards the test above from passing vacuously (e.g. if "generated" ever fell out of the
+    // creation/authorship cues, the exemption test would pass while C3 was simply blind).
+    const r = detectFabrication(
+      input({ text: 'I generated assets/hero.png for the landing page.' })
+    )
+    expect(codes(r.hard)).toContain('C3')
+  })
+
   test('a file that actually exists on disk is not flagged', () => {
     const r = detectFabrication(
       input({ text: 'I created src/real.ts for this.', fileExists: () => true })

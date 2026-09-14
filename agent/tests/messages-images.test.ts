@@ -113,3 +113,104 @@ describe('toORMessages — tool-result images (read_image)', () => {
     expect(typeof or[toolMsgIdx + 2].content).toBe('string')
   })
 })
+
+/** A generate_image tool result as loop.ts records it: the ImageBlock is flagged `uiOnly`, so it
+ *  renders as a chat thumbnail but must never be put on the wire. A generated 2K PNG would
+ *  otherwise be re-uploaded as ~1-2 MB of base64 on every subsequent turn. */
+function uiOnlyToolResultMsg(id: string, toolCallId: string): ChatMessage {
+  return {
+    id,
+    role: 'tool',
+    blocks: [
+      {
+        type: 'tool_call',
+        id: toolCallId,
+        toolName: 'generate_image',
+        args: { path: 'assets/hero.png' },
+        status: 'success',
+        result: { ok: true, summary: 'Generated assets/hero.png', data: { path: 'assets/hero.png' } }
+      },
+      { type: 'image', dataUrl: PNG_DATA_URL, uiOnly: true }
+    ],
+    createdAt: Date.now()
+  }
+}
+
+describe('toORMessages — uiOnly images (generate_image) are excluded from the wire', () => {
+  test('a uiOnly tool-result image produces no trailing synthetic user message at all', () => {
+    const messages: ChatMessage[] = [
+      userTextMsg('u0', 'make me a hero image'),
+      assistantToolCallMsg('a0', [{ toolCallId: 'tc1', toolName: 'generate_image' }]),
+      uiOnlyToolResultMsg('t0', 'tc1')
+    ]
+    const or = toORMessages(messages, 'SYSTEM')
+
+    const toolMsgIdx = or.findIndex((m) => m.role === 'tool')
+    expect(toolMsgIdx).toBeGreaterThan(-1)
+    // The tool result itself still goes through (the model needs the summary/path), just not the bytes.
+    expect(String(or[toolMsgIdx].content)).toContain('assets/hero.png')
+    expect(or[toolMsgIdx + 1]).toBeUndefined()
+    expect(JSON.stringify(or)).not.toContain('base64')
+  })
+
+  test('in a mixed batch, only the non-uiOnly image reaches the wire (guards against over-filtering)', () => {
+    const messages: ChatMessage[] = [
+      userTextMsg('u0', 'generate one and read one'),
+      assistantToolCallMsg('a0', [
+        { toolCallId: 'tc1', toolName: 'generate_image' },
+        { toolCallId: 'tc2', toolName: 'read_image' }
+      ]),
+      uiOnlyToolResultMsg('t0', 'tc1'),
+      toolResultMsg('t1', 'tc2', 'read_image', PNG_DATA_URL)
+    ]
+    const or = toORMessages(messages, 'SYSTEM')
+
+    const lastToolIdx = or.map((m) => m.role).lastIndexOf('tool')
+    const trailing = or[lastToolIdx + 1]
+    expect(trailing).toBeDefined()
+    expect(trailing.role).toBe('user')
+    // Exactly ONE image part: the read_image one. The generated one is dropped.
+    const parts = trailing.content as Array<{ type: string }>
+    expect(parts).toHaveLength(1)
+    expect(parts[0].type).toBe('image_url')
+  })
+
+  test('a uiOnly image on a user message is dropped too, leaving the text intact', () => {
+    const messages: ChatMessage[] = [
+      {
+        id: 'u0',
+        role: 'user',
+        blocks: [
+          { type: 'text', text: 'here is the thing' },
+          { type: 'image', dataUrl: PNG_DATA_URL, uiOnly: true }
+        ],
+        createdAt: Date.now()
+      }
+    ]
+    const or = toORMessages(messages, 'SYSTEM')
+    const userMsg = or.find((m) => m.role === 'user')
+    expect(userMsg).toBeDefined()
+    // With no wire-visible images or documents left, it collapses back to a plain string message.
+    expect(typeof userMsg!.content).toBe('string')
+    expect(String(userMsg!.content)).toContain('here is the thing')
+  })
+
+  test('a normal (non-uiOnly) user image is still sent — negative control', () => {
+    const messages: ChatMessage[] = [
+      {
+        id: 'u0',
+        role: 'user',
+        blocks: [
+          { type: 'text', text: 'look' },
+          { type: 'image', dataUrl: PNG_DATA_URL }
+        ],
+        createdAt: Date.now()
+      }
+    ]
+    const or = toORMessages(messages, 'SYSTEM')
+    const userMsg = or.find((m) => m.role === 'user')
+    const parts = userMsg!.content as Array<{ type: string }>
+    expect(Array.isArray(parts)).toBe(true)
+    expect(parts.some((p) => p.type === 'image_url')).toBe(true)
+  })
+})

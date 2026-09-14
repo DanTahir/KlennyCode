@@ -15,6 +15,7 @@ const api: KlennyApi = {
   pickDocumentsDirectory: () => ipcRenderer.invoke(IPC.documentsDirectoryPick),
 
   listModels: (force) => ipcRenderer.invoke(IPC.modelsList, force),
+  listImageModels: (force) => ipcRenderer.invoke(IPC.imageModelsList, force),
   listShells: () => ipcRenderer.invoke(IPC.shellsList),
 
   createTerminal: (cols, rows) => ipcRenderer.invoke(IPC.terminalCreate, cols, rows),

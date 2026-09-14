@@ -139,6 +139,24 @@ export async function previewMutatingTool(
       return { title, extra: { filePaths: paths } }
     }
   }
+  if (name === 'generate_image') {
+    // MUST stay above the delete fallthrough below. That fallthrough labels *any* unmatched
+    // mutating tool as `Delete ${path}`, so without an explicit branch here the approval dialog
+    // for generating an image would read "Delete assets/hero.png" — actively misleading rather
+    // than merely unhelpful, and the one thing a user must be able to trust in an approval prompt.
+    //
+    // There's no diff to show (the file doesn't exist yet, and the bytes don't exist until after
+    // approval), so the model id and prompt ride in `command`, the same pattern write_docx uses
+    // for a non-diffable write. No cost estimate is shown on purpose: OpenRouter's image *model*
+    // records carry no pricing at all (it lives only in per-endpoint records, billed per image),
+    // so any number here would be invented rather than merely approximate.
+    const model = typeof args.model === 'string' && args.model ? args.model : undefined
+    const prompt = typeof args.prompt === 'string' ? args.prompt : ''
+    const details = [model ? `model: ${model}` : undefined, prompt ? `prompt: ${prompt}` : undefined]
+      .filter(Boolean)
+      .join('\n')
+    return { title: `Generate image \u2192 ${path}`, extra: { filePath: path, command: details || undefined } }
+  }
   try {
     const abs = resolveWorkspacePath(path, root)
     const oldContent = toLf(await readFile(abs, 'utf8'))

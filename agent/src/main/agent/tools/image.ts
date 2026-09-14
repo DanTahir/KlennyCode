@@ -30,7 +30,7 @@ function mimeTypeForPath(path: string): string | undefined {
 /** Best-effort width/height sniff from raw bytes — no image-parsing dependency needed for this.
  *  Returns undefined (rather than throwing) for any format/edge case not handled below; the
  *  dimensions are purely informational for the tool result summary, never required downstream. */
-function sniffDimensions(buf: Buffer, mimeType: string): { width: number; height: number } | undefined {
+export function sniffDimensions(buf: Buffer, mimeType: string): { width: number; height: number } | undefined {
   try {
     if (mimeType === 'image/png' && buf.length >= 24 && buf.readUInt32BE(0) === 0x89504e47) {
       return { width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) }

@@ -53,7 +53,9 @@ import {
   readTerminalTool,
   webSearchTool,
   fetchUrlTool,
-  readImageTool
+  readImageTool,
+  generateImageTool,
+  type GenerateImageToolArgs
 } from '../tools/index'
 import { browserTool, isBrowserActionMutating, buildBrowserApprovalPreview } from '../tools/browser'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
@@ -99,7 +101,7 @@ import {
   truncateSummary
 } from '../turnControl'
 import { buildSystemPrompt, buildCurrentTimeNote } from './system-prompt'
-import { previewMutatingTool } from './approval-previews'
+import { previewMutatingTool, checkSpendCap } from './approval-previews'
 import {
   type Emit,
   type LoopStopReason,
@@ -293,7 +295,8 @@ export async function agentLoop(
       discordConnected: settings.hasDiscordToken,
       discordPostAllowed: settings.automationPermissions['discord.post'] === 'auto',
       discordAvailableInCoding: settings.discordAvailableInCoding,
-      browserAutomationAvailable: (settings.browserAutomation?.policy ?? 'off') !== 'off'
+      browserAutomationAvailable: (settings.browserAutomation?.policy ?? 'off') !== 'off',
+      imageGenerationAvailable: settings.imageModel != null
     },
     Boolean(tab.activeChecklist)
   ).filter((t) => !subagentCtx || t.function.name !== 'task')
@@ -589,7 +592,12 @@ export async function agentLoop(
         subagentCtx,
         settings.shellId,
         settings.browserAutomation,
-        settings.docxAvailableInCoding
+        settings.docxAvailableInCoding,
+        {
+          model: settings.imageModel,
+          spendingCapUsd: settings.spendingCapUsd,
+          spendingCapPeriod: settings.spendingCapPeriod
+        }
       )
     )
   )
@@ -636,9 +644,16 @@ export async function agentLoop(
     // tool result text that gets persisted and replayed via compactToolResult.
     const resultData = result.payload.data as Record<string, unknown> | undefined
     let imageDataUrl: string | undefined
+    // generate_image additionally sets data.imageUiOnly, which becomes ImageBlock.uiOnly: the user
+    // sees the thumbnail of the image they paid for, but it is never re-uploaded to the model on
+    // later turns (messages.ts filters uiOnly blocks off the wire). read_image deliberately leaves
+    // the flag unset — there, putting the image *into* context is the entire point of the call.
+    let imageUiOnly = false
     if (resultData && typeof resultData.dataUrl === 'string') {
       imageDataUrl = resultData.dataUrl
       delete resultData.dataUrl
+      imageUiOnly = resultData.imageUiOnly === true
+      delete resultData.imageUiOnly
     }
 
     const toolCallBlock: ContentBlock = {
@@ -652,7 +667,9 @@ export async function agentLoop(
     const toolMsg: ChatMessage = {
       id: nanoid(),
       role: 'tool',
-      blocks: imageDataUrl ? [toolCallBlock, { type: 'image', dataUrl: imageDataUrl }] : [toolCallBlock],
+      blocks: imageDataUrl
+        ? [toolCallBlock, { type: 'image', dataUrl: imageDataUrl, ...(imageUiOnly ? { uiOnly: true } : {}) }]
+        : [toolCallBlock],
       createdAt: Date.now()
     }
     tab.messages.push(toolMsg)
@@ -719,6 +736,18 @@ function buildToolArgsRetryNudgeMessage(
   }
 }
 
+/**
+ * The slice of AppSettings that generate_image's dispatch case needs. Threaded explicitly rather
+ * than re-read from disk inside dispatchTool, both to match how shellId/browserAutomation/
+ * docxAvailableInCoding already travel and so every tool in one turn sees one consistent snapshot.
+ */
+interface ImageGenDispatch {
+  /** AppSettings.imageModel — null when the user hasn't picked one (the tool is hidden then). */
+  model: string | null
+  spendingCapUsd: number | null
+  spendingCapPeriod: 'session' | 'daily'
+}
+
 async function executeTool(
   tc: ToolCall,
   tab: TabSession,
@@ -733,7 +762,8 @@ async function executeTool(
   subagentCtx?: SubagentContext,
   shellId?: string | null,
   browserAutomation?: BrowserAutomationSettings,
-  docxAvailableInCoding?: boolean
+  docxAvailableInCoding?: boolean,
+  imageGen?: ImageGenDispatch
 ): Promise<{ payload: ToolResultPayload; status: ToolCallBlock['status'] }> {
   let args: Record<string, unknown> = {}
   try {
@@ -860,7 +890,7 @@ async function executeTool(
     }
   }
 
-  if (['write_file', 'edit_file', 'multi_edit', 'multi_write', 'delete_file', 'write_docx', 'edit_docx', 'run_command'].includes(name)) {
+  if (['write_file', 'edit_file', 'multi_edit', 'multi_write', 'delete_file', 'write_docx', 'edit_docx', 'generate_image', 'run_command'].includes(name)) {
     // 'manual': everything needs review. 'command': only run_command needs review — file edits
     // are auto-applied like 'auto' mode. 'auto': nothing needs review.
     const needsApproval = approvalMode === 'manual' || (approvalMode === 'command' && name === 'run_command')
@@ -939,7 +969,8 @@ async function executeTool(
       Boolean(subagentCtx),
       browserAutomation,
       onToolProgress,
-      fileRoot
+      fileRoot,
+      imageGen
     )
     return { payload, status: payload.ok ? 'success' : 'error' }
   } catch (e) {
@@ -966,7 +997,9 @@ async function dispatchTool(
   onToolProgress?: (message: string) => void,
   /** Sandbox root for file tools — see the matching parameter on executeTool/
    *  previewMutatingTool above. undefined means "use the open project workspace". */
-  fileRoot?: string
+  fileRoot?: string,
+  /** Only generate_image uses this; see ImageGenDispatch. */
+  imageGen?: ImageGenDispatch
 ): Promise<ToolResultPayload> {
   switch (name) {
     case 'read_file':
@@ -988,6 +1021,57 @@ async function dispatchTool(
       return readDocxTool(args as { path: string }, fileRoot)
     case 'read_image':
       return readImageTool(args as { path: string }, fileRoot)
+    case 'generate_image': {
+      // A per-call `model` override wins over the configured AppSettings.imageModel. The tool
+      // itself also rejects a missing model, but check here first so a call that can't run at all
+      // never reaches the spend-cap check (or looks like it was blocked on spend).
+      const requestedModel = typeof args.model === 'string' ? args.model.trim() : ''
+      const imageModel = requestedModel || imageGen?.model
+      if (!imageModel) {
+        return {
+          ok: false,
+          summary: 'No image model is configured',
+          error: 'not_configured',
+          data: { detail: 'Pick an image model in Settings \u2192 Models \u2192 Image generation, then retry.' }
+        }
+      }
+      // Deliberately NEW behavior relative to every other tool: checkSpendCap otherwise runs only
+      // at turn start (turn-lifecycle.ts), so a single turn could fire many paid generations
+      // before the next check ever happens. It throws 'Spending cap exceeded' (after emitting
+      // spend_blocked), which executeTool's try/catch converts into a normal failed tool result
+      // instead of tearing down the turn.
+      checkSpendCap(tab, imageGen?.spendingCapUsd ?? null, imageGen?.spendingCapPeriod ?? 'session')
+      const imageResult = await generateImageTool(args as GenerateImageToolArgs, {
+        apiKey,
+        model: imageModel,
+        root: fileRoot,
+        signal,
+        onProgress: onToolProgress
+      })
+      // Attribute the spend exactly like a chat turn's, so the daily cap checked above, the tab
+      // total, and the Cost Report all account for it. Note this reads costUsd off the payload
+      // before returning, since the caller strips other keys (dataUrl/imageUiOnly) off this same
+      // object afterwards.
+      const imageData = (imageResult.data ?? {}) as Record<string, unknown>
+      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+      const imageCost = num(imageData.costUsd)
+      if (imageCost > 0) {
+        tab.totalCostUsd += imageCost
+        trackDailySpend(imageCost)
+        recordUsage(getWorkspace(), imageModel, {
+          costUsd: imageCost,
+          promptTokens: num(imageData.promptTokens),
+          completionTokens: num(imageData.completionTokens),
+          // The /images endpoint has no prompt cache, so there is nothing cached, nothing
+          // written to a cache, and no saving: the counterfactual cost is just the real cost.
+          cachedTokens: 0,
+          cacheWriteTokens: 0,
+          costWithoutCacheUsd: imageCost,
+          cacheSavingsUsd: 0
+        })
+      }
+      return imageResult
+    }
     case 'write_docx':
       return writeDocxTool(args as any, fileRoot)
     case 'edit_docx':
@@ -1357,6 +1441,8 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
     }
     case 'delete_file':
       return `Deleting ${str(args.path) ?? 'file'}`
+    case 'generate_image':
+      return str(args.path) ? `Generating image ${str(args.path)}` : 'Generating an image'
     case 'read_docx':
       return `Reading ${str(args.path) ?? 'docx file'}`
     case 'write_docx':

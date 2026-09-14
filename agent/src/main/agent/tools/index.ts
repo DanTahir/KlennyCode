@@ -21,6 +21,8 @@ export { grepTool, globTool } from './search'
 
 export { readImageTool } from './image'
 
+export { generateImageTool, type GenerateImageToolArgs } from './imagegen'
+
 export { webSearchTool, fetchUrlTool } from './web'
 
 export { runCommandTool, killBackgroundProcess, runProcess } from './shell'

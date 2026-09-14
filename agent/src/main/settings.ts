@@ -26,6 +26,7 @@ const DEFAULTS: AppSettings = {
   promptCachingEnabled: true,
   lastWorkspace: null,
   shellId: null,
+  imageModel: null,
   codebaseIndexEnabled: false,
   embeddingsModel: null,
   vectorStoreBackend: 'local',

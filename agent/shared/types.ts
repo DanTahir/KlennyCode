@@ -71,6 +71,12 @@ export interface ImageBlock {
   type: 'image'
   /** data URL, e.g. data:image/png;base64,... */
   dataUrl: string
+  /** When true this block is rendered in the chat UI but deliberately NEVER sent to the model —
+   *  toORMessages() filters it off the wire. Used by generate_image: the user wants to see the
+   *  image they paid for, but a 2K PNG is ~1-2 MB of base64 that would otherwise be re-uploaded
+   *  on every subsequent turn of the conversation for no benefit (the model already knows what it
+   *  asked for, and the file is on disk if it ever needs to read it back via read_image). */
+  uiOnly?: boolean
 }
 
 /** A user-attached .md/.txt/.docx document, extracted to model-readable text at attach time
@@ -278,6 +284,7 @@ export type ToolName =
   | 'write_docx'
   | 'edit_docx'
   | 'read_image'
+  | 'generate_image'
   | 'grep'
   | 'glob'
   | 'run_command'
@@ -381,6 +388,7 @@ export const ASSISTANT_TOOLS: ToolName[] = [
   'write_docx',
   'edit_docx',
   'read_image',
+  'generate_image',
   'grep',
   'glob',
   'create_checklist',
@@ -445,6 +453,7 @@ export const MUTATING_TOOLS: ToolName[] = [
   'delete_file',
   'write_docx',
   'edit_docx',
+  'generate_image',
   'run_command',
   'write_memory',
   'write_skill',
@@ -472,6 +481,7 @@ export type PendingActionKind =
   | 'delete_file'
   | 'write_docx'
   | 'edit_docx'
+  | 'generate_image'
   | 'run_command'
   | 'browser_act'
   | 'create_pawprint'
@@ -693,6 +703,9 @@ export interface AppSettings {
   lastWorkspace?: string | null
   /** id of the shell used for run_command (e.g. 'cmd', 'powershell', 'git-bash', 'bash', 'zsh'); null = auto-pick OS default */
   shellId?: string | null
+  /** OpenRouter model id used by the generate_image tool, independent of the tab's chat model;
+   *  null (the default) hides the tool entirely until the user picks one */
+  imageModel: string | null
   /** master on/off switch for the semantic codebase search index — off by default (opt-in, since it spends OpenRouter credits on embeddings and runs a background file watcher) */
   codebaseIndexEnabled: boolean
   /** OpenRouter model id used to embed code chunks/queries; null until the user enables the feature and picks one */
@@ -1039,6 +1052,43 @@ export const DEFAULT_SUBAGENT_MODEL = 'anthropic/claude-sonnet-5'
 export const DEFAULT_UTILITY_MODEL = 'anthropic/claude-haiku-4.5'
 /** Best code-retrieval-tuned embedding model actually available on OpenRouter at plan time (Cohere has no embeddings there — checked directly). Cheap ($0.01/M tokens), 32K context. Verify this id still resolves before assuming it's current. */
 export const DEFAULT_EMBEDDINGS_MODEL = 'qwen/qwen3-embedding-8b'
+/** Default model for the generate_image tool. Verified live against GET /api/v1/images/models at
+ *  implementation time: this is OpenRouter's speed/cost-oriented tier of the gpt-image-2.5 family,
+ *  supports plain text-to-image (no reference image required), and needs no extra provider key.
+ *
+ *  Worth knowing if this ever 404s: the ids that appear in OpenRouter's *prose* docs
+ *  (openai/gpt-image-1, google/gemini-2.5-flash-image, bytedance-seed/seedream-4.5) no longer
+ *  resolve on the live endpoint — re-list before swapping in a "documented" id. */
+export const DEFAULT_IMAGE_MODEL = 'openai/gpt-image-2.5-flare'
+
+/**
+ * An image-generation model as listed by GET /api/v1/images/models.
+ *
+ * Deliberately a SEPARATE type from ModelInfo rather than an extension of it, because the two
+ * schemas genuinely disagree:
+ *  - `supported_parameters` is an *object* keyed by request-field name, whose values are capability
+ *    descriptors (`{type:'enum',values:[...]}`, `{type:'range',min,max}`, `{type:'boolean'}`) —
+ *    NOT ModelInfo's array of strings. Never call `.includes()` on it; check key presence instead.
+ *    Support is not a superset across models: gpt-image-2.5-flare has aspect_ratio/quality/
+ *    background but no resolution or output_format, while the seedream-5 family does have
+ *    resolution.
+ *  - pricing is absent from the model record entirely (it lives only in the per-endpoint records)
+ *    and is billed per *image*, which cannot be expressed in ModelInfo's per-token promptPrice.
+ */
+export interface ImageModelInfo {
+  id: string
+  name: string
+  description?: string
+  inputModalities: string[]
+  outputModalities: string[]
+  /** raw capability descriptors keyed by request-field name — see the note above before reading. */
+  supportedParameters: Record<string, unknown>
+  supportsStreaming: boolean
+  /** true for image-to-image-only models (require >=1 reference image), which therefore cannot
+   *  serve a pure text-to-image request at all — e.g. the Recraft V4 Styles family. */
+  requiresInputReferences: boolean
+  pinned: boolean
+}
 
 // ---------- Codebase semantic search ----------
 
