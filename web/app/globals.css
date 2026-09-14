@@ -2,10 +2,241 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+   Custom properties. --x/--y are written by lib/effects/spotlight.ts and
+   --mx/--my by lib/effects/cardGlow.ts (pointer position, in percent).
+   --ease is the shared entrance curve used by every effect module.
+   --------------------------------------------------------------------------- */
+:root {
+  --x: 50%;
+  --y: 30%;
+  --mx: 50%;
+  --my: 50%;
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --nav-h: 4.5rem;
+}
+
 html {
   scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
 }
 
 body {
   background-color: #0f0b08;
+  overflow-x: hidden;
+}
+
+/* Anchored sections shouldn't hide behind the sticky nav. */
+[id] {
+  scroll-margin-top: calc(var(--nav-h) + 1.5rem);
+}
+
+::selection {
+  background: rgba(232, 134, 58, 0.32);
+  color: #fbf3e7;
+}
+
+/* ---------------------------------------------------------------------------
+   Scroll reveal.
+
+   CRITICAL: the hidden state is scoped to `html.js`, and that class is only
+   added by the tiny inline script in app/layout.tsx. If JavaScript is
+   disabled or fails to load, `.js` is never added, these rules never apply,
+   and every [data-reveal] block renders fully visible. Never move the hidden
+   state out of the `html.js` scope -- doing so permanently hides real copy.
+   --------------------------------------------------------------------------- */
+html.js [data-reveal] {
+  opacity: 0;
+  transform: translate3d(0, 18px, 0);
+  transition:
+    opacity 0.7s var(--ease),
+    transform 0.7s var(--ease);
+  transition-delay: var(--reveal-delay, 0ms);
+  will-change: opacity, transform;
+}
+
+html.js [data-reveal].revealed {
+  opacity: 1;
+  transform: none;
+}
+
+/* Per-word headline reveal. Spans are injected by lib/effects/wordReveal.ts;
+   --wr-i is the word index it stamps on each span. */
+html.js [data-word-reveal] .wr-word {
+  display: inline-block;
+  opacity: 0;
+  white-space: pre;
+}
+
+html.js [data-word-reveal].wr-run .wr-word {
+  animation: word-in 0.78s var(--ease) both;
+  animation-delay: calc(var(--wr-i, 0) * 62ms);
+}
+
+/* Typewriter caret */
+.tw-caret {
+  display: inline-block;
+  width: 0.06em;
+  min-width: 1px;
+  align-self: stretch;
+  margin-left: 0.12em;
+  background: currentColor;
+  animation: pulse-caret 1.05s steps(2, start) infinite;
+}
+
+@keyframes pulse-caret {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Nav: transparent at rest, frosted once scrolled (toggled by navScroll.ts)
+   --------------------------------------------------------------------------- */
+.site-nav {
+  transition:
+    background-color 0.35s var(--ease),
+    border-color 0.35s var(--ease),
+    backdrop-filter 0.35s var(--ease);
+  border-bottom: 1px solid transparent;
+}
+
+.site-nav.is-scrolled {
+  background-color: rgba(15, 11, 8, 0.72);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  backdrop-filter: blur(10px) saturate(140%);
+}
+
+/* ---------------------------------------------------------------------------
+   Hero cursor-follow spotlight (spotlight.ts writes --x/--y)
+   --------------------------------------------------------------------------- */
+.spotlight-layer {
+  background: radial-gradient(
+    42rem circle at var(--x) var(--y),
+    rgba(232, 134, 58, 0.22),
+    rgba(232, 134, 58, 0.07) 38%,
+    transparent 68%
+  );
+  transition: background 0.18s linear;
+}
+
+/* Pointer-tracking card border glow (cardGlow.ts writes --mx/--my) */
+.glow-card {
+  position: relative;
+  isolation: isolate;
+}
+
+.glow-card::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: radial-gradient(
+    14rem circle at var(--mx) var(--my),
+    rgba(232, 134, 58, 0.55),
+    transparent 65%
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.3s var(--ease);
+  pointer-events: none;
+  z-index: -1;
+}
+
+.glow-card:hover::before {
+  opacity: 1;
+}
+
+/* Screenshot straighten-on-scroll (tilt.ts writes --tilt) */
+.tilt-frame {
+  transform: perspective(1600px) rotateX(var(--tilt, 0deg));
+  transform-origin: 50% 100%;
+  will-change: transform;
+}
+
+/* Marquee: the track is duplicated in JS, so -50% is exactly one full set. */
+.marquee-mask {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
+}
+
+.marquee-track {
+  display: flex;
+  width: max-content;
+  will-change: transform;
+}
+
+/* Gradient display text */
+.text-gradient-corgi {
+  background-image: linear-gradient(100deg, #f2a968, #e8863a 38%, #fbf3e7 62%, #e8863a);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/*
+ * Fine grain overlay.
+ *
+ * Deliberately an inline SVG feTurbulence data URI rather than a generated
+ * noise.png: `stitchTiles="stitch"` guarantees a genuinely seamless repeat,
+ * it costs ~300 bytes with zero extra network requests, and it can't drift
+ * out of sync with the palette. Image models are unreliable at producing
+ * single-pixel-scale tileable grain.
+ */
+.grain-overlay {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23g)'/%3E%3C/svg%3E");
+  background-repeat: repeat;
+  background-size: 180px 180px;
+}
+
+/* ---------------------------------------------------------------------------
+   Reduced motion. Highest-consequence block in this file: it must neutralise
+   animation AND force every reveal state to its final, visible value. A
+   reveal left at opacity:0 here would permanently hide real content.
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    transition-delay: 0ms !important;
+  }
+
+  html.js [data-reveal],
+  html.js [data-word-reveal] .wr-word,
+  html.js [data-word-reveal].wr-run .wr-word {
+    opacity: 1 !important;
+    filter: none !important;
+    transform: none !important;
+    animation: none !important;
+  }
+
+  .tilt-frame {
+    transform: none !important;
+  }
+
+  .tw-caret {
+    animation: none !important;
+  }
+
+  .marquee-track {
+    transform: none !important;
+  }
 }

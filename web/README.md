@@ -4,6 +4,56 @@ Standalone Next.js (App Router, TypeScript, Tailwind) marketing site for Klenny 
 exported and deployed to `klennycode.com` via S3 + CloudFront. Lives alongside `agent/` but is a
 fully separate app with its own dependencies — not part of a workspace.
 
+## Structure
+
+```
+app/layout.tsx        next/font (Inter + Sora), metadata/OG, mounts <Effects />
+app/page.tsx          server component — composes components/sections/* in order
+app/globals.css       CSS custom props, reveal states, keyframes, reduced-motion + .no-js
+components/sections/  Nav, Hero, ModelMarquee, PrimaryScreenshot, Stats, HowItWorks,
+                      FeatureGrid, PawprintsSpotlight, ScreenshotPair, DownloadCta, Footer
+components/           Effects.tsx ('use client' effect mount), ScreenshotFrame.tsx,
+                      Feature.tsx (size-variant feature card), DownloadButtons.tsx
+lib/effects/          9 dependency-free effect modules + shared.ts + index.ts registry
+```
+
+`app/page.tsx` must stay a **server** component so `getLatestRelease()` resolves at build time
+via `readFileSync`. All interactivity lives in `components/Effects.tsx`.
+
+## Animation system
+
+No animation libraries. `lib/effects/` holds one small module per effect — `reveal`,
+`wordReveal`, `typewriter`, `counters`, `marquee`, `spotlight`, `navScroll`, `tilt`, `cardGlow` —
+built on IntersectionObserver, CSS and the Web Animations API. Each module no-ops when its
+targets are absent, guards against React strict-mode double-mount with a `data-*` marker, and
+returns a teardown. `index.ts` runs them all from a single `useEffect` after hydration.
+
+Two invariants worth knowing before editing them:
+
+- **Under `prefers-reduced-motion`, reveals apply their final *visible* state immediately** rather
+  than doing nothing. The reveal class is what makes content visible, so skipping it would
+  permanently hide real copy.
+- **`.no-js` in `globals.css` keeps everything visible when JS never runs.** `layout.tsx` has an
+  inline script that swaps `no-js` for `js` on `<html>`; if you remove it, content stays visible
+  (fail-open), which is the intended direction.
+
+## Assets
+
+Generated artwork in `public/`: `hero-aurora.png` (hero backdrop), `og-card.png` (1536×864 social
+card — keep the `width`/`height` in `layout.tsx` metadata in sync with the real file),
+`pawprints-art.png`, `memory-art.png`, `scheduler-art.png`. Film grain is an inline SVG
+`feTurbulence` data URI in `globals.css`, not a bitmap — `stitchTiles="stitch"` makes it seamless
+for free.
+
+Product screenshots (`KlennyScreenshot1/2/3.png`, `KlennyCodePawprints.png`) all go through
+`components/ScreenshotFrame.tsx`. **Every one of them already contains a real Windows titlebar**,
+so that component deliberately has no fixed height, no `object-fit` crop and no negative offsets —
+`overflow-hidden` is there only so the border radius clips the corners. Don't add fake macOS
+traffic-light chrome back on top of authentic product chrome, and don't crop the titlebars off.
+
+Feature icons are emoji on purpose: crisp at every DPI, zero bytes, and they read correctly to
+screen readers.
+
 ## Local development
 
 ```bash
