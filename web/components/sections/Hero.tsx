@@ -14,6 +14,16 @@ const PHRASES = [
   'build me a sticky-note widget for my desktop',
 ];
 
+/**
+ * The typed line is a single flow of inline text, so on narrow viewports it
+ * wraps onto a second line partway through a phrase. An invisible sizer span
+ * holding the longest phrase reserves that full height up front, so the block
+ * stays a constant height instead of growing and shrinking as characters are
+ * typed and erased. The font is monospace, which makes character count an
+ * exact proxy for rendered width.
+ */
+const LONGEST_PHRASE = PHRASES.reduce((longest, phrase) => (phrase.length >= longest.length ? phrase : longest), '');
+
 export default function Hero({ release }: { release: LatestReleaseData }) {
   return (
     <section
@@ -53,16 +63,29 @@ export default function Hero({ release }: { release: LatestReleaseData }) {
             <span className="text-gradient-corgi animate-gradient-pan">Any model. Zero leash.</span>
           </h1>
 
+          {/*
+            Both spans occupy the same single grid cell, so the taller of the
+            two sets the height. The first is an invisible copy of the longest
+            phrase (see LONGEST_PHRASE) that holds the line box open; the
+            second carries the live typed text. The typed line therefore never
+            changes the height of this block as it wraps, types, or erases.
+          */}
           <p
             data-typewriter=""
             data-phrases={JSON.stringify(PHRASES)}
-            className="mt-6 flex min-h-[1.6rem] items-center font-mono text-sm text-corgi-cream/80 sm:text-base"
+            className="mt-6 grid font-mono text-sm text-corgi-cream/80 sm:text-base"
           >
-            <span aria-hidden="true" className="mr-2 text-corgi-orange/70">
-              klenny&gt;
+            <span aria-hidden="true" className="invisible col-start-1 row-start-1 select-none">
+              <span className="mr-2">klenny&gt;</span>
+              {LONGEST_PHRASE}
             </span>
-            <span data-typewriter-out="" />
-            <span aria-hidden="true" className="tw-caret" />
+            <span className="col-start-1 row-start-1">
+              <span aria-hidden="true" className="mr-2 text-corgi-orange/70">
+                klenny&gt;
+              </span>
+              <span data-typewriter-out="" />
+              <span aria-hidden="true" className="tw-caret" />
+            </span>
           </p>
 
           <p data-reveal="" data-fade-delay="s" className="mt-6 max-w-xl text-fluid-lead text-corgi-cream/70">
@@ -87,13 +110,26 @@ export default function Hero({ release }: { release: LatestReleaseData }) {
 
         {/* Mascot artwork */}
         <div data-reveal="" data-fade-delay="s" className="relative flex flex-col items-center gap-6">
+          {/*
+            The corgi is not centred inside its own artwork: the left ~40% of
+            the PNG is empty transparency, putting the dog's centre at roughly
+            73% of the image width. Centring the image therefore left the dog
+            sitting well right of the three thumbnails below it. So scale the
+            artwork up and shift it left by scale * (0.73 - 0.5) of its width,
+            which drops the dog's centre onto the column's centre line -- the
+            same line the thumbnails centre on, and at every breakpoint, since
+            both numbers are proportions rather than pixels. A transform is
+            used deliberately: it is layout-neutral, so the empty left part of
+            the PNG just underlaps the text column (which paints above it via
+            `z-10`) and nothing below the image shifts or grows.
+          */}
           <Image
             src="/klennywebhero.png"
             alt="Klenny, the corgi mascot of Klenny Code, surrounded by icons for coding, terminal, skills, search, scheduling, and browser automation"
             width={1536}
             height={1024}
             priority
-            className="w-full max-w-xl drop-shadow-[0_0_70px_rgba(232,134,58,0.28)]"
+            className="w-full max-w-xl -translate-x-[28%] scale-[1.22] drop-shadow-[0_0_70px_rgba(232,134,58,0.28)]"
           />
 
           <div className="flex items-end justify-center gap-4 sm:gap-6">

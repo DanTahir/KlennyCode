@@ -73,12 +73,42 @@ html.js [data-word-reveal].wr-run .wr-word {
   animation-delay: calc(var(--wr-i, 0) * 62ms);
 }
 
-/* Typewriter caret */
+/*
+ * CRITICAL: these keyframes must live here, not only in tailwind.config.ts.
+ * Tailwind emits a theme keyframes block ONLY when the matching `animate-*`
+ * utility appears in a scanned file, and nothing uses `animate-word-in` -- the
+ * animation is applied by the hand-written rule above. Without this block the
+ * animation name resolves to nothing, the `opacity: 0` base state above is
+ * never overridden, and every word of the hero headline stays permanently
+ * invisible. Keep the values in sync with the `word-in` entry in
+ * tailwind.config.ts.
+ */
+@keyframes word-in {
+  0% {
+    opacity: 0;
+    filter: blur(10px);
+    transform: translateY(0.42em);
+  }
+
+  100% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+}
+
+/*
+ * Typewriter caret. The height is pinned to one line rather than using
+ * `align-self: stretch`: when the phrase wraps onto a second line on narrow
+ * viewports, stretch made the caret a full two-line-tall bar floating at the
+ * end of the row instead of a caret hugging the last typed character.
+ */
 .tw-caret {
   display: inline-block;
   width: 0.06em;
   min-width: 1px;
-  align-self: stretch;
+  height: 1.05em;
+  vertical-align: -0.15em;
   margin-left: 0.12em;
   background: currentColor;
   animation: pulse-caret 1.05s steps(2, start) infinite;
@@ -180,6 +210,37 @@ html.js [data-word-reveal].wr-run .wr-word {
 .text-gradient-corgi {
   background-image: linear-gradient(100deg, #f2a968, #e8863a 38%, #fbf3e7 62%, #e8863a);
   background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/*
+ * CRITICAL: `background-clip: text` clips an element's background to the glyphs
+ * of its OWN inline text run, and wordReveal.ts rewraps every headline word in
+ * an `inline-block` .wr-word span (inline-block is required for the translateY
+ * in `word-in`). An inline-block is an atomic inline box, so its glyphs are NOT
+ * part of the parent's text clip: .text-gradient-corgi painted its gradient
+ * onto no glyphs at all, while the words still inherited `color: transparent`
+ * from the rule above. Result: "Any model. Zero leash." rendered as blank space
+ * even with every word at opacity 1 and the reveal running.
+ *
+ * Fix: paint the gradient on each word, so the clip and the glyphs live on the
+ * same box -- which also keeps each word's own opacity/blur/transform entrance
+ * applying to its own paint. (Making the words `inline` instead would restore
+ * the parent's clip, but then the visible pixels come from the un-animated
+ * parent background and the staggered entrance is skipped for these words.)
+ *
+ * The sweep is consequently per word rather than one band across the whole
+ * line. The words share the parent's animated `background-position` via
+ * `inherit`, so they stay in phase and shift colour together; if a browser ever
+ * declines to inherit an animated value, the text degrades to a static gradient
+ * rather than back to invisible.
+ */
+html.js [data-word-reveal] .text-gradient-corgi .wr-word {
+  background-image: inherit;
+  background-size: inherit;
+  background-position: inherit;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;

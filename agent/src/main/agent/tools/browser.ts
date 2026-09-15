@@ -390,7 +390,12 @@ async function navigateTo(page: Page, url: string, ctx: BrowserToolContext): Pro
   }
   try {
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30_000 })
-    return { ok: true, summary: `Navigated to ${page.url()}`, data: { url: page.url(), title: await page.title() } }
+    const viewport = viewportLabel(page.viewportSize())
+    return {
+      ok: true,
+      summary: `Navigated to ${page.url()}`,
+      data: { url: page.url(), title: await page.title(), ...(viewport ? { viewport } : {}) }
+    }
   } catch (e) {
     return { ok: false, summary: 'Navigation failed', error: e instanceof Error ? e.message : String(e) }
   }

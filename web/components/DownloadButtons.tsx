@@ -59,11 +59,21 @@ export default function DownloadButtons({ release, showGithubButton, align = 'ce
       <div className={`flex flex-wrap gap-3 ${justify}`}>
         <a
           href={release.platforms[primary].url}
-          className="inline-flex items-center gap-2 rounded-full bg-corgi-orange px-8 py-3 text-base font-semibold text-corgi-dark shadow-lg shadow-orange-900/30 transition hover:brightness-110"
+          className="inline-flex flex-wrap items-center justify-center gap-x-2 gap-y-0.5 rounded-full bg-corgi-orange px-6 py-3 text-sm font-semibold text-corgi-dark shadow-lg shadow-orange-900/30 transition hover:brightness-110 sm:px-8 sm:text-base"
         >
+          {/*
+           * The label and the version string are each individually unbreakable,
+           * but the pair is allowed to wrap. Making the whole button nowrap made
+           * it wider than its container in the narrow download-CTA section, and
+           * leaving it fully breakable split the label as "Download for /
+           * Windows". This keeps the label intact and drops only the version onto
+           * a second line when space is genuinely tight.
+           */}
           <span aria-hidden>{PLATFORM_META[primary].icon}</span>
-          Download for {PLATFORM_META[primary].label}
-          {release.version && <span className="text-corgi-dark/70">({release.version})</span>}
+          <span className="whitespace-nowrap">Download for {PLATFORM_META[primary].label}</span>
+          {release.version && (
+            <span className="whitespace-nowrap text-corgi-dark/70">({release.version})</span>
+          )}
         </a>
 
         {showGithubButton && (
@@ -95,7 +105,7 @@ export default function DownloadButtons({ release, showGithubButton, align = 'ce
             <a
               key={key}
               href={asset.url}
-              className={`group flex flex-col items-center gap-1 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-sm transition hover:border-corgi-orange/60 hover:bg-white/10 ${
+              className={`group flex w-full flex-col items-center gap-1 rounded-xl border border-white/10 bg-white/5 px-5 py-3 text-sm transition hover:border-corgi-orange/60 hover:bg-white/10 sm:w-auto ${
                 align === 'left' ? 'min-w-[140px]' : 'min-w-[180px]'
               }`}
             >
