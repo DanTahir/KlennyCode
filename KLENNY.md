@@ -324,6 +324,36 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   browser. Width alone is valid (height is completed from a fallback), because the real request is
   almost always "show me this at a phone width". Note `page.setViewportSize` resizes the viewport,
   not the OS window chrome, so a headed window can look wider than what's actually rendered.
+- **A diff is a bounded *preview*, never raw file content — this once made a session log
+  unloadable.** `delete_file` on a ~20 MB binary `.mov` did `readFile(abs, 'utf8')` (which for
+  binary **never throws** — it yields U+FFFD + control bytes, so "did the read throw" is not a
+  binary check), handed the mojibake to `makeDiff`, and stored the resulting ~20 MB unified diff in
+  `result.data.diff`. `SessionStore.persist()` wrote it verbatim: the workspace session file hit
+  61 MB, froze the app on its loading screen, froze external editors, and a sibling `delete_file`
+  died with `Maximum call stack size exceeded` (jsdiff is recursive). The model never saw any of it
+  (`compactToolResult` caps the wire at 40 000 chars) — it was purely a persistence/UI failure.
+  Four independent layers now hold the invariant, and none is redundant:
+  1. `makeDiff` (`tools/diff.ts`) is **total and bounded**: `looksBinary()` (NUL/U+FFFD decisive,
+     else control-char density in an 8 KB sample; tab/LF/CR excluded so CRLF source isn't flagged)
+     → `diffOmitted()` placeholder; `MAX_DIFF_INPUT_CHARS` per side; `try/catch` around
+     `createTwoFilesPatch`; output clamped by chars/lines/per-line with **in-band** "N more
+     omitted" notes. `joinDiffs()` caps combined batch diffs. `diffOmitted()` keeps the
+     `--- `/`+++ ` header shape so `DiffViewer` still renders it and callers need no special case.
+  2. `readTextForDiff()` (`tools/file-ops.ts`) stats **before** reading; above the cap it reads
+     only a 64 KB EOL probe (all an overwrite still needs from old content) and returns
+     `omittedReason`. Used by `delete_file`, `write_file`, **and** both `approval-previews.ts`
+     branches — the preview path had the identical bug and shipped the diff over IPC.
+  3. `session/sanitize.ts` is the tool-agnostic backstop at persist **and load** time (an
+     already-poisoned file self-heals: clamped on read, rewritten once). It clamps every string and
+     evicts `result.data` from the **oldest** tool calls over a per-tab budget, which also covers
+     slow accumulation of many individually-legal diffs. **It must stay PURE/deep-copying**: the
+     live in-memory `TabSession` feeds `toORMessages()`, so clamping in place would silently
+     rewrite tool-call args the model already sent. Image `dataUrl`s are deliberately exempt —
+     truncating one corrupts a thumbnail instead of saving space.
+  4. `DiffViewer.tsx` caps rendered lines/line width: one `<div>` per line means an unbounded diff
+     is an unbounded DOM, and pre-fix sessions still hold huge diffs on disk.
+  Pinned by `diff-safety.test.ts` + `session-sanitize.test.ts` (including negative controls so a
+  future "simplification" can't pass by blinding the binary sniffer).
 - **Fuzzy edit matching** (`edit-match.ts`): handles CRLF, escaped chars and em-dash/hyphen variants
   — but line-number prefixes from `read_file` output are NOT in the real file bytes; never include
   them in `old_string`.

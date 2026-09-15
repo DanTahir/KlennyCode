@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { nanoid } from 'nanoid'
 import type { ArchivedTabSession, TabSession } from '@shared/types'
 import { DEFAULT_MAIN_MODEL } from '@shared/types'
+import { sanitizeTabsForPersist, wasSanitized } from './sanitize'
 
 /** Max number of closed chats kept in history per workspace, oldest dropped first. */
 const MAX_HISTORY = 200
@@ -77,7 +78,7 @@ export class SessionStore {
     await mkdir(sessionsDir(), { recursive: true })
     try {
       const raw = await readFile(assistantTabsFile(), 'utf8')
-      const persisted = (JSON.parse(raw) as TabSession[]).map((t) => ({ totalSavingsUsd: 0, ...t }))
+      const persisted = sanitizeTabsForPersist((JSON.parse(raw) as TabSession[]).map((t) => ({ totalSavingsUsd: 0, ...t }))).tabs
       const existingIds = new Set(this.tabs.map((t) => t.id))
       for (const t of persisted) if (!existingIds.has(t.id)) this.tabs.push(t)
     } catch {
@@ -85,7 +86,7 @@ export class SessionStore {
     }
     try {
       const raw = await readFile(assistantHistoryFile(), 'utf8')
-      this.assistantHistory = JSON.parse(raw) as ArchivedTabSession[]
+      this.assistantHistory = sanitizeTabsForPersist(JSON.parse(raw) as ArchivedTabSession[]).tabs
     } catch {
       this.assistantHistory = []
     }
@@ -99,22 +100,40 @@ export class SessionStore {
     const liveAssistantTabs = this.tabs.filter((t) => t.kind === 'assistant')
     this.workspace = workspace
     await mkdir(sessionsDir(), { recursive: true })
+    // `needsRepair` drives a one-time rewrite of an already-oversized session file. A single
+    // 20 MB binary diff in one tool result once grew this file to 61 MB, which froze the app on
+    // its loading screen; clamping on read means such a session opens normally, and the rewrite
+    // at the end of this method shrinks the file permanently instead of re-clamping every start.
+    let needsRepair = false
     try {
       const raw = await readFile(sessionFile(workspace), 'utf8')
-      this.tabs = (JSON.parse(raw) as TabSession[]).map((t) => ({ totalSavingsUsd: 0, ...t }))
+      const parsed = (JSON.parse(raw) as TabSession[]).map((t) => ({ totalSavingsUsd: 0, ...t }))
+      const { tabs, stats } = sanitizeTabsForPersist(parsed)
+      this.tabs = tabs
+      needsRepair = wasSanitized(stats)
+      if (needsRepair) {
+        console.warn(
+          `[session] clamped oversized persisted data for ${workspace}: ${stats.clampedStrings} string(s), ${stats.strippedResults} payload(s)`
+        )
+      }
     } catch {
       this.tabs = [this.createEmptyTab()]
     }
     if (this.tabs.length === 0) this.tabs = [this.createEmptyTab()]
     this.tabs.push(...liveAssistantTabs)
 
+    let historyNeedsRepair = false
     try {
       const raw = await readFile(historyFile(workspace), 'utf8')
-      this.history = JSON.parse(raw) as ArchivedTabSession[]
+      const { tabs, stats } = sanitizeTabsForPersist(JSON.parse(raw) as ArchivedTabSession[])
+      this.history = tabs
+      historyNeedsRepair = wasSanitized(stats)
     } catch {
       this.history = []
     }
 
+    if (needsRepair) await this.persist()
+    if (historyNeedsRepair) await this.persistHistory()
     return this.tabs
   }
 
@@ -247,24 +266,27 @@ export class SessionStore {
     // Assistant-kind tabs live in their own fixed file (persistAssistantTabs), never the
     // per-workspace session file.
     const persistable = this.tabs.filter((t) => t.kind !== 'assistant')
-    await writeFile(sessionFile(this.workspace), JSON.stringify(persistable, null, 2), 'utf8')
+    // Size-bounded on the way out (see ./sanitize.ts). Pure — the live in-memory tabs keep their
+    // full, byte-exact content, because that is what feeds toORMessages() on the next turn.
+    const { tabs: safe } = sanitizeTabsForPersist(persistable)
+    await writeFile(sessionFile(this.workspace), JSON.stringify(safe, null, 2), 'utf8')
   }
 
   private async persistHistory(): Promise<void> {
     if (!this.workspace) return
     await mkdir(sessionsDir(), { recursive: true })
-    await writeFile(historyFile(this.workspace), JSON.stringify(this.history, null, 2), 'utf8')
+    await writeFile(historyFile(this.workspace), JSON.stringify(sanitizeTabsForPersist(this.history).tabs, null, 2), 'utf8')
   }
 
   private async persistAssistantTabs(): Promise<void> {
     await mkdir(sessionsDir(), { recursive: true })
-    const persistable = this.tabs.filter((t) => t.kind === 'assistant')
+    const persistable = sanitizeTabsForPersist(this.tabs.filter((t) => t.kind === 'assistant')).tabs
     await writeFile(assistantTabsFile(), JSON.stringify(persistable, null, 2), 'utf8')
   }
 
   private async persistAssistantHistory(): Promise<void> {
     await mkdir(sessionsDir(), { recursive: true })
-    await writeFile(assistantHistoryFile(), JSON.stringify(this.assistantHistory, null, 2), 'utf8')
+    await writeFile(assistantHistoryFile(), JSON.stringify(sanitizeTabsForPersist(this.assistantHistory).tabs, null, 2), 'utf8')
   }
 }
 
@@ -292,7 +314,7 @@ async function readWorkspaceTabs(workspace: string): Promise<TabSession[]> {
 
 async function writeWorkspaceTabs(workspace: string, tabs: TabSession[]): Promise<void> {
   await mkdir(sessionsDir(), { recursive: true })
-  await writeFile(sessionFile(workspace), JSON.stringify(tabs, null, 2), 'utf8')
+  await writeFile(sessionFile(workspace), JSON.stringify(sanitizeTabsForPersist(tabs).tabs, null, 2), 'utf8')
 }
 
 async function readWorkspaceHistory(workspace: string): Promise<ArchivedTabSession[]> {
@@ -306,7 +328,7 @@ async function readWorkspaceHistory(workspace: string): Promise<ArchivedTabSessi
 
 async function writeWorkspaceHistory(workspace: string, history: ArchivedTabSession[]): Promise<void> {
   await mkdir(sessionsDir(), { recursive: true })
-  await writeFile(historyFile(workspace), JSON.stringify(history, null, 2), 'utf8')
+  await writeFile(historyFile(workspace), JSON.stringify(sanitizeTabsForPersist(history).tabs, null, 2), 'utf8')
 }
 
 /** Appends `message` to the given tab, wherever it lives in `workspace`'s persisted state:

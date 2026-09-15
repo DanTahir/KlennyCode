@@ -1,9 +1,9 @@
-import { readFile, writeFile, unlink, stat, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, unlink, stat, mkdir, open } from 'node:fs/promises'
 import { dirname, resolve, isAbsolute, sep } from 'node:path'
 import type { ToolResultPayload } from '@shared/types'
 import { buildEditNotFoundHelp, countOccurrences, resolveEditMatch } from './edit-match'
 import { detectEol, fromLf, toLf, type Eol } from './eol'
-import { makeDiff } from './diff'
+import { makeDiff, diffOmitted, joinDiffs, MAX_DIFF_INPUT_CHARS } from './diff'
 import { assertMutationAllowed, getWorkspace } from '../../workspace'
 import { checkPawprintWriteGuard, checkPawprintStateSize } from '../pawprints/writeGuard'
 
@@ -28,6 +28,55 @@ function checkPawprintStateSizeFor(abs: string, content: string): { allowed: boo
 // line numbering, and diffing consistent no matter how the file (or model output) is
 // line-ended; the original EOL style is restored when writing back to disk.
 const fileReadCache = new Map<string, { mtimeMs: number; content: string }>()
+
+/** Bytes read from an oversized file purely to detect its EOL convention. */
+const EOL_PROBE_BYTES = 64 * 1024
+
+/** Reads a file's current text for the purpose of generating a *diff preview* only.
+ *
+ *  Deliberately refuses to read a file that is too large to diff anyway. delete_file on a 20 MB
+ *  binary `.mov` used to slurp the whole thing into a string and hand it to makeDiff, producing
+ *  a 20 MB diff of decoded mojibake that was then persisted into the session log — growing it to
+ *  61 MB and freezing the app on startup (see the incident note in ./diff.ts).
+ *
+ *  For an oversized file we read only a small prefix — enough for detectEol(), the one thing
+ *  callers still genuinely need from the old content when overwriting — and set `omittedReason`
+ *  so the caller substitutes a diffOmitted() placeholder instead of a real diff.
+ *
+ *  `text` is raw (NOT LF-normalized); callers pass it through toLf() exactly as before. */
+export async function readTextForDiff(abs: string): Promise<{ exists: boolean; text: string; omittedReason?: string }> {
+  let size: number
+  try {
+    size = (await stat(abs)).size
+  } catch {
+    return { exists: false, text: '' }
+  }
+  if (size <= MAX_DIFF_INPUT_CHARS) {
+    try {
+      return { exists: true, text: await readFile(abs, 'utf8') }
+    } catch {
+      return { exists: false, text: '' }
+    }
+  }
+  let probe = ''
+  try {
+    const handle = await open(abs, 'r')
+    try {
+      const buf = Buffer.alloc(EOL_PROBE_BYTES)
+      const { bytesRead } = await handle.read(buf, 0, EOL_PROBE_BYTES, 0)
+      probe = buf.subarray(0, bytesRead).toString('utf8')
+    } finally {
+      await handle.close()
+    }
+  } catch {
+    // Best-effort: without the probe, EOL detection just falls back to its default.
+  }
+  return {
+    exists: true,
+    text: probe,
+    omittedReason: `file is ${(size / 1_048_576).toFixed(1)} MB \u2014 too large to diff, diff omitted`
+  }
+}
 
 /** `root`, when given, overrides the open-project workspace as the base a relative path
  *  resolves against and (for mutations, via `assertInRoot` below) the sandbox boundary. Used
@@ -78,14 +127,11 @@ export async function writeFileTool(args: { path: string; content: string }, roo
   if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   const pawprintGuard = checkPawprintGuardFor(abs, args.content)
   if (!pawprintGuard.allowed) return { ok: false, summary: pawprintGuard.reason!, error: 'pawprint_write_guard' }
-  let oldRaw = ''
-  let hadExisting = false
-  try {
-    oldRaw = await readFile(abs, 'utf8')
-    hadExisting = true
-  } catch {
-    // new file
-  }
+  // Via readTextForDiff so an enormous existing file is never read whole just to render a
+  // preview; `prev.text` is then only an EOL probe, and the diff is omitted instead.
+  const prev = await readTextForDiff(abs)
+  const oldRaw = prev.text
+  const hadExisting = prev.exists
   // Preserve the existing file's EOL convention (default to LF for new files) so we don't
   // rewrite an entire CRLF file to LF (or vice versa) just because the model's content
   // string happens to use a different style. Model output is normalized to LF first.
@@ -99,7 +145,10 @@ export async function writeFileTool(args: { path: string; content: string }, roo
   return {
     ok: true,
     summary: `Wrote ${args.path}`,
-    data: { path: args.path, diff: makeDiff(toLf(oldRaw), normalized, args.path) }
+    data: {
+      path: args.path,
+      diff: prev.omittedReason ? diffOmitted(args.path, prev.omittedReason) : makeDiff(toLf(oldRaw), normalized, args.path)
+    }
   }
 }
 
@@ -395,7 +444,7 @@ export async function multiEditFileTool(
     summary: `Edited ${changed.length} file${changed.length === 1 ? '' : 's'} (${totalEdits} edit${totalEdits === 1 ? '' : 's'})`,
     data: {
       paths: changed.map((f) => f.path),
-      diff: diffs.join('\n'),
+      diff: joinDiffs(diffs),
       files: changed.map((f) => ({ path: f.path, diff: makeDiff(f.oldContent, f.newContent, f.path) }))
     }
   }
@@ -738,7 +787,7 @@ export async function multiWriteFileTool(
     summary: `Wrote ${written.length} file${written.length === 1 ? '' : 's'}${detail ? ` (${detail})` : ''}`,
     data: {
       paths: written.map((f) => f.path),
-      diff: diffs.filter(Boolean).join('\n'),
+      diff: joinDiffs(diffs),
       files: written.map((f) => ({ path: f.path, diff: makeDiff(f.oldContent, f.newContent, f.path), created: !f.existed }))
     }
   }
@@ -756,7 +805,7 @@ export async function previewMultiWrite(
   if (!plan.ok) {
     return { paths: [...new Set(files.map((f) => (typeof f?.path === 'string' ? f.path : '')).filter(Boolean))] }
   }
-  const diff = plan.files.map((f) => makeDiff(f.oldContent, f.newContent, f.path)).filter(Boolean).join('\n')
+  const diff = joinDiffs(plan.files.map((f) => makeDiff(f.oldContent, f.newContent, f.path)))
   return { paths: plan.files.map((f) => f.path), diff: diff || undefined }
 }
 
@@ -765,17 +814,19 @@ export async function deleteFileTool(args: { path: string }, root?: string): Pro
   if (!assertMutationAllowed(abs, root)) return { ok: false, summary: 'Path outside workspace', error: 'sandbox' }
   const pawprintGuardCheck = checkPawprintWriteGuard(abs)
   if (!pawprintGuardCheck.allowed) return { ok: false, summary: pawprintGuardCheck.reason!, error: 'pawprint_write_guard' }
-  let oldContent = ''
-  try {
-    oldContent = toLf(await readFile(abs, 'utf8'))
-  } catch {
-    return { ok: false, summary: 'File not found', error: 'not_found' }
-  }
+  // Deliberately via readTextForDiff: deleting a 20 MB binary must not read it into memory and
+  // turn it into a 20 MB "everything removed" diff. That exact call grew a session log to 61 MB
+  // and made a sibling delete_file die with "Maximum call stack size exceeded" inside jsdiff.
+  const prev = await readTextForDiff(abs)
+  if (!prev.exists) return { ok: false, summary: 'File not found', error: 'not_found' }
   await unlink(abs)
   fileReadCache.delete(abs)
   return {
     ok: true,
     summary: `Deleted ${args.path}`,
-    data: { path: args.path, diff: makeDiff(oldContent, '', args.path) }
+    data: {
+      path: args.path,
+      diff: prev.omittedReason ? diffOmitted(args.path, prev.omittedReason) : makeDiff(toLf(prev.text), '', args.path)
+    }
   }
 }

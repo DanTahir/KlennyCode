@@ -4,6 +4,7 @@
 export {
   resolveWorkspacePath,
   readFileTool,
+  readTextForDiff,
   writeFileTool,
   editFileTool,
   multiEditFileTool,

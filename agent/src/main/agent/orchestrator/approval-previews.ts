@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import type { PendingAction, TabSession } from '@shared/types'
 import {
   resolveWorkspacePath,
+  readTextForDiff,
   previewMultiEdit,
   normalizeEditsArg,
   previewMultiWrite,
@@ -11,7 +12,7 @@ import {
   type MultiEditOp
 } from '../tools/index'
 import { toLf } from '../tools/eol'
-import { makeDiff } from '../tools/diff'
+import { makeDiff, diffOmitted } from '../tools/diff'
 import { resolveEditMatch } from '../tools/edit-match'
 import { getDailySpend } from '../spend'
 import { emitToAll } from './state'
@@ -41,14 +42,16 @@ export async function previewMutatingTool(
   }
   const path = String(args.path ?? '')
   if (name === 'write_file') {
-    let oldContent = ''
+    // Via readTextForDiff so previewing an overwrite of a huge/binary file can't build a
+    // multi-megabyte diff and ship it over IPC into the approval dialog.
+    let prev: { text: string; omittedReason?: string } = { text: '' }
     try {
-      const abs = resolveWorkspacePath(path, root)
-      oldContent = toLf(await readFile(abs, 'utf8'))
+      prev = await readTextForDiff(resolveWorkspacePath(path, root))
     } catch {
       // new file — diff against empty content
     }
-    return { title: `Write ${path}`, extra: { filePath: path, diff: makeDiff(oldContent, String(args.content), path) } }
+    const diff = prev.omittedReason ? diffOmitted(path, prev.omittedReason) : makeDiff(toLf(prev.text), String(args.content), path)
+    return { title: `Write ${path}`, extra: { filePath: path, diff } }
   }
   if (name === 'edit_file') {
     try {
@@ -158,9 +161,10 @@ export async function previewMutatingTool(
     return { title: `Generate image \u2192 ${path}`, extra: { filePath: path, command: details || undefined } }
   }
   try {
-    const abs = resolveWorkspacePath(path, root)
-    const oldContent = toLf(await readFile(abs, 'utf8'))
-    return { title: `Delete ${path}`, extra: { filePath: path, diff: makeDiff(oldContent, '', path) } }
+    const prev = await readTextForDiff(resolveWorkspacePath(path, root))
+    if (!prev.exists) return { title: `Delete ${path}`, extra: { filePath: path } }
+    const diff = prev.omittedReason ? diffOmitted(path, prev.omittedReason) : makeDiff(toLf(prev.text), '', path)
+    return { title: `Delete ${path}`, extra: { filePath: path, diff } }
   } catch {
     return { title: `Delete ${path}`, extra: { filePath: path } }
   }
