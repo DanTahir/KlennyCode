@@ -2,6 +2,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage, ChecklistBlock, MessageVerification, ToolCallBlock } from '@shared/types'
 import { DEFAULT_BRAND_NAME } from '@shared/types'
+import { formatMessageTimestamp } from '@shared/time'
 import { ThinkingBlock } from './ThinkingBlock'
 import { ToolCallCard } from './ToolCallCard'
 import { DiffViewer } from './DiffViewer'
@@ -43,6 +44,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
   const isAuditNote = Boolean(message.isAuditNote)
   const isUser = message.role === 'user' && !isAuditNote
   const isEmptyAssistant = message.role !== 'user' && message.blocks.length === 0
+  const timestamp = formatMessageTimestamp(message.createdAt)
   const customRunningGifUrl = useAppStore((s) => s.customRunningGifUrl)
   const brandName = useAppStore((s) => s.settings?.brandName) || DEFAULT_BRAND_NAME
 
@@ -164,6 +166,18 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
               </>
             )}
             {message.reasoningEffort && <span> · reasoning: {message.reasoningEffort}</span>}
+          </div>
+        )}
+        {/* Local-time footer for every real message bubble. Empty-string guard covers an
+            archived message whose createdAt is missing/unusable — better to show nothing than
+            "Invalid Date". Aligned to the bubble's own side so it reads as part of it. */}
+        {timestamp && (
+          <div
+            className={`text-[10px] text-klenny-muted opacity-70 mt-1.5 select-none ${
+              isUser ? 'text-right' : 'text-left'
+            }`}
+          >
+            {timestamp}
           </div>
         )}
       </div>
