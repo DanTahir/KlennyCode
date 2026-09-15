@@ -302,6 +302,28 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   inherent timeout, so one bad page could stall a turn indefinitely. Every such call goes through
   `raceDeadline(promise, ms, label, signal)` (`tools/browser.ts`) — e.g. `page.evaluate` under
   `EVALUATE_TIMEOUT_MS`. Keep new browser actions wrapped the same way.
+- **`data.dataUrl` is a cross-file contract, and getting the key wrong fails silently.** A `tool`-role
+  message can't carry an image part, so `loop.ts` lifts `result.data.dataUrl` out of a tool result
+  into a separate `ImageBlock` and deletes it from the JSON. `doScreenshot` returned the blob under
+  `screenshotDataUrl` instead — a key nothing lifts — so ~90 KB of base64 stayed *inside* the
+  payload, hit `compactToolResult`'s hard 40 000-char cut (`agent/messages.ts`) and reached the
+  model as chopped, invalid base64 with no image attached. Any new tool that wants the model to
+  actually *see* an image must use exactly `dataUrl` (plus `imageUiOnly` if the user should see it
+  but it shouldn't be re-uploaded), and should pin it with a test: the broken shape still looks like
+  a valid tool result, it just quietly becomes garbage. Fixed via `screenshotResultData()`
+  (`tools/browser.ts`). Related: screenshot token cost is estimated from **viewport pixel area**
+  (`w*h/750`), not byte length — vision models bill by pixels, and the old byte-based math
+  advertised a 70 KB capture as "~96 tokens". `snapshot` likewise no longer ships both `elements`
+  and `tree` (double-serializing the same data, halving usable page size); it sends `tree` only,
+  capped at `MAX_SNAPSHOT_ELEMENTS = 250` with an **in-band** "N more omitted" line, since a silent
+  slice is indistinguishable from "the page has no such element".
+- **`resize` is deliberately non-mutating**: it reframes our own viewport and changes nothing on the
+  page, like `navigate`, so it needs no approval. `resolveViewport()` validates args *before*
+  `ensureSessionAndPage` (mirroring `doClick`'s ref check) so a typo fails instantly instead of
+  first downloading ~150 MB of Chromium — which is also what makes it unit-testable with no
+  browser. Width alone is valid (height is completed from a fallback), because the real request is
+  almost always "show me this at a phone width". Note `page.setViewportSize` resizes the viewport,
+  not the OS window chrome, so a headed window can look wider than what's actually rendered.
 - **Fuzzy edit matching** (`edit-match.ts`): handles CRLF, escaped chars and em-dash/hyphen variants
   — but line-number prefixes from `read_file` output are NOT in the real file bytes; never include
   them in `old_string`.

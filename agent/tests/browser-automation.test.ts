@@ -1,6 +1,15 @@
 import { describe, expect, test } from 'bun:test'
 import { evaluateNavigation } from '../src/main/browser/network-policy'
-import { isBrowserActionMutating, MUTATING_BROWSER_ACTIONS, browserTool } from '../src/main/agent/tools/browser'
+import {
+  isBrowserActionMutating,
+  MUTATING_BROWSER_ACTIONS,
+  browserTool,
+  resolveViewport,
+  summarizeSnapshot,
+  screenshotResultData,
+  VIEWPORT_PRESETS
+} from '../src/main/agent/tools/browser'
+import { compactToolResult } from '../src/main/agent/messages'
 import { DEFAULT_BROWSER_AUTOMATION, MUTATING_TOOLS } from '@shared/types'
 import { getToolDefinitions } from '../src/main/agent/tools/definitions'
 
@@ -70,10 +79,15 @@ describe('isBrowserActionMutating', () => {
     expect(MUTATING_BROWSER_ACTIONS.size).toBe(9)
   })
 
-  test('classifies open/close/list_tabs/navigate/snapshot/screenshot/wait_for/wait as non-mutating (always allowed unless policy=off)', () => {
-    for (const action of ['open', 'close', 'list_tabs', 'navigate', 'snapshot', 'screenshot', 'wait_for', 'wait']) {
+  test('classifies open/close/list_tabs/navigate/snapshot/screenshot/resize/wait_for/wait as non-mutating (always allowed unless policy=off)', () => {
+    for (const action of ['open', 'close', 'list_tabs', 'navigate', 'snapshot', 'screenshot', 'resize', 'wait_for', 'wait']) {
       expect(isBrowserActionMutating(action)).toBe(false)
     }
+  })
+
+  test('resize is non-mutating — it reframes our own view, it does not change the page or the user\'s data', () => {
+    expect(isBrowserActionMutating('resize')).toBe(false)
+    expect(MUTATING_BROWSER_ACTIONS.has('resize')).toBe(false)
   })
 
   test('unknown actions are treated as non-mutating (fail via the unknown_action branch, not gated as mutating)', () => {
@@ -128,6 +142,147 @@ describe('browser tool definition includes inspect', () => {
     const browserDef = tools.find((t) => t.function.name === 'browser')
     const actionEnum = (browserDef?.function.parameters as { properties: { action: { enum: string[] } } }).properties.action.enum
     expect(actionEnum).toContain('inspect')
+  })
+})
+
+describe('browser resize action (viewport control for responsive/mobile checks)', () => {
+  const baseCtx = { ownerId: 'test-owner-resize', unattended: false, settings: DEFAULT_BROWSER_AUTOMATION }
+
+  test('resize is a valid enum value on the browser tool schema', () => {
+    const tools = getToolDefinitions('agent', undefined, false, true, false, { browserAutomationAvailable: true })
+    const browserDef = tools.find((t) => t.function.name === 'browser')
+    const props = (browserDef?.function.parameters as { properties: Record<string, { enum?: string[] }> }).properties
+    expect(props.action.enum).toContain('resize')
+    // The knobs the model needs to actually use it must be advertised too.
+    expect(props.width).toBeDefined()
+    expect(props.height).toBeDefined()
+    expect(props.preset?.enum).toEqual(['mobile', 'tablet', 'desktop', 'wide'])
+  })
+
+  test('a preset resolves to its documented size', () => {
+    expect(resolveViewport({ preset: 'mobile' })).toEqual({ width: 390, height: 844 })
+    expect(resolveViewport({ preset: 'wide' })).toEqual(VIEWPORT_PRESETS.wide)
+  })
+
+  test('preset matching is case/whitespace tolerant', () => {
+    expect(resolveViewport({ preset: '  Mobile ' })).toEqual({ width: 390, height: 844 })
+  })
+
+  test('width alone is allowed and completes the height from the fallback (the common mobile check)', () => {
+    expect(resolveViewport({ width: 360 }, { width: 1280, height: 720 })).toEqual({ width: 360, height: 720 })
+  })
+
+  test('an explicit dimension overrides the corresponding preset dimension', () => {
+    expect(resolveViewport({ preset: 'mobile', width: 320 })).toEqual({ width: 320, height: 844 })
+  })
+
+  test('fractional dimensions are rounded rather than rejected', () => {
+    expect(resolveViewport({ width: 390.6, height: 844.2 })).toEqual({ width: 391, height: 844 })
+  })
+
+  test('supplying nothing is an error rather than silently resolving to a default size', () => {
+    expect(resolveViewport({})).toEqual({ error: 'missing_viewport', summary: expect.any(String) })
+  })
+
+  test('an unknown preset names the valid ones instead of failing opaquely', () => {
+    const result = resolveViewport({ preset: 'phone' })
+    expect(result).toMatchObject({ error: 'unknown_preset' })
+    expect((result as { summary: string }).summary).toContain('mobile')
+  })
+
+  test.each([
+    ['zero', 0],
+    ['negative', -390],
+    ['absurdly large', 99_999],
+    ['NaN', Number.NaN]
+  ])('a %s dimension is rejected, so a degenerate viewport cannot poison later snapshots', (_label, width) => {
+    expect(resolveViewport({ width })).toMatchObject({ error: 'invalid_viewport' })
+  })
+
+  test('bad arguments fail before any browser launch (no Chromium download on a typo)', async () => {
+    // If this ever started launching a browser first, it would hang/download here instead of
+    // returning instantly — the ordering (validate, then ensureSessionAndPage) is the point.
+    const result = await browserTool({ action: 'resize' }, baseCtx)
+    expect(result.ok).toBe(false)
+    expect(result.error).toBe('missing_viewport')
+
+    const badPreset = await browserTool({ action: 'resize', preset: 'phone' }, baseCtx)
+    expect(badPreset.ok).toBe(false)
+    expect(badPreset.error).toBe('unknown_preset')
+  })
+})
+
+/**
+ * Regression tests for the "screenshot came back as a truncated URL" bug.
+ *
+ * doScreenshot used to return the base64 image on `data.screenshotDataUrl`, but loop.ts lifts
+ * exactly `data.dataUrl` out of a tool result into a real ImageBlock. The mismatched key meant
+ * the ~90 KB blob stayed inside the JSON payload, hit compactToolResult's 40 000-character hard
+ * cut, and reached the model as a data URL chopped mid-base64 — with no image attached.
+ */
+describe('screenshot result payload contract', () => {
+  const fakeImage = 'A'.repeat(120_000) // stand-in for a ~90 KB base64 JPEG
+
+  test('the image rides on `dataUrl` — the exact key loop.ts lifts into an ImageBlock', () => {
+    const data = screenshotResultData('abc123', 'https://example.com', { width: 390, height: 844 })
+    expect(data.dataUrl).toBe('data:image/jpeg;base64,abc123')
+    expect(data.screenshotDataUrl).toBeUndefined()
+  })
+
+  test('the viewport is reported so the model knows which layout it is looking at', () => {
+    expect(screenshotResultData('x', 'https://example.com', { width: 390, height: 844 }).viewport).toBe('390x844')
+    expect(screenshotResultData('x', 'https://example.com', null).viewport).toBeUndefined()
+  })
+
+  test('once loop.ts lifts dataUrl, what remains serializes far below the 40k cut (no truncation)', () => {
+    const data = screenshotResultData(fakeImage, 'https://example.com', { width: 390, height: 844 })
+    // Mirror loop.ts's lifting step.
+    delete data.dataUrl
+    const json = compactToolResult({ ok: true, summary: 'Screenshot captured', data })
+    expect(json).not.toContain('[truncated]')
+    expect(json.length).toBeLessThan(500)
+  })
+
+  test('the un-lifted payload is exactly what used to overflow — proving the cut was real', () => {
+    const json = compactToolResult({
+      ok: true,
+      summary: 'Screenshot captured',
+      data: { screenshotDataUrl: `data:image/jpeg;base64,${fakeImage}`, url: 'https://example.com' }
+    })
+    expect(json).toContain('[truncated]')
+  })
+})
+
+describe('summarizeSnapshot', () => {
+  const element = (n: number) => ({ ref: `e${n}`, role: 'button', name: `Button ${n}`, tag: 'button' })
+
+  test('renders one ref-tagged line per element, including input values', () => {
+    const result = summarizeSnapshot([
+      { ref: 'e0', role: 'a', name: 'Home', tag: 'a' },
+      { ref: 'e1', role: 'input', name: 'Email', tag: 'input', value: 'a@b.c' }
+    ])
+    expect(result.tree).toBe('- [e0] a "Home"\n- [e1] input "Email" (value: "a@b.c")')
+    expect(result).toMatchObject({ shown: 2, total: 2, truncated: false })
+  })
+
+  test('caps the list and announces the omitted count in-band (a silent slice looks like absence)', () => {
+    const result = summarizeSnapshot(Array.from({ length: 300 }, (_, i) => element(i)), 250)
+    expect(result).toMatchObject({ shown: 250, total: 300, truncated: true })
+    expect(result.tree).toContain('50 more interactive element(s) omitted')
+    expect(result.tree).toContain('inspect')
+    expect(result.tree).not.toContain('[e250]')
+  })
+
+  test('a huge page stays well under the 40k tool-result cut, so the JSON is never chopped', () => {
+    const elements = Array.from({ length: 5000 }, (_, i) => element(i))
+    const snapshot = summarizeSnapshot(elements)
+    const json = compactToolResult({
+      ok: true,
+      summary: `Snapshot: ${snapshot.total} interactive element(s)`,
+      data: { url: 'https://example.com', title: 'Huge', elementCount: snapshot.total, tree: snapshot.tree }
+    })
+    expect(json).not.toContain('[truncated]')
+    expect(json.length).toBeLessThan(40_000)
   })
 })
 

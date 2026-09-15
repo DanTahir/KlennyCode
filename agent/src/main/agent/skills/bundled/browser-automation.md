@@ -47,11 +47,40 @@ attribute snapshot doesn't surface). For that, use `inspect` — read-only JavaS
 
 ## Screenshots are for verification, not exploration
 
-`screenshot` costs real tokens (it returns a base64 image) — prefer `snapshot`'s text-based
-element list (or `inspect`, for anything snapshot's fields don't capture) for deciding what to do
-next. Reach for `screenshot` mainly to visually confirm a result (e.g. "did the form actually
-submit", "what does this chart look like") or to read something neither of those capture well
-(visual layout, an image, a canvas-rendered element).
+`screenshot` returns a real image you can actually look at (it is attached to the tool result as
+an image, not as text), and it costs real tokens — billed by pixel *area*, so a wide viewport
+costs several thousand tokens per capture. Prefer `snapshot`'s text-based element list (or
+`inspect`, for anything snapshot's fields don't capture) for deciding what to do next. Reach for
+`screenshot` mainly to visually confirm a result (e.g. "did the form actually submit", "what does
+this chart look like") or to read something neither of those capture well (visual layout, an
+image, a canvas-rendered element).
+
+## Checking responsive / mobile layouts: `resize`
+
+Both `snapshot` and `screenshot` observe whatever the **current viewport** renders, so to see a
+page at another width you change the viewport first:
+
+- `browser({ action: 'resize', preset: 'mobile' })` — named presets are the quickest route:
+  `mobile` (390x844), `tablet` (820x1180), `desktop` (1440x900), `wide` (1920x1080).
+- `browser({ action: 'resize', width: 360 })` — an explicit width (240-5120 px) is fine too, and
+  may be given on its own; the height keeps a sensible default. Width is usually the only
+  dimension that matters for a responsive check. An explicit `width`/`height` overrides the
+  corresponding dimension of a `preset` given in the same call.
+- The viewport applies per tab and persists until changed, so a normal mobile check is: `resize`
+  → `snapshot`/`screenshot` → `resize` back to `desktop` if you then need the wide layout. Every
+  `resize`, `snapshot`, and `screenshot` result reports the viewport it used, so you can always
+  tell which layout you are looking at.
+- `resize` needs no approval (it changes nothing on the page, just how we frame it). In a headed
+  session it resizes the *viewport*, not the OS window chrome around it — so the visible window
+  may look larger than the width being rendered. Trust the screenshot, not the window.
+
+## Snapshots of very large pages
+
+`snapshot` returns its element list as the `tree` string and caps it at 250 interactive elements.
+If you see a line saying some elements were omitted, don't assume the missing ones aren't there:
+narrow the view instead — scroll to bring a region into view, or use `inspect` with a specific
+query (e.g. `document.querySelectorAll('nav a')`) to get refs for exactly the elements you care
+about.
 
 ## Multiple tabs
 
@@ -64,8 +93,8 @@ comparing two pages side by side. `list_tabs` shows what's currently open.
 `click`, `type`, `fill`, `select`, `press_key`, `scroll`, `drag`, `submit`, and `evaluate` are
 "mutating" — depending on the user's Browser automation policy, they may pause for approval
 (with a screenshot preview) before running. This is expected and not an error; just wait for the
-result. `open`, `close`, `list_tabs`, `navigate`, `snapshot`, `screenshot`, `inspect`, `wait_for`,
-and `wait` never need approval (as long as the feature isn't fully disabled).
+result. `open`, `close`, `list_tabs`, `navigate`, `snapshot`, `screenshot`, `resize`, `inspect`,
+`wait_for`, and `wait` never need approval (as long as the feature isn't fully disabled).
 
 ## Pausing for something to finish on the page
 

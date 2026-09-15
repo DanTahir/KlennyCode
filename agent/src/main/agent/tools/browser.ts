@@ -125,6 +125,93 @@ const SNAPSHOT_TIMEOUT_MS = 15_000
  *  user-approved code that may legitimately do real work, but still bounded. */
 const EVALUATE_TIMEOUT_MS = 30_000
 
+/** Hard cap on how many interactive elements a single `snapshot` reports.
+ *
+ *  This is load-bearing for context safety, not tidiness. Every tool result is JSON-stringified
+ *  by `compactToolResult` (agent/messages.ts) and **hard-cut at 40 000 characters** with a
+ *  `…[truncated]` marker. That cut lands wherever it lands — mid-JSON, mid-string — so an
+ *  oversized snapshot does not degrade gracefully: it reaches the model as unparseable garbage
+ *  with no indication of which elements were lost. A list of 250+ interactive elements is not
+ *  useful to reason about anyway; narrowing the page (scroll, or `inspect` with a specific
+ *  query) is the correct move, and the overflow note below says so explicitly. */
+const MAX_SNAPSHOT_ELEMENTS = 250
+
+/** Bounds for `resize`. Chromium itself tolerates far more, but a zero/negative/absurd viewport
+ *  is always a model mistake rather than an intent, and a degenerate viewport silently poisons
+ *  every later snapshot/screenshot on that tab while looking like a page bug. */
+const MIN_VIEWPORT_DIMENSION = 240
+const MAX_VIEWPORT_DIMENSION = 5120
+
+/** Named viewports for the common responsive breakpoints, so checking a mobile layout is one
+ *  obvious call (`resize` + `preset: 'mobile'`) instead of the model having to invent plausible
+ *  pixel dimensions. Sizes match widely-used device widths: 390 (iPhone 14-class), 820 (iPad
+ *  Air portrait), 1440 (typical laptop), 1920 (desktop). */
+export const VIEWPORT_PRESETS: Record<string, { width: number; height: number }> = {
+  mobile: { width: 390, height: 844 },
+  tablet: { width: 820, height: 1180 },
+  desktop: { width: 1440, height: 900 },
+  wide: { width: 1920, height: 1080 }
+}
+
+export interface ResolvedViewport {
+  width: number
+  height: number
+}
+
+/** Resolves `resize`'s arguments into a concrete viewport, or returns a self-explaining failure.
+ *
+ *  Pure and page-independent on purpose: it runs *before* `ensureSessionAndPage`, so a bad
+ *  argument fails instantly with a useful message instead of first launching (or downloading!)
+ *  Chromium — the same ordering `doClick` uses for its ref check, and what makes this unit
+ *  testable without a browser.
+ *
+ *  A partial spec is deliberately allowed and completed from `fallback`, because the common real
+ *  request is "show me this at a phone width" where only the width actually matters. Supplying
+ *  nothing at all is still an error rather than silently resolving to the default size. */
+export function resolveViewport(
+  args: Record<string, unknown>,
+  fallback: ResolvedViewport = VIEWPORT_PRESETS.desktop
+): ResolvedViewport | { error: string; summary: string } {
+  const presetNames = Object.keys(VIEWPORT_PRESETS).join(', ')
+  const rawPreset = typeof args.preset === 'string' ? args.preset.trim().toLowerCase() : ''
+  const hasWidth = typeof args.width === 'number'
+  const hasHeight = typeof args.height === 'number'
+
+  if (!rawPreset && !hasWidth && !hasHeight) {
+    return {
+      error: 'missing_viewport',
+      summary: `resize requires width and/or height in pixels, or a preset (${presetNames})`
+    }
+  }
+
+  const base = rawPreset ? VIEWPORT_PRESETS[rawPreset] : undefined
+  if (rawPreset && !base) {
+    return { error: 'unknown_preset', summary: `Unknown viewport preset "${rawPreset}" — valid presets: ${presetNames}` }
+  }
+
+  const width = Math.round(hasWidth ? (args.width as number) : (base?.width ?? fallback.width))
+  const height = Math.round(hasHeight ? (args.height as number) : (base?.height ?? fallback.height))
+
+  for (const [label, value] of [
+    ['width', width],
+    ['height', height]
+  ] as const) {
+    if (!Number.isFinite(value) || value < MIN_VIEWPORT_DIMENSION || value > MAX_VIEWPORT_DIMENSION) {
+      return {
+        error: 'invalid_viewport',
+        summary: `resize ${label} must be between ${MIN_VIEWPORT_DIMENSION} and ${MAX_VIEWPORT_DIMENSION} px (got ${value})`
+      }
+    }
+  }
+
+  return { width, height }
+}
+
+/** `WxH` for result payloads/summaries, or undefined when Playwright reports no fixed viewport. */
+function viewportLabel(viewport: { width: number; height: number } | null): string | undefined {
+  return viewport ? `${viewport.width}x${viewport.height}` : undefined
+}
+
 /** Rejects if `promise` hasn't settled within `ms`, or as soon as `signal` aborts.
  *
  *  **Every `page.evaluate()` in this file must go through this.** Playwright's `page.evaluate()`
@@ -327,6 +414,8 @@ export async function browserTool(args: Record<string, unknown>, ctx: BrowserToo
         return await doSnapshot(ctx, tabLabel)
       case 'screenshot':
         return await doScreenshot(ctx, tabLabel)
+      case 'resize':
+        return await doResize(args, ctx, tabLabel)
       case 'click':
         return await doClick(args, ctx, tabLabel)
       case 'type':
@@ -365,7 +454,11 @@ async function doOpen(args: Record<string, unknown>, ctx: BrowserToolContext, ta
   const { page } = ensured
   const url = typeof args.url === 'string' && args.url ? args.url : undefined
   if (url) return navigateTo(page, url, ctx)
-  return { ok: true, summary: `Opened tab "${tabLabel}"`, data: { tab: tabLabel, url: page.url() } }
+  return {
+    ok: true,
+    summary: `Opened tab "${tabLabel}"`,
+    data: { tab: tabLabel, url: page.url(), ...(viewportLabel(page.viewportSize()) ? { viewport: viewportLabel(page.viewportSize()) } : {}) }
+  }
 }
 
 async function doClose(args: Record<string, unknown>, ctx: BrowserToolContext): Promise<ToolResultPayload> {
@@ -411,6 +504,40 @@ interface SnapshotElement {
   name: string
   tag: string
   value?: string
+}
+
+export interface SnapshotSummary {
+  /** The readable, ref-tagged element list — the single representation sent to the model. */
+  tree: string
+  shown: number
+  total: number
+  truncated: boolean
+}
+
+/** Renders a snapshot's elements into the one text form the model actually reads.
+ *
+ *  Two deliberate decisions here, both about the 40 000-character tool-result cut described on
+ *  MAX_SNAPSHOT_ELEMENTS:
+ *
+ *  1. **Only `tree` is returned to the model, never a parallel `elements` array.** The payload
+ *     used to carry both, which meant every element was serialized twice — once as a JSON object
+ *     and once as its own rendered line — for zero added information, roughly halving the page
+ *     size that fits before the result gets chopped into invalid JSON. Nothing else in the app
+ *     consumed `data.elements`.
+ *  2. **Overflow is announced in-band.** A silent slice looks identical to "the page only has
+ *     this much on it", which invites the model to conclude an element is absent when it was
+ *     merely cut, so the omitted count and the way out (scroll / `inspect`) are appended as a
+ *     visible final line. */
+export function summarizeSnapshot(elements: SnapshotElement[], max: number = MAX_SNAPSHOT_ELEMENTS): SnapshotSummary {
+  const shown = elements.slice(0, Math.max(0, max))
+  const lines = shown.map((e) => `- [${e.ref}] ${e.role} "${e.name}"${e.value ? ` (value: "${e.value}")` : ''}`)
+  const omitted = elements.length - shown.length
+  if (omitted > 0) {
+    lines.push(
+      `- …and ${omitted} more interactive element(s) omitted (cap ${max}) — scroll to bring others into view, or use \`inspect\` to query the page directly.`
+    )
+  }
+  return { tree: lines.join('\n'), shown: shown.length, total: elements.length, truncated: omitted > 0 }
 }
 
 /** Runs inside the page (via page.evaluate, see doSnapshot). Tags every visible, enabled
@@ -499,14 +626,46 @@ async function doSnapshot(ctx: BrowserToolContext, tabLabel: string): Promise<To
   })
 
   if (!outcome.ok) return { ok: false, summary: 'Snapshot failed', error: outcome.error }
-  const { elements } = outcome
 
-  const tree = elements.map((e) => `- [${e.ref}] ${e.role} "${e.name}"${e.value ? ` (value: "${e.value}")` : ''}`).join('\n')
+  const snapshot = summarizeSnapshot(outcome.elements)
+  const viewport = viewportLabel(page.viewportSize())
 
   return {
     ok: true,
-    summary: `Snapshot: ${elements.length} interactive element(s)`,
-    data: { url: page.url(), title: await page.title(), elements, tree }
+    summary: `Snapshot: ${snapshot.total} interactive element(s)${snapshot.truncated ? `, showing the first ${snapshot.shown}` : ''}${
+      viewport ? ` at ${viewport}` : ''
+    }`,
+    data: {
+      url: page.url(),
+      title: await page.title(),
+      ...(viewport ? { viewport } : {}),
+      elementCount: snapshot.total,
+      ...(snapshot.truncated ? { truncated: true, shown: snapshot.shown } : {}),
+      tree: snapshot.tree
+    }
+  }
+}
+
+/** Builds `screenshot`'s result `data`.
+ *
+ *  **The image must ride on the key `dataUrl`.** loop.ts lifts exactly that key out of a tool
+ *  result into a real ImageBlock (a `tool`-role message can't carry an image part itself on
+ *  OpenAI-compatible APIs) and deletes it from the JSON payload. This function previously
+ *  returned the blob as `screenshotDataUrl`, which that lifting code does not look at — so the
+ *  ~90 KB base64 string stayed inside the payload, sailed past the 40 000-character cut in
+ *  `compactToolResult`, and reached the model as a data URL chopped mid-base64 with no image
+ *  attached at all. Every screenshot was effectively broken, reported as a "truncated URL".
+ *  Keep this key in sync with loop.ts, and see the regression test in browser-automation.test.ts. */
+export function screenshotResultData(
+  jpegBase64: string,
+  url: string,
+  viewport: { width: number; height: number } | null
+): Record<string, unknown> {
+  const label = viewportLabel(viewport)
+  return {
+    dataUrl: `data:image/jpeg;base64,${jpegBase64}`,
+    url,
+    ...(label ? { viewport: label } : {})
   }
 }
 
@@ -516,14 +675,49 @@ async function doScreenshot(ctx: BrowserToolContext, tabLabel: string): Promise<
   const { page } = ensured
   try {
     const buf = await page.screenshot({ type: 'jpeg', quality: 60 })
-    const screenshotDataUrl = `data:image/jpeg;base64,${buf.toString('base64')}`
+    const viewport = page.viewportSize()
+    // Vision models bill by image *area*, not by file size — the old estimate divided the JPEG's
+    // byte length by 750, which under-reported a full-page screenshot by well over an order of
+    // magnitude (a 70 KB capture was advertised as ~96 tokens). Approximate the real cost from
+    // the pixel dimensions instead, and say nothing rather than something wrong when unknown.
+    const tokens = viewport ? Math.round((viewport.width * viewport.height) / 750) : undefined
+    const label = viewportLabel(viewport)
     return {
       ok: true,
-      summary: `Screenshot captured (~${Math.round(buf.length / 1024)} KB, roughly ${Math.round(buf.length / 750)} tokens)`,
-      data: { screenshotDataUrl, url: page.url() }
+      summary: `Screenshot captured (~${Math.round(buf.length / 1024)} KB${label ? ` at ${label}` : ''}${
+        tokens ? `, roughly ${tokens} tokens` : ''
+      })`,
+      data: screenshotResultData(buf.toString('base64'), page.url(), viewport)
     }
   } catch (e) {
     return { ok: false, summary: 'Screenshot failed', error: e instanceof Error ? e.message : String(e) }
+  }
+}
+
+/** Sets this tab's viewport size in CSS pixels — the supported way to inspect a responsive or
+ *  mobile layout, since snapshot/screenshot both observe whatever the current viewport renders.
+ *
+ *  Classified **non-mutating** (no approval prompt): it changes nothing on the site or the user's
+ *  data, it only reframes our own view of it, exactly like `navigate`. Note that in a headed
+ *  session this resizes the page's viewport, not the OS window chrome around it, so the visible
+ *  window may stay larger than the viewport being rendered — screenshots reflect the viewport. */
+async function doResize(args: Record<string, unknown>, ctx: BrowserToolContext, tabLabel: string): Promise<ToolResultPayload> {
+  const resolved = resolveViewport(args)
+  if ('error' in resolved) return { ok: false, summary: resolved.summary, error: resolved.error }
+
+  const ensured = await ensureSessionAndPage(ctx, tabLabel)
+  if ('ok' in ensured) return ensured
+  const { page } = ensured
+  try {
+    await page.setViewportSize({ width: resolved.width, height: resolved.height })
+    const label = `${resolved.width}x${resolved.height}`
+    return {
+      ok: true,
+      summary: `Viewport of tab "${tabLabel}" set to ${label}`,
+      data: { tab: tabLabel, viewport: label, width: resolved.width, height: resolved.height, url: page.url() }
+    }
+  } catch (e) {
+    return { ok: false, summary: 'Resize failed', error: e instanceof Error ? e.message : String(e) }
   }
 }
 

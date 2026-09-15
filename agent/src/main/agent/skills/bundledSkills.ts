@@ -57,7 +57,7 @@ export interface BundledSkill {
 export const BUNDLED_SKILLS: Record<string, BundledSkill> = {
   'browser-automation': {
     content: browserAutomationMd,
-    version: 2,
+    version: 3,
     legacyVariants: [browserAutomationLegacy1Md, browserAutomationLegacy2Md, browserAutomationLegacy3Md]
   },
   'pawprint-authoring': {
