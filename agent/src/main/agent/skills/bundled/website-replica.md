@@ -369,19 +369,52 @@ any string rendered **visibly more than once**, walking ancestors for
 live site genuinely shows duplicate headings, baseline it in
 `replica.baseline.json` under `duplicateVisibleText` per viewport.
 
-Then the side-by-side visual comparison:
+Then the side-by-side visual comparison — over the **whole page, down and back
+up**, never just the fold:
 
 ```bash
 npm run dev &       # server must be up for the local screenshots
-npm run compare     # writes [local | live | diff] composites per viewport
+npm run compare     # full-page sweep: every viewport, down then up
 ```
 
-Read the composites with `read_image` and actually look at them. **A non-zero
-diff percentage is expected** — A/B-tested copy, live counters, cookie banners
-and font rasterization all differ between runs. Judge *where* the diff is
-concentrated: 0.4% spread evenly is fine, 0.4% concentrated in the hero is a real
-bug. Iterate until the remaining diff is explainable, and say in your summary
-what remains and why.
+`npm run compare` loads the local replica and the live page side by side at each
+viewport, walks **both** through the entire document in viewport-height steps,
+diffs at every step, then repeats the same offsets on the way back up. It writes
+one `[local | live | diff]` composite per slice per direction to
+`scrape/shots/compare/<viewport>/<direction>-<index>-y<offset>.png`, plus
+`scrape/compare-report.json` (per-slice diff %, achieved scroll offsets,
+per-offset down-vs-up delta, page-height delta, compared coverage).
+
+Why the whole page and both directions matter: a fold-only diff certifies the
+hero and nothing else — a dead mid-page carousel, a footer with the wrong grid,
+or a reveal animation stuck at `opacity: 0` all score 0.00% above the fold. And
+plenty of replica bugs only appear when a section is reached scrolling *up*
+(one-shot `IntersectionObserver` reveals that never restore, hide-on-scroll
+navs, direction-aware parallax), which the upward pass is there to catch.
+
+How to review it:
+
+1. Read the console summary's **worst slices** list — those file paths are the
+   composites to open first.
+2. Open them with `read_image` and actually look at them. Do not judge the run
+   from the average number alone; the average hides a single broken band.
+3. Open at least one composite per **page third** (top / middle / bottom) at one
+   mobile and one desktop viewport, even when the numbers look fine — that is
+   the minimum evidence that the lower page was really checked.
+4. Treat any offset whose **down-vs-up delta** is ≥1% as a real finding until
+   you have explained it, and fix page-height drift first: a height delta shifts
+   everything below it and inflates every slice under the difference.
+
+**A non-zero diff percentage is expected** — A/B-tested copy, live counters,
+cookie banners and font rasterization all differ between runs. Judge *where* the
+diff is concentrated: 0.4% spread evenly is fine, 0.4% concentrated in one slice
+is a bug. Iterate until the remaining diff is explainable, and say in your
+summary what remains and why.
+
+Trimming the sweep is allowed when iterating (`--only=iphone-se,laptop`,
+`--slices=6`, `--down-only`, or `npm run compare:quick`), but the **final**
+comparison before you report done must be a full `npm run compare` across every
+viewport in both directions.
 
 If the live site itself overflows or has a layout quirk, record it in
 `replica.baseline.json` rather than "fixing" it. A replica that fixes the
@@ -402,8 +435,11 @@ original's bugs is no longer a replica.
   measurement on the live page, and treat live as the arbiter. Also check the
   live DOM, not just generated JSX — codegen and the runtime port can each
   produce this symptom independently.
-- Side-by-side comparison screenshots produced, reviewed, and any residual
+- Full-page comparison sweep run (`npm run compare`, all viewports, down **and**
+  up — not `--fold`, not a single viewport), composites reviewed with
+  `read_image` including top, middle and bottom slices, and any residual
   difference explained.
+- No unexplained down-vs-up direction delta ≥1% at any offset.
 
 ---
 

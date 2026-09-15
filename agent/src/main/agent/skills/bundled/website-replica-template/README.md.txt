@@ -31,7 +31,7 @@ can be re-run alone.
 | 4 | `npm run analyze` | Read-only recon: head order, inline style/script dumps, body outline, section census, data-attribute census, `scrape/analysis/summary.json`. Emits no app code. |
 | 5 | `npm run codegen` | Parses the captured DOM, **sanitizes runtime artifacts**, and emits per-section `.tsx` components, `PageBody.tsx`, `metadata.ts`, the cascade-ordered CSS, and `manifest.json`. |
 | 6 | `npm run viewports` | Browser audit across 7 viewports (the CI gate). |
-| 7 | `npm run compare` | Side-by-side screenshot diff against the live page. |
+| 7 | `npm run compare` | Side-by-side screenshot diff against the live page, swept down the whole page and back up. |
 
 ### Why the DOM is captured twice
 
@@ -93,7 +93,7 @@ re-run `npm run capture && npm run codegen`.
 ```bash
 npm run verify        # tsc --noEmit + vitest + next build
 npm run viewports     # 7-viewport browser audit (must exit 0)
-npm run compare       # visual diff vs. the live page
+npm run compare       # visual diff vs. the live page, whole page, down and up
 ```
 
 `npm run viewports` checks, at every viewport: horizontal overflow, oversized
@@ -107,11 +107,34 @@ a replica.
 
 ### Reading the visual diff
 
-`npm run compare` writes `[local | live | diff]` composites to `scrape/shots/`
-plus a 10-band worst-region breakdown. **A non-zero diff percentage is normal**:
-A/B-tested copy, live counters, cookie banners and font rasterization all differ
-run to run. Judge *where* the diff is concentrated, not the headline number — a
-0.4% diff spread evenly is fine; a 0.4% diff all in the hero is a real bug.
+`npm run compare` compares the **entire page**, not just the fold. For every
+viewport it loads the local replica and the live page side by side, walks both
+through the whole document in viewport-height steps, diffs at each step, then
+repeats the same offsets on the way back up. Output:
+
+- `scrape/shots/compare/<viewport>/<direction>-<index>-y<offset>.png` — one
+  `[local | live | diff]` composite per slice per direction.
+- `scrape/compare-report.json` — per-slice diff %, per-slice band breakdown,
+  achieved scroll offsets, page-height delta, compared coverage, and the
+  per-offset **direction delta** (down vs. up).
+- A console summary listing the worst slices with their file paths.
+
+Useful flags: `--only=iphone-se,laptop`, `--slices=N` (max slices per
+direction, default 10), `--settle=ms`, `--down-only`, `--threshold=N`.
+`npm run compare:fold` is the old above-the-fold smoke check and
+`npm run compare:full` diffs one stitched full-page shot per side.
+
+**A non-zero diff percentage is normal**: A/B-tested copy, live counters, cookie
+banners and font rasterization all differ run to run. Judge *where* the diff is
+concentrated, not the headline number — a 0.4% diff spread evenly is fine; a
+0.4% diff all in one slice is a real bug. Two signals are worth more than the
+average:
+
+- **A slice that is clean going down but dirty coming up** is a scroll-direction
+  bug (a one-shot reveal that leaves content invisible, a hide-on-scroll nav,
+  direction-aware parallax), not noise.
+- **Page-height drift** shifts every section below the difference, so fix that
+  before reading the lower slices at all.
 
 ## Scope
 

@@ -67,7 +67,7 @@ export const BUNDLED_SKILLS: Record<string, BundledSkill> = {
   },
   'website-replica': {
     content: websiteReplicaMd,
-    version: 3,
+    version: 4,
     legacyVariants: [],
     assets: WEBSITE_REPLICA_TEMPLATE
   }

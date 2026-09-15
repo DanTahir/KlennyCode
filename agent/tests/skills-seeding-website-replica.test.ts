@@ -299,6 +299,44 @@ describe('website-replica template manifest matches the vendored files on disk',
  *  never in CI for this repo. Re-vendoring from a stale copy (the template was originally copied
  *  out of a run's directory) is precisely how the bug would come back, so pin its absence in the
  *  shipped bytes. */
+/** The visual-comparison stage used to shoot one above-the-fold screenshot per viewport, which
+ *  certified the hero and nothing else — a dead mid-page carousel or a reveal stuck at
+ *  `opacity: 0` below the fold scored 0.00%. The shipped script now sweeps the whole document in
+ *  viewport-height slices, down and then back up. Same reasoning as the codegen pin above: this
+ *  suite cannot execute the vendored script, so pin the behaviour in the bytes we ship. */
+describe('website-replica template compares the whole page, down and back up', () => {
+  test('compare-live.mjs sweeps the full page in both directions by default', async () => {
+    const { WEBSITE_REPLICA_TEMPLATE } = await import('../src/main/agent/skills/websiteReplicaTemplate')
+    const compare = WEBSITE_REPLICA_TEMPLATE['template/scripts/compare-live.mjs']
+    expect(compare).toBeTruthy()
+
+    // Default mode is the sweep; fold/full are opt-in. The old script had no mode concept at all
+    // and defaulted to a single viewport-sized shot.
+    expect(compare).toMatch(/const MODE = [^\n]*'fold'[^\n]*'full'[^\n]*'sweep'/)
+    // Both directions, with the down-only escape hatch.
+    expect(compare).toContain("['down', 'up']")
+    expect(compare).toContain('--down-only')
+    // Offsets covering the page top-to-bottom, including the bottom-aligned final slice.
+    expect(compare).toContain('export function sliceOffsets')
+    expect(compare).toContain('offsets.push(maxOffset)')
+    // Slices are only meaningful if both sides really landed on the same offset (smooth-scroll
+    // libraries animate scrollY), and if the down-vs-up gap is reported rather than averaged away.
+    expect(compare).toContain('async function scrollToOffset')
+    expect(compare).toContain('misalignedBy')
+    expect(compare).toContain('directionDeltas')
+  })
+
+  test('SKILL.md requires the full-page sweep, not a fold-only check, before reporting done', async () => {
+    const { BUNDLED_SKILLS } = await import('../src/main/agent/skills/bundledSkills')
+    const md = BUNDLED_SKILLS['website-replica'].content
+    expect(md).toContain('full-page sweep')
+    expect(md).toContain('down-vs-up delta')
+    // The definition of done must name the sweep explicitly; "screenshots produced" was too weak
+    // to stop a fold-only review from counting as a pass.
+    expect(md).toMatch(/Full-page comparison sweep run/)
+  })
+})
+
 describe('website-replica template preserves the body-stylesheet dedupe fix', () => {
   test('codegen unions the two body-<style> sources instead of concatenating them', async () => {
     const { WEBSITE_REPLICA_TEMPLATE } = await import('../src/main/agent/skills/websiteReplicaTemplate')
