@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import {
   checkStepLimit,
   isSubagentBudgetExceeded,
-  isTruncatedEmpty,
+  isEmptyGeneration,
   classifyToolCallJsonFailure,
   looksLikeTruncatedJson,
   describeToolArgsFailure,
@@ -50,12 +50,18 @@ describe('isSubagentBudgetExceeded', () => {
 })
 
 describe('truncation detection', () => {
-  test('isTruncatedEmpty only fires when finish_reason is length AND there is no output at all', () => {
-    expect(isTruncatedEmpty('length', false, false)).toBe(true)
-    expect(isTruncatedEmpty('length', true, false)).toBe(false)
-    expect(isTruncatedEmpty('length', false, true)).toBe(false)
-    expect(isTruncatedEmpty('stop', false, false)).toBe(false)
-    expect(isTruncatedEmpty(undefined, false, false)).toBe(false)
+  // Regression: the old isTruncatedEmpty required finishReason === 'length', so a content-free
+  // generation labelled 'stop' — or with no finish_reason at all — was NOT recognized and fell
+  // through to the no-tool-calls exit, silently ending the turn mid-task. That is the "job kept
+  // stopping" stall. An empty generation is never a legitimate end of turn, whatever the label.
+  test('isEmptyGeneration fires for a content-free generation regardless of finish_reason', () => {
+    expect(isEmptyGeneration(false, false)).toBe(true)
+  })
+
+  test('isEmptyGeneration does not fire when the model actually produced something', () => {
+    expect(isEmptyGeneration(true, false)).toBe(false)
+    expect(isEmptyGeneration(false, true)).toBe(false)
+    expect(isEmptyGeneration(true, true)).toBe(false)
   })
 
   test('classifyToolCallJsonFailure reports none when every call parsed', () => {
@@ -137,10 +143,16 @@ describe('buildToolArgsRetryNudge', () => {
     expect(nudge).toContain('Nothing ran')
   })
 
-  test('the empty-truncation variant asks for concision instead of a smaller batch', () => {
+  test('the empty-generation variant asks for concision instead of a smaller batch', () => {
     const nudge = buildToolArgsRetryNudge('empty')
-    expect(nudge).toContain('before it produced any text or any tool call')
+    expect(nudge).toContain('no text and no tool calls at all')
     expect(nudge).not.toContain('multi_write')
+  })
+
+  // It fires for any content-free generation, including ones the provider labelled 'stop', so it
+  // must not assert the output-token-limit as the cause the way the 'truncated' variant does.
+  test('the empty-generation variant does not claim a cause the provider never reported', () => {
+    expect(buildToolArgsRetryNudge('empty')).toContain('the provider did not report which')
   })
 
   test('the invalid variant does not claim the provider reported hitting the limit', () => {

@@ -218,8 +218,12 @@ export interface ChatMessage {
    *                            compaction ran ended with no tool calls while the live checklist
    *                            still had unfinished items (see turnControl.ts
    *                            shouldResumeAfterCompaction / buildCompactionResumeNudge).
+   *  'audit_resume'          — the continuation note injected when a step FOLLOWING a fabrication
+   *                            guard correction ended with no tool calls while the live checklist
+   *                            still had unfinished items (see turnControl.ts
+   *                            shouldResumeAfterAuditCorrection / buildAuditResumeNudge).
    */
-  noteKind?: 'fabrication' | 'truncation' | 'compaction_resume'
+  noteKind?: 'fabrication' | 'truncation' | 'compaction_resume' | 'audit_resume'
 }
 
 /** One fabrication-guard finding. `code` is the stable check id (C1/C2a/C3/…) so findings can be

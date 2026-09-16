@@ -74,12 +74,28 @@ export function isSubagentBudgetExceeded(stepCount: number): boolean {
 }
 
 /**
- * A generation that ended with no tool calls and no text, but was cut off by the provider's
- * token limit, used to look identical to a normal "model is done" stop. This flags that case
- * so the caller can retry instead of silently ending the turn.
+ * A generation that produced NOTHING AT ALL — no tool calls and no text.
+ *
+ * Deliberately NOT gated on `finishReason`, for exactly the reason classifyToolCallJsonFailure
+ * isn't: the provider's stop label is unreliable. The previous form of this function
+ * (`isTruncatedEmpty`) required `finishReason === 'length'`, so a content-free generation labelled
+ * 'stop' — or carrying no finish_reason at all, which happens whenever the SSE stream ends without
+ * a [DONE] sentinel (see the missing-[DONE] path in openrouter/client.ts) — fell straight through
+ * to the `!toolCalls.length` exit in loop.ts and ended the turn as a clean 'natural' completion.
+ *
+ * That is the mechanism behind the observed "the job kept stopping" stall: mid-task, with a live
+ * checklist and obvious work remaining, the turn simply ends — no text, no tool call, no error, no
+ * retry — and the user has to poke the agent to resume. It was seen four times in one session,
+ * clustering on the request issued immediately after a step with large parallel tool results.
+ *
+ * An empty generation is never a legitimate end of turn: a model that is actually finished says so
+ * in words. So this always justifies a retry (bounded by MAX_TRUNCATION_RETRIES), whatever the
+ * provider called it. Note a reasoning-only generation counts as empty too — that is precisely the
+ * "spinner ran, nothing came out" shape, and replaying it changes nothing on the wire anyway (see
+ * the reasoning-only-turn note in messages.ts).
  */
-export function isTruncatedEmpty(finishReason: string | undefined, hasToolCalls: boolean, hasText: boolean): boolean {
-  return finishReason === 'length' && !hasToolCalls && !hasText
+export function isEmptyGeneration(hasToolCalls: boolean, hasText: boolean): boolean {
+  return !hasToolCalls && !hasText
 }
 
 /**
@@ -179,10 +195,13 @@ export function buildToolArgsRetryNudge(
 ): string {
   const header = 'Automatic retry notice (written by the harness, not by the user):'
   if (kind === 'empty') {
+    // Cause-agnostic on purpose: this fires for any content-free generation, and the provider's
+    // finish_reason does not reliably distinguish "hit the output limit" from "stream ended with
+    // nothing in it". Asserting the token limit here would be narrating a cause we don't have.
     return [
       header,
       '',
-      'Your previous response was cut off at the output token limit before it produced any text or any tool call, so nothing was executed. That attempt has been discarded and you are being re-run on the same request.',
+      'Your previous response produced no text and no tool calls at all, so nothing was executed. That attempt has been discarded and you are being re-run on the same request. It may have been cut off at the output token limit, or the stream may have ended before producing anything — the provider did not report which.',
       '',
       'Keep this attempt tighter: go straight to the tool calls you need instead of a long preamble.'
     ].join('\n')
@@ -247,6 +266,69 @@ export function shouldResumeAfterCompaction(opts: {
   if (unfinishedChecklistItems <= 0) return false
   if (auditForcedCorrection) return false
   return compactionResumes < MAX_COMPACTION_RESUMES
+}
+
+/** How many times one turn may be auto-resumed after a fabrication-guard correction turn ended
+ *  with no tool calls. Exactly one, matching MAX_COMPACTION_RESUMES: the resume exists to get past
+ *  the "I have answered the notice, so I am done" stall, not to argue with a model that has
+ *  genuinely decided it is finished. */
+export const MAX_AUDIT_RESUMES = 1
+
+/**
+ * Whether the turn should be resumed instead of ending as a clean 'natural' completion, at the
+ * no-tool-calls exit of a step that followed a fabrication-guard correction.
+ *
+ * Background: when the guard disputes a message it injects an AUTOMATED VERIFICATION NOTICE and
+ * forces a correction turn. The notice's own instructions used to say to do one of (a) retract or
+ * (b) cite the backing ledger entries "and nothing else" — so a correctly-behaving model answered
+ * the notice in pure prose, made no tool calls, and landed right here, ending the turn with the
+ * actual task still unfinished. That is guaranteed on every resolution via branch (b) ("the work
+ * WAS done"), where there is nothing to redo, so the notice reliably cost the user a stall on top
+ * of a spurious flag. The note wording is fixed too (see buildAuditNote), but wording alone is the
+ * same prompt-only mitigation that already failed for the post-compaction stop — hence this
+ * harness-owned structural check.
+ *
+ * Same conservative shape as shouldResumeAfterCompaction: an unfinished checklist is required, so
+ * with no harness-side evidence that work remains the turn is allowed to end normally rather than
+ * pressuring the model to invent something to do. `forcedCorrectionThisStep` defers to the audit's
+ * own correction recursion, which must never double-recurse with this one.
+ */
+export function shouldResumeAfterAuditCorrection(opts: {
+  /** Forced corrections already made in this turn; >0 means a notice was answered earlier. */
+  auditCorrections: number
+  unfinishedChecklistItems: number
+  auditResumes: number
+  /** True when THIS step's audit is itself forcing another correction turn. */
+  forcedCorrectionThisStep: boolean
+}): boolean {
+  const { auditCorrections, unfinishedChecklistItems, auditResumes, forcedCorrectionThisStep } = opts
+  if (auditCorrections <= 0) return false
+  if (forcedCorrectionThisStep) return false
+  if (unfinishedChecklistItems <= 0) return false
+  return auditResumes < MAX_AUDIT_RESUMES
+}
+
+/**
+ * The harness-authored note injected before a post-audit-correction resume.
+ *
+ * Wording constraints are the same as the compaction resume's, plus one specific to this path: it
+ * must not read as a second accusation. The model has just been told its claims were unsupported;
+ * following that with pressure to show progress is exactly how a stall gets traded for a
+ * fabrication. So this explicitly separates "the claim is settled" from "the work continues".
+ */
+export function buildAuditResumeNudge(opts: { unfinishedItems: number; nextItem?: string }): string {
+  const { unfinishedItems, nextItem } = opts
+  const plural = unfinishedItems === 1 ? '' : 's'
+  const next = nextItem ? ` The next unfinished item is: "${nextItem}".` : ''
+  return [
+    'Automatic continuation notice (written by the harness, not by the user):',
+    '',
+    `You answered a verification notice earlier in this turn, and your reply just now contained no tool calls — which would normally end the turn. But the live checklist still has ${unfinishedItems} unfinished item${plural}, so the task does not look finished.${next}`,
+    '',
+    'Answering the notice settles the claim; it does not end the task. The turn has been resumed for you automatically, so pick the work back up now: put the next concrete tool call in this reply. Do not re-litigate the notice and do not re-summarize what you have already done.',
+    '',
+    'If the remaining work is genuinely complete, genuinely blocked, or actually needs a decision from the user, then say so plainly and explain why — that is a perfectly good answer here. What you must not do is mark anything done that you have not actually verified, or describe work you have not actually performed. This notice is a request to continue, never a request to claim progress.'
+  ].join('\n')
 }
 
 /**

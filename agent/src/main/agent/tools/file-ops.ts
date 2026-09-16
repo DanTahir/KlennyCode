@@ -444,8 +444,14 @@ export async function multiEditFileTool(
     summary: `Edited ${changed.length} file${changed.length === 1 ? '' : 's'} (${totalEdits} edit${totalEdits === 1 ? '' : 's'})`,
     data: {
       paths: changed.map((f) => f.path),
-      diff: joinDiffs(diffs),
-      files: changed.map((f) => ({ path: f.path, diff: makeDiff(f.oldContent, f.newContent, f.path) }))
+      // ONE copy of the diff, deliberately. This used to also emit `files: [{path, diff}]`,
+      // recomputing makeDiff per file and echoing the identical content twice, so a ~100-line
+      // batch edit shipped 200+ lines of diff into the turn's context and persisted both copies
+      // into the session log — for zero benefit, since the only consumer (MessageBubble) reads
+      // `data.diff` alone, and `paths` already carries the per-file list. Oversized tool results
+      // are the conditions the "job kept stopping" stall clustered on, so halving the largest
+      // routine payload in the system is a real contributing-factor fix, not just tidying.
+      diff: joinDiffs(diffs)
     }
   }
 }

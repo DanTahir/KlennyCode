@@ -292,6 +292,39 @@ function looksLikeRealPath(claimed: string): boolean {
   return HAS_LETTER_RE.test(claimed.slice(lastDot + 1))
 }
 
+/**
+ * Top-level domains common enough that a slash-free token ending in one is overwhelmingly more
+ * likely to be a *website* than a file this message claims to have authored.
+ *
+ * Deliberately excludes extensions that double as real, frequently-written file types — most
+ * importantly `.sh` (Sharjah, but in practice always a shell script). Under-flagging is the
+ * correct failure mode for a hard-tier check, but blinding C3 to "I created build.sh" would be
+ * over-correcting.
+ */
+const TLD_RE =
+  /\.(?:com|org|net|io|dev|app|ai|co|gov|edu|xyz|me|info|biz|us|uk|ca|de|fr|jp|au|eu|so|tv|fm|gg)$/i
+
+/**
+ * Rejects bare hostnames that PATH_TOKEN_RE matches only because a domain and a filename have the
+ * same shape (`name` + `.` + short suffix).
+ *
+ * Real false positive this fixes: a sentence about running a verification gate against the live
+ * site — "...the gate against live dropbox.com" — was read as a claim to have *written a file named
+ * `dropbox.com`*, reported as a hard finding, and forced a correction turn. That cost a full turn
+ * and then stalled the task (see the audit-note continuation wording in buildAuditNote). It is a
+ * recurring shape in this codebase specifically, because the website-replica workflow discusses
+ * target domains (`cash.app`, `dropbox.com`, `notion.so`) constantly and in prose.
+ *
+ * URL_RE already covers scheme-bearing forms (`https://dropbox.com`); this covers the bare form.
+ * A path separator anywhere disqualifies the token — `dropbox.com/index.html` is a real relative
+ * path shape, and any genuine write target the agent names is essentially always path-qualified.
+ */
+function looksLikeHostname(claimed: string): boolean {
+  if (/[\\/]/.test(claimed)) return false
+  if (claimed.startsWith('.')) return false
+  return TLD_RE.test(claimed)
+}
+
 function normalizePath(p: string): string {
   return p.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase()
 }
@@ -338,6 +371,8 @@ function checkArtifacts(input: DetectorInput, stripped: string, out: Fabrication
       if (!/[\\/]/.test(claimed) && !/\.[A-Za-z0-9]{1,8}$/.test(claimed)) continue
       // Money amounts, version strings, durations, percentages — numbers, not files.
       if (!looksLikeRealPath(claimed)) continue
+      // A bare domain is a website being fetched/audited, not a file — see looksLikeHostname.
+      if (looksLikeHostname(claimed)) continue
       if (wasWriteAttempted(claimed, input.sessionWritePaths)) continue
 
       checked++
@@ -519,9 +554,11 @@ export function buildAuditNote(findings: FabricationFinding[], ledgerDigest: str
     '',
     ledgerDigest,
     '',
-    'Do exactly one of the following in your next message, and nothing else:',
+    'Resolve the flagged claims in your next message, using whichever of these applies:',
     '  (a) If the work genuinely has not been done: say so plainly, retract the unsupported claims, and then actually do it with real tool calls.',
     '  (b) If you believe the work WAS done: cite the specific ledger entries above that back each claim. If you cannot point to one, treat the claim as unsupported and go to (a).',
+    '',
+    'Then carry on with the task in that same message. This notice is a correction, not a stop signal and not the end of the task: unless the work is genuinely finished, the next concrete tool call belongs in the same reply that resolves the claim. Do not send the retraction or the citation on its own and then stop — that ends the turn with the task still unfinished, which is how this notice previously cost users a silent stall on every clean (b) resolution.',
     '',
     'Do not repeat the unsupported claims, do not pad this with apology, and do not describe any further action you have not actually taken. Reporting that something is not done is a fully acceptable outcome; inventing a success is not.'
   ].join('\n')

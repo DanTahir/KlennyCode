@@ -24,8 +24,9 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   - `src/main/agent/pawprints/` — 18 modules for sandboxed single-file TSX widget apps:
     `manager.ts`, `windowManager.ts`, `bundler.ts` + `packagePipeline.ts` (esbuild + npm vetting),
     `validator.ts`, `protocol.ts`, `writeGuard.ts`, `storage.ts`, `domains.ts`, `sdk.ts`
-  - `src/main/agent/` also: `turnControl.ts` (pure turn-budget / truncation / compaction-resume
-    decisions, no Electron deps), `compaction/compactor.ts`, `verify/` (fabrication guard:
+  - `src/main/agent/` also: `turnControl.ts` (pure turn-budget / empty-generation + truncation
+    retry / compaction- and audit-resume decisions, no Electron deps),
+    `compaction/compactor.ts`, `verify/` (fabrication guard:
     `fabrication-detector.ts` C1–C6 + `audit.ts`), `messages.ts` (`toORMessages()`), `memory/`
     (project + assistant pools), `soul/`, `plan/manager.ts` (prompt bodies + guardrails),
     `skills/`, `subagents/`, `frontmatter.ts` (safe YAML — see gotcha)
@@ -51,7 +52,9 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   via `read_terminal`, and a selectable shell shared with `run_command`.
 - **Batch file editing / writing**: `multi_edit` bundles edit_file-style replacements; `multi_write`
   is the write-side counterpart (`files` array of {path, content}). Both all-or-nothing and
-  single-approval, sharing the plan/preview/diff shape in `tools/file-ops.ts`.
+  single-approval, sharing the plan/preview/diff shape in `tools/file-ops.ts`. Results carry exactly
+  **one** copy of the diff (`data.diff`); the old per-file `files[].diff` echo doubled the size of
+  every batch result, in context and on disk, for a field no consumer ever read.
 - **Pawprints**: agent-generated, sandboxed single-file React (TSX) widget apps, each in its own
   isolated `BrowserWindow`. `create_pawprint`/`update_pawprint` are **always** hard-blocked pending
   human approval regardless of approval mode — one combined dialog reviews source, npm packages
@@ -97,7 +100,7 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   loop (no Continue button, one-shot budget). False positives were the primary design risk: code
   fences and backtick spans are stripped first, same-sentence proximity is required,
   hedging/future-tense bails out, and honest "I tried to write X but it was rejected" narration is
-  exempt. Live use exposed three more C3 shapes — see the C3 gotcha.
+  exempt. Live use exposed four more C3 shapes — see the C3 gotcha.
 - **Documents and images**: `read_docx`/`write_docx`/`edit_docx` for structured Word edits;
   `read_image` for arbitrary png/jpg/gif/webp files inline.
 - **Personality**: user-editable `SOUL.md` under hardcoded rigor guardrails — see Conventions.
@@ -135,8 +138,10 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   note, never the cached prefix — see the caching gotchas.
 - Turn loop / dispatch: `orchestrator/loop.ts` → the loop and `dispatchTool()` (per-tool switch,
   per-tab approval mode, Assistant-tab coding-tool gate, `Promise.all` parallel dispatch).
-- Turn budget / truncation / compaction resume: `agent/turnControl.ts` (pure decisions), wired in
-  `orchestrator/turn-lifecycle.ts` and `loop.ts`.
+- Turn budget / empty-generation + truncation retries / compaction and audit resumes:
+  `agent/turnControl.ts` (pure decisions), wired in `orchestrator/turn-lifecycle.ts` and `loop.ts`.
+  The three "turn ended mid-task with no error" stalls all live here — see the stall gotchas and
+  `tests/stall-recovery.test.ts`.
 - Per-tab state: `orchestrator/state.ts` — all cleaned up on tab close via `clearTabState()`
   (memory-leak fix — check this when adding per-tab bookkeeping).
 - Compaction: `compaction/compactor.ts` — `KEEP_RECENT = 12` messages are never folded,
@@ -208,6 +213,21 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   `maybeCompact` returns false on the resumed step. `buildCompactionResumeNudge()` fires exactly when
   the model thinks it's done, so its wording offers an explicit escape hatch and forbids marking
   unverified items, or it would trade a silent stop for a fabricated completion.
+- **A harness notice must never read as "stop now" — the audit note silently ended tasks.** The
+  fabrication guard's AUTOMATED VERIFICATION NOTICE offered two resolutions and closed with "do
+  exactly one of the following … and nothing else". Read literally, and correctly, that forbids tool
+  calls in the correction reply, so answering a notice properly ended the turn with the work
+  unfinished — worst on resolution (b) ("the claim was accurate, here is the evidence"), where there
+  is nothing to redo and the model had just been told to say only that. Branch (b) now says to cite
+  the evidence **and keep going in the same message**, and because prompt wording alone had already
+  proved insufficient for the structurally identical post-compaction stop,
+  `shouldResumeAfterAuditCorrection()` (`turnControl.ts`) backs it harness-side with the same
+  conservative shape as the compaction resume: it requires `auditCorrections > 0` this turn, an
+  unfinished checklist, no correction being forced on this very step (no double recursion), and
+  allows `MAX_AUDIT_RESUMES = 1`. Its nudge lands immediately after the model was told its claims
+  were unsupported — precisely where pressure turns a stall into a fabrication — so it keeps an
+  explicit escape hatch and forbids claiming unverified progress. Pinned by
+  `tests/stall-recovery.test.ts`.
 - **Output-truncation recovery is ungated from `finish_reason`.** A generation cut off at the output
   token limit can leave tool-call arguments as invalid JSON *without* the provider reporting
   `finish_reason: 'length'`, so `turnControl.ts` treats unparseable args as truncation regardless
@@ -215,7 +235,12 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   `MAX_TRUNCATION_RETRIES = 3`). The retry note is *informed*, not a bare "try again": it states
   that nothing ran and no file was created, then tells the model to split batches, prefer
   `multi_edit` over `multi_write` for partial changes (fragments cost far fewer output tokens than
-  whole files), and skip preamble so the budget goes to arguments.
+  whole files), and skip preamble so the budget goes to arguments. The same distrust of that label
+  drove `isTruncatedEmpty` → **`isEmptyGeneration`**: a generation with no text *and* no tool calls
+  used to be retried only when the provider reported `finish_reason: 'length'`, so every other empty
+  shape (`'stop'`, or no finish_reason at all) was accepted as a **finished task** and the turn ended
+  silently mid-work. The check now ignores the label entirely, and its retry note is deliberately
+  cause-agnostic — it must not assert a token limit the provider never reported.
 - **The fabrication guard's ledger must be recomputed AFTER streaming, never before**: it has to
   include the message's *own* tool calls, or the first legitimate use of any tool gets flagged as
   unsupported. Related: the ledger digest lives in `buildCurrentTimeNote()`'s trailing slot **on
@@ -235,7 +260,7 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   that an `update_checklist` `evidence` string reflects real work. Its value is the friction of
   articulating a concrete justification plus the human-inspectable trail — not verification. Don't
   build anything downstream that treats a present `evidence` string as proof.
-- **C3 (artifact existence) needs three precision gates, every one added after a live false
+- **C3 (artifact existence) needs four precision gates, every one added after a live false
   positive.** C3's premise is "this message claims *it* brought a file into being"; each gate below
   exists because a *truthful* message got hard-flagged in real use.
   1. **Authorship.** A creation verb alone is not a claim of authorship.
@@ -254,11 +279,18 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
      alphabetic character in the token *and* (when present) its extension, rejecting money amounts,
      version strings (`5.1.2`), sub-second durations (`1.29`) and percentages while still checking
      real digit-bearing extensions like `archive.7z`.
+  4. **Hostnames.** A bare domain matches `PATH_TOKEN_RE` exactly like a relative file path, so
+     "I generated the report and ran the gate against live dropbox.com" was hard-flagged for
+     creating a file named `dropbox.com`. `looksLikeHostname()` rejects a separator-free token whose
+     final segment is a known TLD (`TLD_RE`); anything path-qualified (`dropbox.com/index.html`)
+     still checks normally, and script-style extensions that happen to also be TLDs — `.sh`, `.pl`,
+     `.py` — are deliberately excluded from the TLD list. This one bit hardest during
+     `website-replica` runs, which discuss the source URL constantly.
 
   Do not "simplify" any of these back into the bare `CREATION_CUE_RE` test — each has a named
-  regression test in `fabrication-detector.test.ts`, including positive controls
-  (`warehouse-allocator/manage.py`, `archive.7z`) that must keep firing so a future fix can't pass
-  by simply blinding C3.
+  regression test in `fabrication-detector.test.ts` / `stall-recovery.test.ts`, including positive
+  controls (`warehouse-allocator/manage.py`, `archive.7z`, `build.sh`, `dropbox.com/index.html`)
+  that must keep firing so a future fix can't pass by simply blinding C3.
 - **`multi_write`'s argument tolerance is the feature, not incidental defensiveness.** The motivating
   failure was an agent repeatedly "trying to batch write" and falling back to one file at a time, so
   the arg shape a model sends is the weak link. `normalizeFilesArg` (`tools/file-ops.ts`) accepts —

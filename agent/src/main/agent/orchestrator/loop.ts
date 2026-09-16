@@ -93,13 +93,15 @@ import {
   DEFAULT_MAX_COMPLETION_TOKENS,
   checkStepLimit,
   isSubagentBudgetExceeded,
-  isTruncatedEmpty,
+  isEmptyGeneration,
   classifyToolCallJsonFailure,
   looksLikeTruncatedJson,
   describeToolArgsFailure,
   buildToolArgsRetryNudge,
   shouldResumeAfterCompaction,
   buildCompactionResumeNudge,
+  shouldResumeAfterAuditCorrection,
+  buildAuditResumeNudge,
   truncateSummary
 } from '../turnControl'
 import { buildSystemPrompt, buildCurrentTimeNote } from './system-prompt'
@@ -131,7 +133,11 @@ export async function agentLoop(
    *  ended with no tool calls (see shouldResumeAfterCompaction). Must be carried across the
    *  recursion explicitly: `maybeCompact` returns `compacted: false` on the resumed step, so
    *  "compaction fired here" is not re-derivable after the fact. */
-  compactionResumes = 0
+  compactionResumes = 0,
+  /** How many times this turn has already been auto-resumed after a fabrication-guard correction
+   *  turn ended with no tool calls (see shouldResumeAfterAuditCorrection). Carried across the
+   *  recursion for the same reason as compactionResumes. */
+  auditResumes = 0
 ): Promise<LoopStopReason> {
   // Defensive nesting guard only — in practice subagentDepth can only be 0 or 1 since the
   // `task` tool is filtered out once already inside a subagent context (see the tools filter
@@ -509,17 +515,20 @@ export async function agentLoop(
     return 'correct'
   }
 
-  // A generation truncated by the provider's output token limit used to look identical to a
-  // normal "model is done" stop (no tool calls, or tool calls whose arguments failed to parse and
-  // then died on an opaque 'Invalid JSON args') — silently ending the turn or failing tools with a
-  // confusing error. Detect it and retry instead, up to MAX_TRUNCATION_RETRIES.
+  // A generation that produced nothing at all used to look identical to a normal "model is done"
+  // stop (no tool calls, or tool calls whose arguments failed to parse and then died on an opaque
+  // 'Invalid JSON args') — silently ending the turn or failing tools with a confusing error.
+  // Detect it and retry instead, up to MAX_TRUNCATION_RETRIES.
   //
-  // The args arm is deliberately NO LONGER gated on finishReason === 'length': see
-  // classifyToolCallJsonFailure's doc comment for why that gate made this recovery miss the most
-  // common shapes of the failure (no finish_reason at all, or a mislabelled 'stop'/'tool_calls').
+  // NEITHER arm is gated on finishReason === 'length' any more, and that is the whole point in
+  // both cases: the provider's stop label is unreliable. See classifyToolCallJsonFailure for the
+  // args arm, and isEmptyGeneration for the empty arm — the latter's gate is what let a
+  // content-free generation labelled 'stop' (or carrying no finish_reason at all) fall through to
+  // the `!toolCalls.length` exit below and end the turn as a clean 'natural' completion, which is
+  // the "the job kept stopping" stall: no text, no tool call, no error, nothing to click.
   const argsFailure = classifyToolCallJsonFailure(finishReason, anyArgsUnparsable)
-  const emptyTruncation = isTruncatedEmpty(finishReason, toolCalls.length > 0, Boolean(textBuf))
-  if (emptyTruncation || argsFailure !== 'none') {
+  const emptyGeneration = isEmptyGeneration(toolCalls.length > 0, Boolean(textBuf))
+  if (emptyGeneration || argsFailure !== 'none') {
     emit({ type: 'message_end', tabId: tab.id, messageId: assistantId, usage: assistantMsg.usage })
     await sessionStore.updateTab(tab)
     if (signal.aborted) return 'aborted'
@@ -528,8 +537,13 @@ export async function agentLoop(
       emit({
         type: 'error',
         tabId: tab.id,
+        // Worded per arm: blaming the output token limit for an empty generation would assert a
+        // cause the provider never reported. Either way this is now a VISIBLE failure rather than
+        // a silent 'natural' end of turn, which is the actual user-facing bug being fixed.
         message:
-          'The model repeatedly cut its response off at the output token limit and retrying did not recover. Try again, or switch to a model with a larger output limit.'
+          argsFailure !== 'none'
+            ? 'The model repeatedly cut its response off at the output token limit and retrying did not recover. Try again, or switch to a model with a larger output limit.'
+            : 'The model repeatedly returned an empty response — no text and no tool calls — and retrying did not recover. That is usually a provider-side problem: try again, or switch to a different model.'
       })
       // Surface findings for visibility, but never force a correction here: the context is
       // already broken by truncation, so a mid-sentence claim isn't evidence of fabrication.
@@ -553,7 +567,7 @@ export async function agentLoop(
       buildToolArgsRetryNudgeMessage(argsFailure === 'none' ? 'empty' : argsFailure, unparsableToolNames)
     )
     await sessionStore.updateTab(tab)
-    return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount, truncationRetries + 1, auditCorrections, compactionResumes)
+    return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount, truncationRetries + 1, auditCorrections, compactionResumes, auditResumes)
   }
 
   if (!toolCalls.length) {
@@ -565,7 +579,7 @@ export async function agentLoop(
     const action = await applyAuditEnforcement(outcome)
     if (action === 'audit_failed') return 'audit_failed'
     if (action === 'correct') {
-      return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount + 1, 0, auditCorrections + 1, compactionResumes)
+      return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount + 1, 0, auditCorrections + 1, compactionResumes, auditResumes)
     }
     // Structural defense against the "froze after compaction" bug: compaction injects a summary
     // system message mid-turn, models read it as a wrap-up point, and a text-only reply with no
@@ -600,7 +614,48 @@ export async function agentLoop(
         stepCount + 1,
         0,
         auditCorrections,
-        compactionResumes + 1
+        compactionResumes + 1,
+        auditResumes
+      )
+    }
+
+    // Companion structural defense for the fabrication guard's own stall. An AUTOMATED
+    // VERIFICATION NOTICE is answered in prose — a retraction, or a citation of the ledger entries
+    // backing the claim — so the correction turn lands right here with no tool calls and ends the
+    // turn with the real task still unfinished. Branch (b) of the notice ("the work WAS done")
+    // guarantees it: there is nothing to redo, so that reply is pure text by construction, which
+    // made a spurious flag cost a full turn AND a stall. buildAuditNote now also tells the model to
+    // carry on in the same message, but prompt-only wording is exactly what failed for the
+    // post-compaction stop, so the harness enforces the continuation structurally as well.
+    //
+    // `forcedCorrectionThisStep` is a literal false for the same reason as the compaction check
+    // above: the 'correct' branch already returned, so TS has narrowed that case away.
+    if (
+      shouldResumeAfterAuditCorrection({
+        auditCorrections,
+        unfinishedChecklistItems,
+        auditResumes,
+        forcedCorrectionThisStep: false
+      })
+    ) {
+      console.log(
+        `[audit] resuming turn (tab=${tab.id}): post-correction step ended with no tool calls, ${unfinishedChecklistItems} checklist item(s) still unfinished`
+      )
+      tab.messages.push(buildAuditResumeMessage(unfinishedChecklistItems, nextUnfinishedChecklistItem))
+      await sessionStore.updateTab(tab)
+      return agentLoop(
+        tab,
+        apiKey,
+        subagentModel,
+        emit,
+        signal,
+        subagentDepth,
+        subagentCtx,
+        stepCount + 1,
+        0,
+        auditCorrections,
+        compactionResumes,
+        auditResumes + 1
       )
     }
     return 'natural'
@@ -770,7 +825,8 @@ export async function agentLoop(
     stepCount + 1,
     0,
     mixedAction === 'correct' ? auditCorrections + 1 : auditCorrections,
-    compactionResumes
+    compactionResumes,
+    auditResumes
   )
 }
 
@@ -794,6 +850,21 @@ function buildToolArgsRetryNudgeMessage(
     createdAt: Date.now(),
     isAuditNote: true,
     noteKind: 'truncation'
+  }
+}
+
+/**
+ * Wraps buildAuditResumeNudge's text as a history message. Same `role: 'user'` + `isAuditNote`
+ * mechanics as the truncation nudge above.
+ */
+function buildAuditResumeMessage(unfinishedItems: number, nextItem?: string): ChatMessage {
+  return {
+    id: nanoid(),
+    role: 'user',
+    blocks: [{ type: 'text', text: buildAuditResumeNudge({ unfinishedItems, nextItem }) }],
+    createdAt: Date.now(),
+    isAuditNote: true,
+    noteKind: 'audit_resume'
   }
 }
 
