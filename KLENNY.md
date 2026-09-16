@@ -330,6 +330,23 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   both ways. Because `?raw` inlines content into `out/main/index.js`, no electron-builder
   `files`/`extraResources`/`asarUnpack` entry is needed. Vendor by copying bytes (`cp`), never by
   retyping.
+- **`.gitattributes` pins `skills/bundled/**` to `eol=lf`, and that pin is load-bearing.** This repo
+  is developed with `core.autocrlf=true`, so without the pin git rewrites those files to CRLF in the
+  working tree — and their bytes are both inlined verbatim by `?raw` into what gets seeded to
+  `~/.klenny/skills/` *and* content-hashed into `skills-seed-state.json`. Because
+  `seedBundledSkills()`/`seedSkillAssets()` skip any file whose on-disk hash differs from the record
+  (assuming the user edited it, and a user's edits are never clobbered), an EOL-only flip — a byte
+  difference with *zero* content difference — makes a pristine seeded copy look edited and
+  **permanently** stops that install from receiving bundled-skill updates. `legacyVariants` matching
+  fails the same way. Three traps when auditing this by hand: (1) `diff --strip-trailing-cr` (and
+  plain `diff -q`) reports EOL-only differences as **identical**, so use `cmp` when byte equality is
+  the actual question; (2) Git Bash's `grep -c` with a carriage-return pattern reports **0** on a
+  genuinely CRLF file — count with `tr -cd` piped to `wc -c` instead; (3) to renormalize an
+  already-CRLF working-tree file, `git add --renormalize` followed by `git checkout` or
+  `git checkout-index -f` is a silent **no-op**, because `git add` refreshes the index stat cache to
+  match the CRLF file and checkout then believes it is already current. Delete the file first, then
+  `git checkout-index -f` it back (the smudge filter applies `eol=lf`), and restore the index with
+  `git reset -- <paths>`. Never hand-rewrite line endings with a shell redirect.
 - **Unbounded Playwright calls can hang a turn forever**: `page.evaluate` and friends have no
   inherent timeout, so one bad page could stall a turn indefinitely. Every such call goes through
   `raceDeadline(promise, ms, label, signal)` (`tools/browser.ts`) — e.g. `page.evaluate` under

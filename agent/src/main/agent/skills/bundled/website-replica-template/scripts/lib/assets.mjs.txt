@@ -156,12 +156,38 @@ export function refsFromText(text, baseUrl, isBlocked) {
   return [...out];
 }
 
+/**
+ * Decode the HTML entities a browser would decode before issuing a request.
+ *
+ * These refs are regex-harvested from raw HTML source, where an attribute is
+ * still entity-ENCODED: `srcset="...?id=x&amp;width=1280"`. Left encoded, the
+ * query string parses as `amp;width`, so the real `width` is silently absent —
+ * on an image-resizing CDN that means asking for the full-resolution original,
+ * which such services routinely refuse (Dropbox's returns 429). The asset then
+ * never lands on disk, and codegen — which reads the same attribute back
+ * through a real HTML parser, where entities ARE decoded — looks it up by the
+ * decoded URL, misses, and leaves the remote CDN URL in the generated markup.
+ *
+ * A browser decodes entities before requesting, so decoding here is simply
+ * matching what the page itself does.
+ */
+function decodeEntities(value) {
+  return value
+    .replace(/&(?:amp|AMP);/g, '&')
+    .replace(/&(?:quot|QUOT);/g, '"')
+    .replace(/&(?:apos|#39);/g, "'")
+    .replace(/&(?:lt|LT);/g, '<')
+    .replace(/&(?:gt|GT);/g, '>')
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(Number(d)))
+    .replace(/&#[xX]([0-9a-fA-F]+);/g, (_, h) => String.fromCodePoint(parseInt(h, 16)));
+}
+
 /** Pull asset references out of an HTML document. */
 export function refsFromHtml(html, baseUrl, isBlocked) {
   const out = new Set();
   const add = (ref) => {
     if (!ref) return;
-    const trimmed = ref.trim().replace(/^['"]|['"]$/g, '');
+    const trimmed = decodeEntities(ref.trim().replace(/^['"]|['"]$/g, ''));
     if (!trimmed || trimmed.startsWith('data:') || trimmed.startsWith('#')) return;
     const abs = absolutize(trimmed, baseUrl);
     if (!abs || !/^https?:/i.test(abs)) return;

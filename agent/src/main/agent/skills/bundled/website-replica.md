@@ -168,6 +168,7 @@ determines whether the replica is faithful or merely approximate:
 | `scrape/features.json` | Which libraries and effect classes the page actually uses. |
 | `scrape/runtime-requirements.json` | Exact library + version to `npm i`, and the suggested command. |
 | `scrape/analysis/summary.json` | Section census, data-attribute census, inline script/style dumps. |
+| `scrape/analysis/scroll-reveals.json` | Classes the page's own JS adds during a scroll pass. Anything marked `gatesVisibility` **must** be re-applied by an effect or that content ships invisible. |
 | `app/generated/manifest.json` | Sections emitted, stylesheet cascade order, asset counts, sanitizer stats. |
 
 The sanitizer stats matter: if `strippedClasses` is empty on an obviously
@@ -267,6 +268,46 @@ this is where the page comes back to life.
    `EffectInit` contract (no-op without targets, return a teardown, idempotent
    under React strict mode).
 
+### A zero-target effect census does NOT mean the page has no reveals
+
+The generic selectors (`.fade-in, [data-fade], [data-aos], [data-animate],
+[data-scroll]`) only match sites that happen to use those names. A page can
+report `fadeIn: 0` and still hide a dozen blocks behind its own naming
+(`block--is-visible`, CSS-module hashes like `_cardShow_1b963_8`). Because the
+hiding lives in a **stylesheet class**, it is invisible both to that census and
+to the "no inline `opacity: 0` residue" test — so this failure clears the whole
+static gate while entire sections render as a heading above blank space.
+
+`npm run analyze` now settles the question for you. It diffs the class tokens in
+`scrape/raw/index.html` (pre-scroll, codegen's source) against
+`scrape/raw/index.scrolled.html` (post-scroll), cross-references the captured
+CSS, and prints every added class — flagging `*** GATES VISIBILITY ***` when the
+base rule hides the element (`opacity:0` / `visibility:hidden` / blur / scale).
+The same data lands in `scrape/analysis/scroll-reveals.json`.
+
+**Every flagged class must be re-applied by an effect**, normally an
+`IntersectionObserver` that adds it when the block scrolls into view. When you
+write that effect:
+
+- **One-shot or bidirectional?** If `index.scrolled.html` still carries the
+  class after the capture scrolled back to `y=0`, the site's reveal is one-shot —
+  `unobserve` after revealing instead of toggling it back off.
+- **Horizontally clipped carousels need a wide `rootMargin`** (e.g.
+  `0px 200% 0px 200%`). `IntersectionObserver` tests against the whole viewport
+  rect, so a card parked at `x=1656` in a 1280px-wide viewport never intersects
+  and stays invisible forever under vertical-only margins.
+- **Check for an inline stagger variable** (`--dwg-iteration-index` and
+  friends). If the capture already ships it, the CSS transition delay staggers
+  the cascade on its own — write no JS timing.
+- **Honour `prefers-reduced-motion`**: such sites usually ship a
+  `@media (prefers-reduced-motion: reduce)` block that resets the element to
+  visible, so reveal everything immediately in that case.
+- **Hashed CSS-module names are capture-bound.** Assert each (base selector,
+  visible class) pair still matches the generated markup, so a rotated hash
+  fails the suite instead of silently blanking the page — and assert the effect
+  is actually *registered* in `ClientRuntime.tsx`, since a perfectly correct but
+  unregistered effect is exactly how this ships broken.
+
 ### Viewport-swapped assets: the capture only ever saw one width
 
 The capture runs at **one** viewport (desktop). Any asset the site chooses
@@ -358,8 +399,8 @@ npm run viewports   # 7-viewport browser audit — must exit 0
 `npm run viewports` gates on: horizontal overflow, oversized elements, the
 burger/desktop nav swap, canvas backing-store and paint state, animation trigger
 counts pre/post scroll, carousel init, broken images, console errors, failed
-requests, **duplicated visible headings**, and **any remote (non-self-hosted)
-request**.
+requests, **duplicated visible headings**, **invisible on-screen content**, and
+**any remote (non-self-hosted) request**.
 
 The `duplicate-visible-text` check is the gate for the baked-runtime-node bug
 described under `captureMode` in Step 4. It tallies `h1/h2/h3` text and flags
@@ -368,6 +409,58 @@ any string rendered **visibly more than once**, walking ancestors for
 (which real sites legitimately keep in the DOM) do not false-positive. If the
 live site genuinely shows duplicate headings, baseline it in
 `replica.baseline.json` under `duplicateVisibleText` per viewport.
+
+The `hidden-content` check is the runtime half of the scroll-reveal problem from
+Step 5. While scrolling, it asks *"is anything **on screen** yet invisible?"* —
+content-sized blocks carrying real text or media that compute to `opacity ~ 0`.
+That phrasing is what makes it trustworthy rather than noisy:
+
+- a legitimately closed dropdown/modal/menu is excluded, because such UI hides
+  structurally (`display:none` / `visibility:hidden` / `aria-hidden` / a menu or
+  dialog role) rather than with bare opacity on in-flow content — dropbox.com
+  has over 100 such elements and none of them trip it;
+- a **bidirectional** reveal that re-hides when scrolled away is fine, since it
+  is only ever judged while it is on screen;
+- a **working** one-shot reveal is fine, because sampling waits out the
+  transition (including a staggered per-item delay) before looking.
+
+If it fires, do not reach for the baseline — it is nearly always a real reveal
+class you have not re-applied. Run `npm run analyze` and read the
+`*** GATES VISIBILITY ***` list. Baseline under `hiddenContent` per viewport
+only after confirming the **live** page hides the same block, and record it as
+an **array of class signatures** — exactly the `div.a.b.c` string the gate
+prints — rather than a count:
+
+```json
+{
+  "hiddenContent": {
+    "pixel-7": ["div.dwg-multi-block-card-entry-animation.dwg-box.dwg-height--full"]
+  }
+}
+```
+
+Signatures, not counts and not copy: inside a horizontally scrollable card rail,
+*which* member sits off-window — and so never gets revealed, on the live site
+too — depends on scroll position and timing, so the same faithful behaviour
+resurfaces under different text from run to run and a count- or text-keyed
+baseline never matches twice. The bug this gate exists for looks nothing like
+that: a reveal class no effect re-applies is frozen at **every** viewport, under
+every signature, and live exhibits none of them.
+
+One trap to know before you blame your selector. If a reveal target sits inside
+a clipped container (`overflow:hidden`/`scroll` — e.g. a card rail wider than
+the viewport), IntersectionObserver computes intersection **through** that clip,
+while `rootMargin` inflates only the ROOT rect. So a member parked outside the
+clip window never intersects, at any margin, and stays invisible forever even
+though your selector matches it perfectly. Observe the container and reveal the
+whole group at once. Nothing generates this for you — the reveal module is
+hand-written in Step 5 — so build it in: give each pair an optional
+`groupSelector`, resolve the trigger as `el.closest(groupSelector) ?? el`,
+bucket targets by trigger, and observe the trigger with `threshold: 0`, because
+a container far wider than the viewport may never reach a 0.15 ratio (a 2452px
+rail peaks near 0.15 on a 375px phone). Cover it with two tests: one container
+revealing every member including the off-window one, and a fallback to
+per-target observation when the container's hashed class has rotated.
 
 Then the side-by-side visual comparison — over the **whole page, down and back
 up**, never just the fold:
@@ -428,6 +521,15 @@ original's bugs is no longer a replica.
 - 7/7 viewports pass (`npm run viewports` exits 0).
 - Zero broken images, zero remote requests, zero console errors.
 - Zero duplicated visible headings beyond what live itself shows.
+- Zero `hidden-content` findings (no on-screen block rendering at `opacity ~ 0`),
+  and every `gatesVisibility` class from `scrape/analysis/scroll-reveals.json`
+  re-applied by a registered effect.
+- **Judge a compare sweep for MISSING content, not just misalignment.** Do not
+  triage worst-slices-only: a section that is entirely invisible can score a
+  mid-range diff (light cards on a light background scored ~16-19% while being
+  100% absent) and so reads as unremarkable noise next to an unrelated animation
+  at 50%. For every mid-range slice, confirm the local panel actually contains
+  the same *blocks* as the live panel before dismissing the number.
 - **Verify duplication against the live site, in the browser, not by counting
   nodes.** Element/attribute counts are not evidence: the site's own JS creates
   transient clones, so a raw count differs from live for entirely correct

@@ -63,19 +63,53 @@ async function download(url, contentTypeHint, referer) {
     return { url, kind, name, bytes: buf.length, cached: true, buf };
   }
 
+  // Retry genuinely transient throttling/server errors rather than recording
+  // them as permanent failures.
+  //
+  // Scope note: this is defensive hardening, NOT the fix for entity-encoded
+  // srcset URLs. A URL harvested with a literal `&amp;` also returns 429 from
+  // an image CDN, but deterministically (the resize param is lost, so it reads
+  // as a full-resolution request) — retrying that is useless. That bug is
+  // fixed at the source, in refsFromHtml's entity decoding in lib/assets.mjs.
+  //
+  // What this does cover: hundreds of candidates fired at a handful of hosts
+  // can trip a real per-host rate limiter a human browsing the page never
+  // hits, and a 5xx blip should not permanently drop an asset either.
+  //
+  // 429/503 often carry `Retry-After`; honour it when it is a sane number of
+  // seconds, otherwise back off exponentially with jitter.
+  const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
+  const MAX_ATTEMPTS = 4;
   let res;
-  try {
-    res = await fetch(url, {
-      headers: {
-        'User-Agent': DESKTOP_UA,
-        Referer: referer,
-        Accept: '*/*',
-      },
-    });
-  } catch (err) {
-    return { url, kind, name, error: `NETWORK ${err.message}` };
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      res = await fetch(url, {
+        headers: {
+          'User-Agent': DESKTOP_UA,
+          Referer: referer,
+          Accept: '*/*',
+        },
+      });
+    } catch (err) {
+      if (attempt >= MAX_ATTEMPTS) {
+        return { url, kind, name, error: `NETWORK ${err.message}` };
+      }
+      await new Promise((r) => setTimeout(r, 2 ** attempt * 250));
+      continue;
+    }
+
+    if (res.ok) break;
+    if (!RETRY_STATUS.has(res.status) || attempt >= MAX_ATTEMPTS) {
+      return { url, kind, name, error: `HTTP ${res.status}` };
+    }
+
+    const after = Number(res.headers.get('retry-after'));
+    const waitMs =
+      Number.isFinite(after) && after > 0 && after <= 30
+        ? after * 1000
+        : 2 ** attempt * 500 + Math.random() * 250;
+    await new Promise((r) => setTimeout(r, waitMs));
   }
-  if (!res.ok) return { url, kind, name, error: `HTTP ${res.status}` };
 
   const buf = Buffer.from(await res.arrayBuffer());
   if (buf.length === 0) return { url, kind, name, error: 'EMPTY' };

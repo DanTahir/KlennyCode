@@ -103,6 +103,24 @@ const DEFAULT_DROP_SELECTORS = [
   '[data-replica-drop]',
 ];
 
+/**
+ * Captured stylesheets to leave OUT of the rebuilt cascade, matched as a
+ * substring of the original href.
+ *
+ * Normally every sheet the <head> declared must be emitted, in order, or the
+ * cascade stops matching the original. The exception is a sheet the *browser
+ * itself* could not use: sites occasionally ship a preprocessor SOURCE file at
+ * a URL the page links directly (e.g. a `.scss` still containing `//` comments
+ * and `$variable` declarations). A browser applies its error recovery, drops
+ * every unparseable rule, and renders identically without it — but webpack's
+ * postcss parses eagerly and fails the build outright on the first `//`.
+ *
+ * Only skip a sheet after confirming BOTH: (a) it is genuinely unparseable as
+ * CSS, and (b) nothing it uniquely defines is used — i.e. a later, valid sheet
+ * redefines the same rules. Otherwise you are silently deleting real styles.
+ */
+const DEFAULT_SKIP_STYLESHEETS = [];
+
 /** Hosts whose requests are aborted during capture and never downloaded. */
 const DEFAULT_BLOCK_HOSTS = [
   'googletagmanager', 'google-analytics', 'analytics.google', 'doubleclick',
@@ -191,6 +209,7 @@ export async function loadConfig() {
         'section', 'w-inline-block', 'w-nav', 'w-embed', 'w-script',
         'container', 'wrapper', 'row', 'col', 'grid', 'flex',
       ],
+      skipStylesheets: cfg.codegen?.skipStylesheets ?? DEFAULT_SKIP_STYLESHEETS,
     },
     blockHosts: cfg.blockHosts ?? DEFAULT_BLOCK_HOSTS,
     viewports: cfg.viewports ?? DEFAULT_VIEWPORTS,

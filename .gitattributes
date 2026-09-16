@@ -1,0 +1,25 @@
+# Line-ending policy.
+#
+# This repo is developed on Windows with `core.autocrlf=true`, which rewrites text files to CRLF in
+# the working tree (and back to LF in the object store). That is harmless for sources we compile,
+# but it is a real bug for anything under agent/src/main/agent/skills/bundled/, because those files
+# ship to users verbatim AND are content-hashed:
+#
+#   * Vite's `?raw` import inlines their bytes straight into out/main/index.js, so whatever EOL the
+#     working tree happens to have at build time is what gets written into ~/.klenny/skills/ on a
+#     user's machine.
+#   * ~/.klenny/skills-seed-state.json records a sha256 of what was last seeded, and
+#     seedBundledSkills()/seedSkillAssets() (agent/src/main/agent/skills/manager.ts) deliberately
+#     refuse to overwrite any file whose on-disk hash differs from that record — the assumption
+#     being that the user edited it, and a user's edits are never clobbered.
+#   * An EOL-only flip is a *byte* difference with *zero* content difference. So without this
+#     policy, autocrlf can make a pristine seeded copy look user-edited, which permanently stops
+#     that install from receiving bundled-skill updates. It fails silently and looks like nothing
+#     at all went wrong.
+#   * _legacy/*.md are hashed the same way to decide whether a pre-versioning install is still
+#     pristine enough to upgrade (BundledSkill.legacyVariants), so a flipped EOL breaks that
+#     migration match too.
+#
+# Pinning eol=lf keeps every checkout byte-identical, which is what makes those hashes meaningful.
+# Verify with: git check-attr text eol -- <path>
+agent/src/main/agent/skills/bundled/** text eol=lf

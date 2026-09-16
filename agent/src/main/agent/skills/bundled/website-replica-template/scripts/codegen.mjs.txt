@@ -815,6 +815,16 @@ async function emitStyles(headInfo) {
 
   for (const entry of headInfo.entries ?? []) {
     if (entry.kind === 'link' && /stylesheet/i.test(entry.rel ?? '')) {
+      // Sheets the browser could not parse either (see skipStylesheets docs).
+      // Recorded in the manifest with no `file`, so it stays an honest account
+      // of the original cascade while dropping out of the @import list.
+      const skip = (cfg.codegen.skipStylesheets ?? []).find((s) => entry.href.includes(s));
+      if (skip) {
+        emitted.push({ order: idx, kind: 'link', href: entry.href, status: 'SKIPPED', skipRule: skip });
+        console.log(`  - stylesheet skipped by config (${skip}): ${entry.href}`);
+        idx += 1;
+        continue;
+      }
       const local = localAsset(entry.href);
       if (!local) {
         emitted.push({ order: idx, kind: 'link', href: entry.href, status: 'MISSING' });
@@ -1038,6 +1048,37 @@ async function main() {
 
   const assetDoc = JSON.parse(await readFile(paths.assetMap, 'utf8'));
   assetMap = assetDoc.map ?? {};
+
+  // Add an HTML-entity-DECODED alias for every key that needs one.
+  //
+  // `refsFromHtml` now decodes entities before downloading, so a fresh scrape
+  // should not produce encoded keys. This stays as a compatibility shim for
+  // asset maps scraped before that fix (re-running codegen alone must not
+  // silently regress) and for any ref harvested from a text blob.
+  //
+  // The bug it guards against: a `srcset="...?id=x&amp;width=1280"` lands in
+  // the asset map with the literal `&amp;` in the key, while codegen reads
+  // attributes back from the parse5 tree, where entities are already decoded
+  // to `&`. The two forms never string-match, so `localAsset()` reports a miss
+  // for a file sitting on disk and the generated markup keeps pointing at the
+  // CDN — silently, since nothing 404s. On dropbox.com that was 154 of 167
+  // leftover remote refs (every multi-candidate srcset image), which fails the
+  // viewport audit's "fully self-hosted" gate at all 7 viewports.
+  //
+  // Both spellings are kept: text blobs (inline CSS/HTML) can contain either.
+  let decodedAliases = 0;
+  for (const [remote, local] of Object.entries(assetMap)) {
+    if (!remote.includes('&amp;')) continue;
+    const decoded = remote.replace(/&amp;/g, '&');
+    if (!assetMap[decoded]) {
+      assetMap[decoded] = local;
+      decodedAliases += 1;
+    }
+  }
+  if (decodedAliases) {
+    console.log(`  entity-decoded asset aliases added: ${decodedAliases}`);
+  }
+
   // Longest-first so a URL that is a prefix of another cannot shadow it.
   assetEntries = Object.entries(assetMap).sort((a, b) => b[0].length - a[0].length);
 

@@ -1,5 +1,8 @@
 node_modules/
 .next/
+# Production builds use a separate distDir so `next build` cannot clobber the
+# manifests a running `next dev` is serving from. Plain `.next/` does not match it.
+.next-build/
 out/
 *.tsbuildinfo
 next-env.d.ts

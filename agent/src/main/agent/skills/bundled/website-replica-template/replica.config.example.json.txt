@@ -24,7 +24,18 @@
     "stripClasses": null,
     "dropSelectors": null,
     "splitMinChildren": 5,
-    "splitMinSections": 3
+    "splitMinSections": 3,
+    "_skipStylesheets": [
+      "Substrings of captured stylesheet hrefs to leave OUT of the rebuilt",
+      "cascade. Last resort: normally every sheet must be emitted in order.",
+      "Use only for a sheet the BROWSER itself could not parse — e.g. a site",
+      "serving an uncompiled .scss source (// comments, $vars) at a .scss URL.",
+      "Browsers CSS-error-recover past it; webpack's postcss hard-fails the",
+      "build. Confirm a later valid sheet redefines the same rules first, or",
+      "you are silently deleting real styles. Skipped sheets are recorded in",
+      "manifest.json with status 'SKIPPED'."
+    ],
+    "skipStylesheets": []
   },
 
   "_viewports": "Override only if the site has unusual breakpoints.",
