@@ -64,6 +64,7 @@ import tplScriptDev from './bundled/website-replica-template/scripts/dev.mjs.txt
 import tplScriptLibConfig from './bundled/website-replica-template/scripts/lib/config.mjs.txt?raw'
 import tplScriptLibChromium from './bundled/website-replica-template/scripts/lib/chromium.mjs.txt?raw'
 import tplScriptLibAssets from './bundled/website-replica-template/scripts/lib/assets.mjs.txt?raw'
+import tplScriptLibPerf from './bundled/website-replica-template/scripts/lib/perf.mjs.txt?raw'
 
 import tplTestSetup from './bundled/website-replica-template/tests/setup.ts.txt?raw'
 import tplTestEffects from './bundled/website-replica-template/tests/effects.test.ts.txt?raw'
@@ -113,6 +114,7 @@ export const WEBSITE_REPLICA_TEMPLATE: Record<string, string> = {
   'template/scripts/lib/config.mjs': tplScriptLibConfig,
   'template/scripts/lib/chromium.mjs': tplScriptLibChromium,
   'template/scripts/lib/assets.mjs': tplScriptLibAssets,
+  'template/scripts/lib/perf.mjs': tplScriptLibPerf,
 
   'template/tests/setup.ts': tplTestSetup,
   'template/tests/effects.test.ts': tplTestEffects,

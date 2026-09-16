@@ -402,6 +402,14 @@ counts pre/post scroll, carousel init, broken images, console errors, failed
 requests, **duplicated visible headings**, **invisible on-screen content**, and
 **any remote (non-self-hosted) request**.
 
+It audits every (target, viewport) pair in parallel lanes (`--lanes=N`, default
+capped near half the cores), and hunts invisible content with a cheap sweep that
+promotes only *suspicious* offsets to a full-settle confirmation pass — so a
+reported offender has been observed twice, at two settle times. If a
+hidden-content finding still looks wrong, re-run with `npm run viewports:certify`
+(`--lanes=1 --thorough`): full-settle sampling at every offset with no
+concurrency. That is the tie-breaker, not the everyday command.
+
 The `duplicate-visible-text` check is the gate for the baked-runtime-node bug
 described under `captureMode` in Step 4. It tallies `h1/h2/h3` text and flags
 any string rendered **visibly more than once**, walking ancestors for
@@ -474,9 +482,25 @@ npm run compare     # full-page sweep: every viewport, down then up
 viewport, walks **both** through the entire document in viewport-height steps,
 diffs at every step, then repeats the same offsets on the way back up. It writes
 one `[local | live | diff]` composite per slice per direction to
-`scrape/shots/compare/<viewport>/<direction>-<index>-y<offset>.png`, plus
+`scrape/shots/compare/<viewport>/<direction>-<index>-y<offset>.jpg`, plus
 `scrape/compare-report.json` (per-slice diff %, achieved scroll offsets,
-per-offset down-vs-up delta, page-height delta, compared coverage).
+per-offset down-vs-up delta, page-height delta, compared coverage, lane count,
+elapsed seconds).
+
+Viewports run in parallel lanes (`--lanes=N`), and the local and live sides are
+scrolled and shot in **lockstep**, so a slice pair is captured at the same
+instant rather than seconds apart. The compared screenshots are always PNG; only
+the human-review composite is JPEG (`--png-composites` makes it lossless).
+
+Cold loads of the **live** page are throttled separately (`--live-lanes=N`,
+default 2), because several viewports cold-loading a heavy third-party page at
+once can leave one of them never laid out — reporting a height of exactly one
+viewport, and a ~900% height delta that says nothing about the replica. Such a
+page is reloaded automatically, and if it stays short the viewport is flagged
+`liveLoadSuspect` in the report, excluded from the average, and called out in the
+console summary. **A `liveLoadSuspect` viewport is never a replica finding** —
+re-run it with `--only=<viewport> --lanes=1 --live-lanes=1` before believing any
+of its numbers.
 
 Why the whole page and both directions matter: a fold-only diff certifies the
 hero and nothing else — a dead mid-page carousel, a footer with the wrong grid,
@@ -508,6 +532,12 @@ Trimming the sweep is allowed when iterating (`--only=iphone-se,laptop`,
 `--slices=6`, `--down-only`, or `npm run compare:quick`), but the **final**
 comparison before you report done must be a full `npm run compare` across every
 viewport in both directions.
+
+If a specific number looks implausible — a wild height delta, a slice that is
+noisy in one run and clean in the next — re-run that viewport with
+`npm run compare:certify` (`--lanes=1 --png-composites`) before treating it as a
+finding. Both scripts record their lane count in their JSON report so a
+suspicious run can be explained rather than argued about.
 
 If the live site itself overflows or has a layout quirk, record it in
 `replica.baseline.json` rather than "fixing" it. A replica that fixes the

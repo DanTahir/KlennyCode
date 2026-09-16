@@ -30,6 +30,11 @@ class MockIntersectionObserver implements IntersectionObserver {
 
   constructor(callback: IOCallback, options?: IntersectionObserverInit) {
     this.rootMargin = options?.rootMargin ?? '';
+    // Recorded faithfully (not hardcoded) so a test can assert the ratio an
+    // effect asked for — a container far wider than the viewport can never
+    // reach a non-zero threshold, so that choice is load-bearing.
+    const t = options?.threshold;
+    this.thresholds = t == null ? [0] : Array.isArray(t) ? t : [t];
     this.record = { callback, observer: this, targets: new Set() };
     records.push(this.record);
   }
@@ -63,6 +68,21 @@ export function triggerIntersection(target: Element, isIntersecting = true): voi
     } as IntersectionObserverEntry;
     record.callback([entry], record.observer);
   }
+}
+
+/**
+ * The options every live observer watching `target` was constructed with.
+ * Lets a test prove an element is observed at a specific rootMargin/threshold.
+ */
+export function observerOptionsFor(
+  target: Element,
+): Array<{ rootMargin: string; thresholds: ReadonlyArray<number> }> {
+  return records
+    .filter((r) => r.targets.has(target))
+    .map((r) => ({
+      rootMargin: r.observer.rootMargin,
+      thresholds: r.observer.thresholds,
+    }));
 }
 
 /** Number of live observers — useful for asserting teardown actually ran. */

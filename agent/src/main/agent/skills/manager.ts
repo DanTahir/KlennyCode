@@ -73,10 +73,16 @@ function hashContent(content: string): string {
  *  record. Never throws: each file is best-effort, and a failed write is simply left out of the
  *  returned map so the next launch's repair pass retries it.
  *
- *  Per-file decisions, given the hash we last wrote for that file (`prevHashes`):
- *    - on disk, but its content doesn't match what we last wrote -> user customised it. Keep their
- *      file, and keep re-reporting the *old* hash so it stays classified as edited on every future
- *      pass instead of being silently re-adopted as pristine.
+ *  Per-file decisions, given the hash we last wrote for that file (`prevHashes`), in this order:
+ *    - on disk and already byte-identical to what we're about to write -> current; no write, and
+ *      record its real hash. Checked FIRST, before the edit test, because a file that already *is*
+ *      the target is current no matter how it got that way. The real-world case: a fix made live
+ *      inside an install and later ported into the bundled template. Testing "differs from what we
+ *      last wrote" first would classify that file as edited and keep re-reporting the stale hash,
+ *      silently excluding it from every future bundled update despite being pristine.
+ *    - on disk, but matching neither what we last wrote nor what we'd write now -> user customised
+ *      it. Keep their file, and keep re-reporting the *old* hash so it stays classified as edited on
+ *      every future pass instead of being silently re-adopted as pristine.
  *    - missing, or present and pristine -> write the current bundled content.
  *  Callers decide *when* a pass happens (fresh seed / version upgrade / repair); this function
  *  only decides what to do with each individual file once a pass is underway. */
@@ -104,14 +110,19 @@ async function seedSkillAssets(
       onDisk = null // never written, write failed previously, or user deleted it
     }
 
-    if (onDisk !== null && prev !== undefined && hashContent(onDisk) !== prev) {
-      hashes[rel] = prev
+    const target = hashContent(content)
+    const onDiskHash = onDisk === null ? null : hashContent(onDisk)
+
+    // Order matters — see this function's doc comment. "Already what we want" is decided before
+    // "differs from what we last wrote", so an edit that coincides with the new bundled content is
+    // re-adopted as pristine rather than pinned as edited and cut off from future updates.
+    if (onDiskHash === target) {
+      hashes[rel] = target // already current — no write needed
       continue
     }
 
-    const target = hashContent(content)
-    if (onDisk !== null && hashContent(onDisk) === target) {
-      hashes[rel] = target // already current — no write needed
+    if (onDiskHash !== null && prev !== undefined && onDiskHash !== prev) {
+      hashes[rel] = prev
       continue
     }
 

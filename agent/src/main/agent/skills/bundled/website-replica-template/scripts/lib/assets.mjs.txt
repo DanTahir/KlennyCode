@@ -195,8 +195,19 @@ export function refsFromHtml(html, baseUrl, isBlocked) {
     out.add(abs);
   };
 
+  // `rel` is a space-separated TOKEN LIST, so testing it as a prefix silently
+  // drops the legacy two-token form `rel="shortcut icon"` — still emitted by
+  // real sites (dropbox.com). The icon then never enters the asset map, codegen
+  // drops it from metadata for having no local copy, and the browser falls back
+  // to probing /favicon.ico at the origin root. That probe comes from the
+  // BROWSER process, so Playwright's request events never see it and it
+  // surfaces only as an unattributable console 404 — which fails the
+  // viewport-check console-error gate, the one check with no baseline escape.
+  // Allow any leading tokens before the one we care about.
+  const LINK_REL_WANTED =
+    /rel=["']?(?:[\w-]+\s+)*(?:stylesheet|icon|apple-touch-icon|preload|mask-icon|manifest)\b/i;
   for (const m of html.matchAll(/<link[^>]+href=["']([^"']+)["'][^>]*>/gi)) {
-    if (/rel=["']?(stylesheet|icon|apple-touch-icon|preload|mask-icon|manifest)/i.test(m[0])) add(m[1]);
+    if (LINK_REL_WANTED.test(m[0])) add(m[1]);
   }
   for (const m of html.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)) add(m[1]);
   for (const m of html.matchAll(

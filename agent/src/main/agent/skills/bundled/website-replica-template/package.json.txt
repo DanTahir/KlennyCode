@@ -19,10 +19,12 @@
     "test:watch": "vitest",
     "viewports": "node scripts/viewport-check.mjs",
     "viewports:live": "node scripts/viewport-check.mjs --live --shots --json",
+    "viewports:certify": "node scripts/viewport-check.mjs --lanes=1 --thorough --json",
     "compare": "node scripts/compare-live.mjs",
     "compare:fold": "node scripts/compare-live.mjs --fold",
     "compare:full": "node scripts/compare-live.mjs --full",
-    "compare:quick": "node scripts/compare-live.mjs --only=iphone-se,laptop --slices=6",
+    "compare:quick": "node scripts/compare-live.mjs --only=iphone-se,laptop --slices=6 --down-only",
+    "compare:certify": "node scripts/compare-live.mjs --lanes=1 --png-composites",
     "verify": "npm run typecheck && npm run test && npm run build"
   },
   "dependencies": {

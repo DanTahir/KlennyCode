@@ -30,8 +30,8 @@ can be re-run alone.
 | 3 | `npm run extras` | Self-hosts runtime-only binaries (e.g. Rive `.wasm`) and reports which JS libraries + versions the original loaded, in `scrape/runtime-requirements.json`. |
 | 4 | `npm run analyze` | Read-only recon: head order, inline style/script dumps, body outline, section census, data-attribute census, `scrape/analysis/summary.json`. Emits no app code. |
 | 5 | `npm run codegen` | Parses the captured DOM, **sanitizes runtime artifacts**, and emits per-section `.tsx` components, `PageBody.tsx`, `metadata.ts`, the cascade-ordered CSS, and `manifest.json`. |
-| 6 | `npm run viewports` | Browser audit across 7 viewports (the CI gate). |
-| 7 | `npm run compare` | Side-by-side screenshot diff against the live page, swept down the whole page and back up. |
+| 6 | `npm run viewports` | Browser audit across 7 viewports, run in parallel lanes (the CI gate). |
+| 7 | `npm run compare` | Side-by-side screenshot diff against the live page, swept down the whole page and back up, viewports in parallel lanes. |
 
 ### Why the DOM is captured twice
 
@@ -112,17 +112,38 @@ viewport it loads the local replica and the live page side by side, walks both
 through the whole document in viewport-height steps, diffs at each step, then
 repeats the same offsets on the way back up. Output:
 
-- `scrape/shots/compare/<viewport>/<direction>-<index>-y<offset>.png` — one
-  `[local | live | diff]` composite per slice per direction.
+- `scrape/shots/compare/<viewport>/<direction>-<index>-y<offset>.jpg` — one
+  `[local | live | diff]` composite per slice per direction. The compared
+  screenshots are always PNG; only this review composite is JPEG, because JPEG
+  artifacts near text edges would inflate the diff percentage itself.
 - `scrape/compare-report.json` — per-slice diff %, per-slice band breakdown,
-  achieved scroll offsets, page-height delta, compared coverage, and the
-  per-offset **direction delta** (down vs. up).
+  achieved scroll offsets, page-height delta, compared coverage, the per-offset
+  **direction delta** (down vs. up), plus the lane count and elapsed seconds.
 - A console summary listing the worst slices with their file paths.
 
 Useful flags: `--only=iphone-se,laptop`, `--slices=N` (max slices per
-direction, default 10), `--settle=ms`, `--down-only`, `--threshold=N`.
+direction, default 10), `--settle=ms`, `--down-only`, `--threshold=N`,
+`--lanes=N` (viewports in parallel, default capped near half the cores),
+`--live-lanes=N` (concurrent *cold loads of the live page*, default 2 — see
+below), `--png-composites` (lossless composites).
+
+Live page loads are throttled separately from lanes on purpose. With four
+viewports cold-loading a heavy third-party page at once, one of those live loads
+can fail to lay out at all — it reports a document height of exactly one
+viewport even after spending its whole settle budget. The sweep would then diff a
+blank shell against the replica and report a ~900% height delta as if the
+replica were at fault. So: a live page that lays out implausibly short is
+reloaded (up to 3 attempts), and if it stays short that viewport is reported as
+`liveLoadSuspect` and left out of the average rather than presented as a
+finding. Lower `--live-lanes` on a slow connection.
+
 `npm run compare:fold` is the old above-the-fold smoke check and
 `npm run compare:full` diffs one stitched full-page shot per side.
+
+The two verification scripts are deliberately fast enough to run on every
+iteration; `npm run compare:certify` and `npm run viewports:certify` are the
+slow, fully-serial (`--lanes=1`) re-runs to reach for when a specific number or
+hidden-content finding is in dispute.
 
 **A non-zero diff percentage is normal**: A/B-tested copy, live counters, cookie
 banners and font rasterization all differ run to run. Judge *where* the diff is

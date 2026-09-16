@@ -39,6 +39,44 @@
  * direction surfaces those as a per-slice direction delta instead of averaging
  * them away.
  *
+ * Where the time goes (and what was done about it)
+ * -----------------------------------------------
+ * A 7-viewport, 2-direction, 10-slice sweep is 140 slices, and this script used
+ * to do every part of every slice strictly one at a time. Three structural
+ * changes, none of which alters what is measured:
+ *
+ *  1. LOCKSTEP SIDES. The local and live pages are independent, so they now
+ *     scroll and shoot together via Promise.all instead of local-then-live.
+ *     This is not only ~2x faster on the dominant term, it is more FAITHFUL:
+ *     previously the live shot was taken ~700ms after the local one, so live
+ *     counters, autoplaying carousels and video frames were compared across a
+ *     time gap that had nothing to do with the replica.
+ *  2. LANES. Viewports are independent too, so `--lanes=N` runs several at once,
+ *     each with its own page pair AND its own diff worker (a single shared
+ *     worker page serialised every diff in the run). Roughly half the wall clock
+ *     here is a settle timer, which parallelises for free. See lib/perf.mjs for
+ *     why the default is capped rather than "all of them".
+ *  3. THE COMPOSITE IS OFF THE CRITICAL PATH. The diff NUMBERS come from raw
+ *     pixel data; the [local|live|diff] composite is a human-review artifact
+ *     produced afterwards. So it is encoded as JPEG (~4x faster to encode and
+ *     ~10x smaller to ship back over CDP than PNG) and queued through a bounded
+ *     pipeline, overlapping with the next slice's scroll. `--png-composites`
+ *     restores lossless output.
+ *
+ * One thing lanes deliberately do NOT parallelise: the initial cold load of the
+ * LIVE page, throttled separately by `--live-lanes` (default 2). Four
+ * simultaneous cold loads of a heavy marketing site made one of them fail to
+ * lay out at all, which the sweep then reported as a huge replica regression —
+ * see createGate in lib/perf.mjs. A live page that still lays out implausibly
+ * short is reloaded, and if it stays short the viewport is marked
+ * `liveLoadSuspect` and excluded from the average instead of being presented as
+ * a finding.
+ *
+ * The compared SCREENSHOTS remain PNG on purpose. Encoding those as JPEG would
+ * inject content-dependent artifacts around text edges that can exceed the
+ * colour threshold, inflating diff% on text-heavy pages — that is the one
+ * "optimisation" here that would trade away measurement quality.
+ *
  * Interpreting the numbers
  * ------------------------
  * A replica of a live marketing page will never be 0.00%: many sites A/B-test
@@ -52,6 +90,7 @@
  *   node scripts/compare-live.mjs [--url=http://localhost:3300]
  *        [--only=iphone-se,laptop] [--threshold=32] [--slices=10]
  *        [--settle=500] [--down-only] [--full] [--fold]
+ *        [--lanes=N] [--live-lanes=N] [--png-composites]
  */
 import { mkdirSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
@@ -59,6 +98,7 @@ import { join, relative } from 'node:path';
 import { chromium } from 'playwright-core';
 import { launch } from './lib/chromium.mjs';
 import { loadConfig, paths, MOBILE_UA } from './lib/config.mjs';
+import { createGate, createPipeline, resolveLanes, runLanes, waitForSettle } from './lib/perf.mjs';
 
 const args = process.argv.slice(2);
 const flag = (name) => args.find((a) => a.startsWith(`--${name}=`))?.split('=').slice(1).join('=');
@@ -68,6 +108,7 @@ const onlyArg = flag('only');
 const thresholdArg = flag('threshold');
 const slicesArg = flag('slices');
 const settleArg = flag('settle');
+const lanesArg = flag('lanes');
 
 const THRESHOLD = thresholdArg ? Number(thresholdArg) : 32;
 /** Cap per direction. Beyond this the offsets are spread evenly over the page
@@ -81,6 +122,21 @@ const DOWN_ONLY = args.includes('--down-only');
 
 const MODE = args.includes('--fold') ? 'fold' : args.includes('--full') ? 'full' : 'sweep';
 
+/** Composites are review artifacts, not measurements — see the header note. */
+const COMPOSITE = args.includes('--png-composites')
+  ? { mime: 'image/png', quality: undefined, ext: 'png' }
+  : { mime: 'image/jpeg', quality: 0.92, ext: 'jpg' };
+
+/** Concurrent COLD LOADS of the live page, independent of --lanes. Kept low on
+ *  purpose: see createGate in lib/perf.mjs for the failure it prevents. */
+const LIVE_LOAD_LANES = Math.max(1, Math.floor(Number(flag('live-lanes')) || 2));
+const liveGate = createGate(LIVE_LOAD_LANES);
+
+/** A live document barely taller than the viewport, while the local replica is
+ *  multiples of it, means the live page never laid out. */
+const looksUnloaded = (liveHeight, localHeight, viewportHeight) =>
+  liveHeight <= viewportHeight * 1.3 && localHeight > liveHeight * 2;
+
 async function openSession(browser, url, viewport, cfg) {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
@@ -93,8 +149,11 @@ async function openSession(browser, url, viewport, cfg) {
   });
   const page = await context.newPage();
   await page.goto(url, { waitUntil: 'load', timeout: 90_000 });
-  await page.waitForTimeout(cfg.settleMs ?? 3500);
-  return { context, page };
+  // Adaptive, capped at the configured flat value: fonts ready + no image still
+  // loading + a stable document height. A page that really needs the full
+  // settleMs still gets it; a page that is ready in 900ms stops waiting.
+  const settledMs = await waitForSettle(page, cfg.settleMs ?? 3500);
+  return { context, page, settledMs };
 }
 
 /**
@@ -175,11 +234,11 @@ export function sliceOffsets(pageHeight, viewportHeight, maxSlices) {
 }
 
 /**
- * Runs in the page: decode both shots, diff them, return a composite PNG.
+ * Runs in the page: decode both shots, diff them, return a composite image.
  * Compared over the overlapping region only, since live/local dimensions differ
  * whenever content drifts.
  */
-async function diffInPage({ localB64, liveB64, threshold, bands, caption }) {
+async function diffInPage({ localB64, liveB64, threshold, bands, caption, mime, quality }) {
   const load = (b64) =>
     new Promise((resolve, reject) => {
       const img = new Image();
@@ -287,11 +346,261 @@ async function diffInPage({ localB64, liveB64, threshold, bands, caption }) {
     liveSize: { w: b.width, h: b.height },
     diffPct: Number(diffPct.toFixed(3)),
     bands: bandStats,
-    composite: comp.toDataURL('image/png'),
+    composite: comp.toDataURL(mime, quality),
   };
 }
 
 const rel = (p) => relative(paths.root, p).split('\\').join('/');
+
+/**
+ * One viewport, end to end. Returns the report record plus the console lines to
+ * print as a single block — with lanes running concurrently, interleaving each
+ * line as it happens would shred the output, so a viewport's report is emitted
+ * atomically when it finishes.
+ */
+async function compareViewport(browser, viewport, cfg, localUrl, outDir, directions) {
+  const lines = [];
+  const say = (s) => lines.push(s);
+
+  const vpDir = join(outDir, viewport.name);
+  mkdirSync(vpDir, { recursive: true });
+
+  const record = {
+    viewport: viewport.name,
+    width: viewport.width,
+    height: viewport.height,
+    slices: [],
+  };
+
+  let local;
+  let live;
+  let workerCtx;
+
+  try {
+    // A dedicated blank page purely as an image-processing sandbox. One PER
+    // LANE: a single shared worker would serialise every diff in the run.
+    workerCtx = await browser.newContext({ viewport: { width: 100, height: 100 } });
+    const worker = await workerCtx.newPage();
+    await worker.goto('about:blank');
+
+    // Both sides in lockstep from here on. The local side loads freely; the
+    // live side's COLD LOAD goes through the gate (see createGate).
+    const openLocal = async () => {
+      const session = await openSession(browser, localUrl, viewport, cfg);
+      return { session, height: await warmUp(session.page, cfg.scrollSettleMs) };
+    };
+    const openLive = async () => {
+      const session = await liveGate.run(() =>
+        openSession(browser, cfg.targetUrl, viewport, cfg),
+      );
+      return { session, height: await warmUp(session.page, cfg.scrollSettleMs) };
+    };
+
+    const [localAttempt, firstLive] = await Promise.all([openLocal(), openLive()]);
+    local = localAttempt.session;
+    const localHeight = localAttempt.height;
+    live = firstLive.session;
+    let liveHeight = firstLive.height;
+
+    // Retrying a live page that never laid out is far better than reporting a
+    // 900% height delta as if the replica had caused it.
+    let liveLoadAttempts = 1;
+    while (looksUnloaded(liveHeight, localHeight, viewport.height) && liveLoadAttempts < 3) {
+      say(
+        `[${viewport.name}] live page laid out at only ${liveHeight}px` +
+          ` — reloading it (attempt ${liveLoadAttempts + 1}/3)`,
+      );
+      await live.context.close().catch(() => {});
+      live = undefined;
+      const retry = await openLive();
+      live = retry.session;
+      liveHeight = retry.height;
+      liveLoadAttempts += 1;
+    }
+
+    say(
+      `[${viewport.name}] local ${localHeight}px / live ${liveHeight}px` +
+        `  (settled in ${local.settledMs}/${live.settledMs}ms of ${cfg.settleMs ?? 3500}ms cap` +
+        (liveLoadAttempts > 1 ? `, live reloaded ${liveLoadAttempts - 1}x` : '') +
+        ')',
+    );
+
+    record.localHeight = localHeight;
+    record.liveHeight = liveHeight;
+    record.heightDeltaPct = Number((((localHeight - liveHeight) / liveHeight) * 100).toFixed(2));
+    record.liveLoadAttempts = liveLoadAttempts;
+    record.liveLoadSuspect = looksUnloaded(liveHeight, localHeight, viewport.height);
+    if (record.liveLoadSuspect) {
+      say(
+        `[${viewport.name}] LIVE PAGE NEVER LOADED after ${liveLoadAttempts} attempts.` +
+          ` Its numbers below are NOT a replica finding — re-run with --live-lanes=1 --lanes=1.`,
+      );
+    }
+
+    if (MODE !== 'sweep') {
+      const fullPage = MODE === 'full';
+      const [localB64, liveB64] = await Promise.all([
+        fullPage ? shootFullPage(local.page) : shootViewport(local.page),
+        fullPage ? shootFullPage(live.page) : shootViewport(live.page),
+      ]);
+      const diff = await worker.evaluate(diffInPage, {
+        localB64,
+        liveB64,
+        threshold: THRESHOLD,
+        bands: 10,
+        caption: fullPage ? 'full page' : 'above the fold',
+        mime: COMPOSITE.mime,
+        quality: COMPOSITE.quality,
+      });
+      const file = join(vpDir, `${MODE}.${COMPOSITE.ext}`);
+      await writeFile(file, Buffer.from(diff.composite.split(',')[1], 'base64'));
+      record.slices.push({
+        direction: MODE,
+        index: 0,
+        requestedY: 0,
+        localY: 0,
+        liveY: 0,
+        diffPct: diff.diffPct,
+        comparedRegion: { width: diff.width, height: diff.height },
+        bands: diff.bands,
+        composite: rel(file),
+      });
+      const worst = [...diff.bands].sort((x, y) => y.pct - x.pct).slice(0, 3);
+      say(`         diff ${String(diff.diffPct).padStart(6)}%  -> ${rel(file)}`);
+      say(`         worst bands: ${worst.map((bd) => `${bd.band} (${bd.pct}%)`).join(', ')}`);
+    } else {
+      // Offsets come from the SHORTER page: past that point one side has no
+      // pixels at all, and diffing a slice against whatever the other side
+      // clamps to produces a fake 90% mismatch instead of a useful signal.
+      // The height delta itself is reported separately — that's the real
+      // finding when the pages disagree on length.
+      const comparableHeight = Math.min(localHeight, liveHeight);
+      const offsets = sliceOffsets(comparableHeight, viewport.height, MAX_SLICES);
+      record.comparedHeight = Math.min(comparableHeight, offsets[offsets.length - 1] + viewport.height);
+      record.coveragePct = Number(((record.comparedHeight / Math.max(1, localHeight)) * 100).toFixed(1));
+
+      // Diff + encode + write is queued rather than awaited, so it overlaps
+      // with the next slice's scroll-and-settle. Slots keep the report and the
+      // console output in slice order no matter what order they complete in.
+      const pipeline = createPipeline(2);
+      const sliceSlots = [];
+      const logSlots = [];
+
+      for (const direction of directions) {
+        const sequence = direction === 'down' ? offsets : [...offsets].reverse();
+        for (let i = 0; i < sequence.length; i += 1) {
+          const y = sequence[i];
+          const [localY, liveY] = await Promise.all([
+            scrollToOffset(local.page, y, SLICE_SETTLE_MS),
+            scrollToOffset(live.page, y, SLICE_SETTLE_MS),
+          ]);
+          const [localB64, liveB64] = await Promise.all([
+            shootViewport(local.page),
+            shootViewport(live.page),
+          ]);
+
+          const slot = sliceSlots.length;
+          sliceSlots.push(null);
+          logSlots.push(null);
+          const index = i;
+          const total = sequence.length;
+
+          await pipeline.push(async () => {
+            const caption = `${direction} y=${y}`;
+            const diff = await worker.evaluate(diffInPage, {
+              localB64,
+              liveB64,
+              threshold: THRESHOLD,
+              bands: 4,
+              caption,
+              mime: COMPOSITE.mime,
+              quality: COMPOSITE.quality,
+            });
+
+            const file = join(
+              vpDir,
+              `${direction}-${String(index).padStart(2, '0')}-y${y}.${COMPOSITE.ext}`,
+            );
+            await writeFile(file, Buffer.from(diff.composite.split(',')[1], 'base64'));
+
+            const misalignedBy = Math.abs(localY - liveY);
+            sliceSlots[slot] = {
+              direction,
+              index,
+              requestedY: y,
+              localY,
+              liveY,
+              misalignedBy,
+              diffPct: diff.diffPct,
+              comparedRegion: { width: diff.width, height: diff.height },
+              bands: diff.bands,
+              composite: rel(file),
+            };
+
+            const worst = [...diff.bands].sort((x, z) => z.pct - x.pct)[0];
+            logSlots[slot] =
+              `         ${direction.padEnd(4)} ${String(index + 1).padStart(2)}/${total}` +
+              `  y=${String(y).padStart(6)}  diff ${String(diff.diffPct.toFixed(2)).padStart(6)}%` +
+              `  worst band ${worst.band} (${worst.pct}%)` +
+              (misalignedBy > 4 ? `  [misaligned ${misalignedBy}px: local ${localY} / live ${liveY}]` : '');
+          });
+        }
+      }
+
+      await pipeline.drain();
+      record.slices = sliceSlots.filter(Boolean);
+      for (const line of logSlots) if (line) say(line);
+    }
+
+    const measured = record.slices.filter((s) => typeof s.diffPct === 'number');
+    record.meanDiffPct = measured.length
+      ? Number((measured.reduce((s, x) => s + x.diffPct, 0) / measured.length).toFixed(3))
+      : 0;
+    record.worstSlice = measured.length
+      ? [...measured].sort((x, z) => z.diffPct - x.diffPct)[0]
+      : null;
+
+    // Same offset, opposite direction: a large gap means the page renders
+    // differently depending on how the reader got there (one-shot reveals,
+    // hide-on-scroll navs, direction-aware parallax).
+    record.directionDeltas = [];
+    if (directions.length === 2) {
+      for (const y of new Set(record.slices.map((s) => s.requestedY))) {
+        const d = record.slices.find((s) => s.direction === 'down' && s.requestedY === y);
+        const u = record.slices.find((s) => s.direction === 'up' && s.requestedY === y);
+        if (!d || !u) continue;
+        const delta = Number(Math.abs(d.diffPct - u.diffPct).toFixed(3));
+        record.directionDeltas.push({ y, down: d.diffPct, up: u.diffPct, delta, composites: [d.composite, u.composite] });
+      }
+      record.directionDeltas.sort((x, z) => z.delta - x.delta);
+      const suspicious = record.directionDeltas.filter((x) => x.delta >= 1);
+      if (suspicious.length) {
+        say(
+          `         direction-sensitive offsets: ` +
+            suspicious
+              .slice(0, 3)
+              .map((x) => `y=${x.y} (down ${x.down}% vs up ${x.up}%)`)
+              .join(', '),
+        );
+      }
+    }
+
+    say(
+      `         mean ${record.meanDiffPct}% over ${measured.length} slice(s)` +
+        (record.coveragePct != null ? `, covering ${record.coveragePct}% of the page` : '') +
+        `, height delta ${record.heightDeltaPct}%`,
+    );
+  } catch (err) {
+    say(`[${viewport.name}] FAILED: ${err.message}`);
+    return { record: { viewport: viewport.name, error: err.message }, lines };
+  } finally {
+    await local?.context.close().catch(() => {});
+    await live?.context.close().catch(() => {});
+    await workerCtx?.close().catch(() => {});
+  }
+
+  return { record, lines };
+}
 
 async function main() {
   const cfg = await loadConfig();
@@ -308,179 +617,38 @@ async function main() {
   mkdirSync(outDir, { recursive: true });
 
   const browser = await launch(chromium);
-  // A dedicated blank page purely as an image-processing sandbox.
-  const workerCtx = await browser.newContext({ viewport: { width: 100, height: 100 } });
-  const worker = await workerCtx.newPage();
-  await worker.goto('about:blank');
 
-  const directions = MODE === 'sweep' ? (DOWN_ONLY ? ['down'] : ['down', 'up']) : [];
-  const results = [];
+  const directions = MODE === 'sweep' ? (DOWN_ONLY ? ['down', 'up'].slice(0, 1) : ['down', 'up']) : [];
+  const lanes = resolveLanes({ requested: lanesArg, taskCount: viewports.length });
+  const startedAt = Date.now();
 
   console.log(`comparing ${localUrl}  vs  ${cfg.targetUrl}`);
   console.log(
     `mode: ${MODE}${MODE === 'sweep' ? ` (${directions.join(' + ')}, up to ${MAX_SLICES} slices/direction)` : ''}` +
-      `, colour threshold ${THRESHOLD}/255\n`,
+      `, colour threshold ${THRESHOLD}/255, ${lanes} lane(s), ${COMPOSITE.ext} composites\n`,
   );
 
-  for (const viewport of viewports) {
-    const vpDir = join(outDir, viewport.name);
-    mkdirSync(vpDir, { recursive: true });
-
-    let local;
-    let live;
-    try {
-      process.stdout.write(`[${viewport.name}] loading both pages...`);
-      local = await openSession(browser, localUrl, viewport, cfg);
-      live = await openSession(browser, cfg.targetUrl, viewport, cfg);
-      const localHeight = await warmUp(local.page, cfg.scrollSettleMs);
-      const liveHeight = await warmUp(live.page, cfg.scrollSettleMs);
-      console.log(` local ${localHeight}px / live ${liveHeight}px`);
-
-      const record = {
-        viewport: viewport.name,
-        width: viewport.width,
-        height: viewport.height,
-        localHeight,
-        liveHeight,
-        heightDeltaPct: Number((((localHeight - liveHeight) / liveHeight) * 100).toFixed(2)),
-        slices: [],
-      };
-
-      if (MODE !== 'sweep') {
-        const fullPage = MODE === 'full';
-        const localB64 = fullPage ? await shootFullPage(local.page) : await shootViewport(local.page);
-        const liveB64 = fullPage ? await shootFullPage(live.page) : await shootViewport(live.page);
-        const diff = await worker.evaluate(diffInPage, {
-          localB64,
-          liveB64,
-          threshold: THRESHOLD,
-          bands: 10,
-          caption: fullPage ? 'full page' : 'above the fold',
-        });
-        const file = join(vpDir, `${MODE}.png`);
-        await writeFile(file, Buffer.from(diff.composite.split(',')[1], 'base64'));
-        record.slices.push({
-          direction: MODE,
-          index: 0,
-          requestedY: 0,
-          localY: 0,
-          liveY: 0,
-          diffPct: diff.diffPct,
-          comparedRegion: { width: diff.width, height: diff.height },
-          bands: diff.bands,
-          composite: rel(file),
-        });
-        const worst = [...diff.bands].sort((x, y) => y.pct - x.pct).slice(0, 3);
-        console.log(`         diff ${String(diff.diffPct).padStart(6)}%  -> ${rel(file)}`);
-        console.log(`         worst bands: ${worst.map((bd) => `${bd.band} (${bd.pct}%)`).join(', ')}`);
-      } else {
-        // Offsets come from the SHORTER page: past that point one side has no
-        // pixels at all, and diffing a slice against whatever the other side
-        // clamps to produces a fake 90% mismatch instead of a useful signal.
-        // The height delta itself is reported separately — that's the real
-        // finding when the pages disagree on length.
-        const comparableHeight = Math.min(localHeight, liveHeight);
-        const offsets = sliceOffsets(comparableHeight, viewport.height, MAX_SLICES);
-        record.comparedHeight = Math.min(comparableHeight, offsets[offsets.length - 1] + viewport.height);
-        record.coveragePct = Number(((record.comparedHeight / Math.max(1, localHeight)) * 100).toFixed(1));
-
-        for (const direction of directions) {
-          const sequence = direction === 'down' ? offsets : [...offsets].reverse();
-          for (let i = 0; i < sequence.length; i += 1) {
-            const y = sequence[i];
-            const localY = await scrollToOffset(local.page, y, SLICE_SETTLE_MS);
-            const liveY = await scrollToOffset(live.page, y, SLICE_SETTLE_MS);
-            const localB64 = await shootViewport(local.page);
-            const liveB64 = await shootViewport(live.page);
-
-            const caption = `${direction} y=${y}`;
-            const diff = await worker.evaluate(diffInPage, {
-              localB64,
-              liveB64,
-              threshold: THRESHOLD,
-              bands: 4,
-              caption,
-            });
-
-            const file = join(vpDir, `${direction}-${String(i).padStart(2, '0')}-y${y}.png`);
-            await writeFile(file, Buffer.from(diff.composite.split(',')[1], 'base64'));
-
-            const misalignedBy = Math.abs(localY - liveY);
-            record.slices.push({
-              direction,
-              index: i,
-              requestedY: y,
-              localY,
-              liveY,
-              misalignedBy,
-              diffPct: diff.diffPct,
-              comparedRegion: { width: diff.width, height: diff.height },
-              bands: diff.bands,
-              composite: rel(file),
-            });
-
-            const worst = [...diff.bands].sort((x, z) => z.pct - x.pct)[0];
-            console.log(
-              `         ${direction.padEnd(4)} ${String(i + 1).padStart(2)}/${sequence.length}` +
-                `  y=${String(y).padStart(6)}  diff ${String(diff.diffPct.toFixed(2)).padStart(6)}%` +
-                `  worst band ${worst.band} (${worst.pct}%)` +
-                (misalignedBy > 4 ? `  [misaligned ${misalignedBy}px: local ${localY} / live ${liveY}]` : ''),
-            );
-          }
-        }
-      }
-
-      const measured = record.slices.filter((s) => typeof s.diffPct === 'number');
-      record.meanDiffPct = measured.length
-        ? Number((measured.reduce((s, x) => s + x.diffPct, 0) / measured.length).toFixed(3))
-        : 0;
-      record.worstSlice = measured.length
-        ? [...measured].sort((x, z) => z.diffPct - x.diffPct)[0]
-        : null;
-
-      // Same offset, opposite direction: a large gap means the page renders
-      // differently depending on how the reader got there (one-shot reveals,
-      // hide-on-scroll navs, direction-aware parallax).
-      record.directionDeltas = [];
-      if (directions.length === 2) {
-        for (const y of new Set(record.slices.map((s) => s.requestedY))) {
-          const d = record.slices.find((s) => s.direction === 'down' && s.requestedY === y);
-          const u = record.slices.find((s) => s.direction === 'up' && s.requestedY === y);
-          if (!d || !u) continue;
-          const delta = Number(Math.abs(d.diffPct - u.diffPct).toFixed(3));
-          record.directionDeltas.push({ y, down: d.diffPct, up: u.diffPct, delta, composites: [d.composite, u.composite] });
-        }
-        record.directionDeltas.sort((x, z) => z.delta - x.delta);
-        const suspicious = record.directionDeltas.filter((x) => x.delta >= 1);
-        if (suspicious.length) {
-          console.log(
-            `         direction-sensitive offsets: ` +
-              suspicious
-                .slice(0, 3)
-                .map((x) => `y=${x.y} (down ${x.down}% vs up ${x.up}%)`)
-                .join(', '),
-          );
-        }
-      }
-
-      console.log(
-        `         mean ${record.meanDiffPct}% over ${measured.length} slice(s)` +
-          (record.coveragePct != null ? `, covering ${record.coveragePct}% of the page` : '') +
-          `, height delta ${record.heightDeltaPct}%`,
+  const results = await runLanes(
+    viewports,
+    async (viewport) => {
+      const { record, lines } = await compareViewport(
+        browser,
+        viewport,
+        cfg,
+        localUrl,
+        outDir,
+        directions,
       );
+      // One write per viewport keeps concurrent lanes readable.
+      console.log(lines.join('\n'));
+      return record;
+    },
+    lanes,
+  );
 
-      results.push(record);
-    } catch (err) {
-      console.log(` FAILED: ${err.message}`);
-      results.push({ viewport: viewport.name, error: err.message });
-    } finally {
-      await local?.context.close().catch(() => {});
-      await live?.context.close().catch(() => {});
-    }
-  }
-
-  await workerCtx.close();
   await browser.close();
+
+  const elapsedS = (Date.now() - startedAt) / 1000;
 
   const summary = {
     generatedAt: new Date().toISOString(),
@@ -491,21 +659,46 @@ async function main() {
     maxSlicesPerDirection: MODE === 'sweep' ? MAX_SLICES : 1,
     sliceSettleMs: SLICE_SETTLE_MS,
     threshold: THRESHOLD,
+    // Recorded so a suspiciously noisy run can be explained (and re-run at
+    // --lanes=1) months later, rather than argued about.
+    lanes,
+    liveLoadLanes: LIVE_LOAD_LANES,
+    compositeFormat: COMPOSITE.ext,
+    elapsedSeconds: Number(elapsedS.toFixed(1)),
     results,
   };
   const reportPath = join(paths.scrape, 'compare-report.json');
   await writeFile(reportPath, JSON.stringify(summary, null, 2));
 
   const ok = results.filter((r) => !r.error);
-  const avg = ok.length ? ok.reduce((s, r) => s + (r.meanDiffPct ?? 0), 0) / ok.length : 0;
+  // A viewport whose live page never loaded measures nothing about the replica,
+  // so it is kept out of the average and the worst-slice list rather than
+  // silently dominating both.
+  const measured = ok.filter((r) => !r.liveLoadSuspect);
+  const suspect = ok.filter((r) => r.liveLoadSuspect);
+  const avg = measured.length
+    ? measured.reduce((s, r) => s + (r.meanDiffPct ?? 0), 0) / measured.length
+    : 0;
 
   // The top offenders across the whole run: these are the composites to open
   // first, and the only honest way to review a multi-slice sweep.
-  const allSlices = ok.flatMap((r) => r.slices.map((s) => ({ ...s, viewport: r.viewport })));
+  const allSlices = measured.flatMap((r) => r.slices.map((s) => ({ ...s, viewport: r.viewport })));
   const worst = [...allSlices].sort((x, z) => z.diffPct - x.diffPct).slice(0, 6);
 
   console.log(`\n${'='.repeat(76)}`);
-  console.log(`average pixel difference: ${avg.toFixed(2)}%  across ${ok.length} viewport(s), ${allSlices.length} slice(s)`);
+  console.log(`average pixel difference: ${avg.toFixed(2)}%  across ${measured.length} viewport(s), ${allSlices.length} slice(s)`);
+  if (suspect.length) {
+    console.log(
+      `\nLIVE PAGE NEVER LOADED at ${suspect.length} viewport(s) — excluded above, and NOT a replica finding:`,
+    );
+    for (const r of suspect) {
+      console.log(
+        `  ${r.viewport}: live laid out at ${r.liveHeight}px vs local ${r.localHeight}px` +
+          ` after ${r.liveLoadAttempts} attempt(s). Re-run: --only=${r.viewport} --lanes=1 --live-lanes=1`,
+      );
+    }
+  }
+  console.log(`elapsed: ${elapsedS.toFixed(1)}s with ${lanes} lane(s)`);
   if (worst.length) {
     console.log('\nworst slices (open these first):');
     for (const s of worst) {
@@ -515,7 +708,7 @@ async function main() {
       );
     }
   }
-  const drifted = ok.filter((r) => Math.abs(r.heightDeltaPct ?? 0) >= 2);
+  const drifted = measured.filter((r) => Math.abs(r.heightDeltaPct ?? 0) >= 2);
   if (drifted.length) {
     console.log('\npage-height drift >= 2% (a layout smell, and it shrinks compared coverage):');
     for (const r of drifted) {

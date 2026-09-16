@@ -29,6 +29,7 @@
  * Usage:
  *   node scripts/viewport-check.mjs [--url=http://localhost:3300] [--live] [--shots]
  *                                   [--only=iphone-se,laptop] [--json]
+ *                                   [--lanes=N] [--thorough]
  */
 import { mkdirSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
@@ -36,13 +37,18 @@ import { join } from 'node:path';
 import { chromium } from 'playwright-core';
 import { launch } from './lib/chromium.mjs';
 import { loadConfig, loadBaseline, paths, MOBILE_UA } from './lib/config.mjs';
+import { resolveLanes, runLanes, waitForSettle } from './lib/perf.mjs';
 
 const args = process.argv.slice(2);
 const urlArg = args.find((a) => a.startsWith('--url='));
 const onlyArg = args.find((a) => a.startsWith('--only='));
+const lanesArg = args.find((a) => a.startsWith('--lanes='))?.split('=')[1];
 const CHECK_LIVE = args.includes('--live');
 const SHOTS = args.includes('--shots');
 const JSON_OUT = args.includes('--json');
+/** Sample the hidden-content walk at full settle on EVERY offset (the original
+ *  behaviour) instead of quick-pass-then-confirm. See findHiddenContent. */
+const THOROUGH = args.includes('--thorough');
 
 /** Collected inside the page; must be entirely self-contained. */
 function collectMetrics() {
@@ -158,7 +164,177 @@ function collectMetrics() {
   };
 }
 
-async function auditPage(browser, label, url, viewport, scrollSettleMs) {
+/**
+ * Scroll the whole page to trigger IntersectionObserver-driven animations and
+ * find content that is ON SCREEN yet INVISIBLE.
+ *
+ * Sites routinely hide blocks in a stylesheet class (opacity:0 + blur + scale)
+ * and reveal them by adding a class from their own IntersectionObserver.
+ * Codegen builds from the PRE-scroll DOM, so that hidden state is what gets
+ * captured — and unless an effect re-implements the observer, whole sections
+ * ship permanently transparent. They are in the DOM, correctly laid out, and
+ * the page height is nearly right, so typecheck/build/tests and every other
+ * check here pass while a human sees a heading followed by blank space.
+ *
+ * The question asked is deliberately "is anything ON SCREEN yet invisible?",
+ * sampled DURING the scroll rather than after it. That phrasing is what keeps
+ * it free of false positives:
+ *   - a legitimately closed dropdown/modal/menu is excluded, because such UI
+ *     is hidden structurally (display:none / visibility:hidden / aria-hidden /
+ *     a menu or dialog role), not by bare opacity on visible-flow content;
+ *   - a BIDIRECTIONAL reveal that re-hides when scrolled away is fine, since
+ *     it is only ever judged while it is on screen;
+ *   - a WORKING one-shot reveal is fine, because sampling waits out the
+ *     transition, including a staggered per-item delay, before looking.
+ *
+ * TWO PASSES, and why
+ * -------------------
+ * A staggered entrance transition can run ~1s, so a single sampling pass has to
+ * wait that long at EVERY offset — on a 9000px page that is ~12s per viewport,
+ * and it was the single largest cost in this script. But the bug being hunted
+ * is content that is invisible PERMANENTLY, which a short sample detects just
+ * as well as a long one. So:
+ *
+ *   pass 1 (cheap)   walk the page, sampling twice per offset (~300ms and
+ *                    ~600ms), and only remember WHICH offsets look suspicious.
+ *   pass 2 (strict)  revisit just those offsets, wait out the full settle plus
+ *                    a margin, and report only what is STILL invisible.
+ *
+ * A clean page — the common case while iterating — never runs pass 2 at all.
+ * A real frozen reveal is caught by both. And pass 2 makes the result MORE
+ * trustworthy than the old single pass, because every reported offender has now
+ * been observed twice, at two different settle times, which is exactly the
+ * "working reveal caught mid-fade" false positive the old code had to guess
+ * about.
+ *
+ * The trade is narrow and deliberate: content that is visible at ~600ms and
+ * only becomes invisible later is no longer flagged in the default mode.
+ * `--thorough` restores full-settle sampling at every offset (and still runs
+ * the confirmation pass), for a certification run or a disputed finding.
+ */
+async function findHiddenContent(page, scrollSettleMs, thorough) {
+  // Never sample faster than a staggered entrance transition can finish (~.5s
+  // duration plus a per-item delay) or a WORKING reveal looks like a frozen one.
+  const confirmMs = Math.max(scrollSettleMs, 1200);
+  const quickMs = thorough ? confirmMs : Math.max(Math.min(scrollSettleMs, 300), 300);
+
+  return page.evaluate(
+    async ({ quickMs: quick, confirmMs: confirm, thorough: strict }) => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      // Big enough to be real content rather than a decorative sliver.
+      const isContentSized = (r, vw) => r.width >= Math.min(240, vw * 0.25) && r.height >= 80;
+
+      const carriesContent = (el) => {
+        if ((el.textContent || '').replace(/\s+/g, ' ').trim().length >= 20) return true;
+        return Array.from(el.querySelectorAll('img, video, svg, canvas')).some(
+          (m) => m.getBoundingClientRect().width > 8,
+        );
+      };
+
+      // Deliberately-hidden UI is NOT a bug: a closed nav dropdown, a modal, a
+      // tooltip. Those are hidden structurally, so exclude their whole subtree.
+      const deliberatelyHidden = (el) => {
+        let n = el;
+        while (n && n.nodeType === 1) {
+          const s = getComputedStyle(n);
+          if (s.display === 'none' || s.visibility === 'hidden') return true;
+          if (n.getAttribute('aria-hidden') === 'true' || n.hasAttribute('hidden')) return true;
+          const role = n.getAttribute('role');
+          if (role && /^(menu|menubar|dialog|alertdialog|tooltip|listbox)$/.test(role)) return true;
+          if (n.tagName === 'DIALOG') return true;
+          n = n.parentElement;
+        }
+        return false;
+      };
+
+      /** Offenders visible on screen at THIS instant, at this scroll offset. */
+      const sample = () => {
+        const found = [];
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        for (const el of Array.from(document.querySelectorAll('body *'))) {
+          const r = el.getBoundingClientRect();
+          if (r.bottom <= 0 || r.top >= vh) continue; // off screen: not judged
+          if (!isContentSized(r, vw)) continue;
+          const s = getComputedStyle(el);
+          if (s.position === 'fixed') continue; // sticky banners/overlays
+          if (parseFloat(s.opacity) > 0.05) continue; // visible enough
+          if (deliberatelyHidden(el)) continue;
+          if (!carriesContent(el)) continue;
+
+          // Report only the OUTERMOST offender; descendants inherit the opacity.
+          let anc = el.parentElement;
+          let nested = false;
+          while (anc && anc.nodeType === 1) {
+            if (parseFloat(getComputedStyle(anc).opacity) <= 0.05) {
+              nested = true;
+              break;
+            }
+            anc = anc.parentElement;
+          }
+          if (nested) continue;
+
+          const cls =
+            el.className && typeof el.className === 'string'
+              ? '.' + el.className.trim().split(/\s+/).slice(0, 3).join('.')
+              : '';
+          found.push({
+            key: el.tagName.toLowerCase() + cls,
+            size: `${Math.round(r.width)}x${Math.round(r.height)}`,
+            text: (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60),
+          });
+        }
+        return found;
+      };
+
+      const step = window.innerHeight;
+      const offsets = [];
+      for (let y = 0; y < document.documentElement.scrollHeight; y += step) offsets.push(y);
+
+      // PASS 1 — cheap sweep. Also what triggers every IntersectionObserver on
+      // the page, which the post-scroll metrics depend on.
+      const suspicious = [];
+      for (const y of offsets) {
+        window.scrollTo(0, y);
+        await sleep(quick);
+        let hit = sample().length > 0;
+        if (!hit && !strict) {
+          // Second look a beat later: catches a reveal that is still pending at
+          // the first sample without paying the full settle here.
+          await sleep(quick);
+          hit = sample().length > 0;
+        }
+        if (hit) suspicious.push(y);
+      }
+
+      // PASS 2 — confirm only the suspicious offsets, after a full settle.
+      const offenders = new Map();
+      for (const y of suspicious) {
+        window.scrollTo(0, y);
+        await sleep(confirm + 400);
+        for (const o of sample()) {
+          const entry = offenders.get(o.key) ?? { sel: o.key, count: 0, size: '', text: '' };
+          entry.count += 1;
+          entry.size = o.size;
+          entry.text = o.text;
+          offenders.set(o.key, entry);
+        }
+      }
+
+      window.scrollTo(0, 0);
+      await sleep(300);
+      return {
+        offenders: Array.from(offenders.values()).sort((a, b) => b.count - a.count),
+        offsetsWalked: offsets.length,
+        offsetsConfirmed: suspicious.length,
+      };
+    },
+    { quickMs, confirmMs, thorough },
+  );
+}
+
+async function auditPage(browser, label, url, viewport, cfg) {
   const context = await browser.newContext({
     viewport: { width: viewport.width, height: viewport.height },
     deviceScaleFactor: viewport.dpr,
@@ -192,114 +368,16 @@ async function auditPage(browser, label, url, viewport, scrollSettleMs) {
   });
 
   await page.goto(url, { waitUntil: 'load', timeout: 90_000 });
-  // Let animations parse, carousels initialise and fonts settle.
-  await page.waitForTimeout(3500);
+  // Let animations parse, carousels initialise and fonts settle — adaptively,
+  // capped at the configured flat value (see lib/perf.mjs).
+  const settledMs = await waitForSettle(page, cfg.settleMs ?? 3500);
 
   const metrics = await page.evaluate(collectMetrics);
 
-  // Scroll the whole page to trigger IntersectionObserver-driven animations,
-  // then re-measure: overflow often only appears once lower sections lay out.
-  //
-  // The same pass doubles as the INVISIBLE CONTENT gate. Sites routinely hide
-  // blocks in a stylesheet class (opacity:0 + blur + scale) and reveal them by
-  // adding a class from their own IntersectionObserver. Codegen builds from the
-  // PRE-scroll DOM, so that hidden state is what gets captured — and unless an
-  // effect re-implements the observer, whole sections ship permanently
-  // transparent. They are in the DOM, correctly laid out, and the page height is
-  // nearly right, so typecheck/build/tests and every other check here pass
-  // while a human sees a heading followed by blank space.
-  //
-  // The question asked is deliberately "is anything ON SCREEN yet invisible?",
-  // sampled DURING the scroll rather than after it. That phrasing is what keeps
-  // it free of false positives:
-  //   - a legitimately closed dropdown/modal/menu is excluded, because such UI
-  //     is hidden structurally (display:none / visibility:hidden / aria-hidden /
-  //     a menu or dialog role), not by bare opacity on visible-flow content;
-  //   - a BIDIRECTIONAL reveal that re-hides when scrolled away is fine, since
-  //     it is only ever judged while it is on screen;
-  //   - a WORKING one-shot reveal is fine, because sampling waits out the
-  //     transition, including a staggered per-item delay, before looking.
-  const hiddenContent = await page.evaluate(async (stepDelay) => {
-    const offenders = new Map();
-
-    // Big enough to be real content rather than a decorative sliver.
-    const isContentSized = (r, vw) => r.width >= Math.min(240, vw * 0.25) && r.height >= 80;
-
-    const carriesContent = (el) => {
-      if ((el.textContent || '').replace(/\s+/g, ' ').trim().length >= 20) return true;
-      return Array.from(el.querySelectorAll('img, video, svg, canvas')).some(
-        (m) => m.getBoundingClientRect().width > 8,
-      );
-    };
-
-    // Deliberately-hidden UI is NOT a bug: a closed nav dropdown, a modal, a
-    // tooltip. Those are hidden structurally, so exclude their whole subtree.
-    const deliberatelyHidden = (el) => {
-      let n = el;
-      while (n && n.nodeType === 1) {
-        const s = getComputedStyle(n);
-        if (s.display === 'none' || s.visibility === 'hidden') return true;
-        if (n.getAttribute('aria-hidden') === 'true' || n.hasAttribute('hidden')) return true;
-        const role = n.getAttribute('role');
-        if (role && /^(menu|menubar|dialog|alertdialog|tooltip|listbox)$/.test(role)) return true;
-        if (n.tagName === 'DIALOG') return true;
-        n = n.parentElement;
-      }
-      return false;
-    };
-
-    const sample = () => {
-      const vw = window.innerWidth;
-      const vh = window.innerHeight;
-      for (const el of Array.from(document.querySelectorAll('body *'))) {
-        const r = el.getBoundingClientRect();
-        if (r.bottom <= 0 || r.top >= vh) continue; // off screen: not judged
-        if (!isContentSized(r, vw)) continue;
-        const s = getComputedStyle(el);
-        if (s.position === 'fixed') continue; // sticky banners/overlays
-        if (parseFloat(s.opacity) > 0.05) continue; // visible enough
-        if (deliberatelyHidden(el)) continue;
-        if (!carriesContent(el)) continue;
-
-        // Report only the OUTERMOST offender; descendants inherit the opacity.
-        let anc = el.parentElement;
-        let nested = false;
-        while (anc && anc.nodeType === 1) {
-          if (parseFloat(getComputedStyle(anc).opacity) <= 0.05) {
-            nested = true;
-            break;
-          }
-          anc = anc.parentElement;
-        }
-        if (nested) continue;
-
-        const cls =
-          el.className && typeof el.className === 'string'
-            ? '.' + el.className.trim().split(/\s+/).slice(0, 3).join('.')
-            : '';
-        const key = el.tagName.toLowerCase() + cls;
-        const entry = offenders.get(key) ?? { sel: key, count: 0, size: '', text: '' };
-        entry.count += 1;
-        entry.size = `${Math.round(r.width)}x${Math.round(r.height)}`;
-        entry.text = (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 60);
-        offenders.set(key, entry);
-      }
-    };
-
-    // A staggered entrance transition can run ~1s (e.g. .5s duration plus a
-    // per-item delay), so never sample faster than that or a WORKING reveal
-    // caught mid-fade looks like a frozen one.
-    const settle = Math.max(stepDelay, 1200);
-    const step = window.innerHeight;
-    for (let y = 0; y < document.documentElement.scrollHeight; y += step) {
-      window.scrollTo(0, y);
-      await new Promise((r) => setTimeout(r, settle));
-      sample();
-    }
-    window.scrollTo(0, 0);
-    await new Promise((r) => setTimeout(r, 300));
-    return Array.from(offenders.values()).sort((a, b) => b.count - a.count);
-  }, scrollSettleMs);
+  // The scroll walk doubles as the INVISIBLE CONTENT gate, and re-measuring
+  // after it matters because overflow often only appears once lower sections
+  // lay out.
+  const hidden = await findHiddenContent(page, cfg.scrollSettleMs, THOROUGH);
 
   const afterScroll = await page.evaluate(collectMetrics);
 
@@ -317,10 +395,187 @@ async function auditPage(browser, label, url, viewport, scrollSettleMs) {
   return {
     metrics,
     afterScroll,
-    hiddenContent,
+    hiddenContent: hidden.offenders,
+    hiddenScan: { walked: hidden.offsetsWalked, confirmed: hidden.offsetsConfirmed },
+    settledMs,
     consoleErrors,
     failedRequests,
     remoteRequests: [...new Set(remoteRequests)],
+  };
+}
+
+/**
+ * Audit one (target, viewport) pair and return its report entry plus the
+ * console block to print. Lanes run these concurrently, so output is buffered
+ * and emitted in one write per pair rather than interleaved line by line.
+ */
+async function auditOne(browser, target, viewport, cfg, baseline) {
+  const lines = [];
+  const say = (s) => lines.push(s);
+  const isLocal = target.label === 'local';
+
+  let result;
+  try {
+    result = await auditPage(browser, target.label, target.url, viewport, cfg);
+  } catch (err) {
+    say(`[${target.label} ${viewport.name}] FAILED TO LOAD: ${err.message}`);
+    return { lines, failed: isLocal, entry: null, viewport, target };
+  }
+
+  const {
+    metrics,
+    afterScroll,
+    hiddenContent,
+    hiddenScan,
+    settledMs,
+    consoleErrors,
+    failedRequests,
+    remoteRequests,
+  } = result;
+
+  const overflow = metrics.overflowX || afterScroll.overflowX;
+  const badImages = afterScroll.brokenImages.length;
+
+  // Overflow the LIVE site also exhibits is fidelity, not a bug — but only
+  // if it was verified and written into replica.baseline.json on purpose.
+  const quirk = baseline.overflow?.[viewport.name];
+  const isBaselined =
+    Boolean(quirk) && Math.abs(afterScroll.overflowBy - quirk.by) <= (quirk.tolerance ?? 2);
+  const unexpectedOverflow = overflow && !isBaselined;
+
+  const problems = [];
+  if (unexpectedOverflow) problems.push('overflow');
+  if (badImages) problems.push('broken-images');
+  if (consoleErrors.length) problems.push('console-errors');
+  if (isLocal && remoteRequests.length) problems.push('remote-requests');
+  // Duplicated visible copy => runtime-generated nodes were baked into the
+  // capture. Compared against live so genuine site behaviour never fails.
+  const liveDupes = baseline.duplicateVisibleText?.[viewport.name] ?? 0;
+  if (afterScroll.dupVisibleTextCount > liveDupes) problems.push('duplicate-visible-text');
+  // Content on screen yet invisible => a reveal class the live site applies
+  // at runtime is not being re-applied here, so a section ships blank.
+  // Baseline it ONLY after confirming the live page hides the same block.
+  //
+  // Baselining matches a CLASS SIGNATURE, not an element's text or a count.
+  // Inside a horizontally scrollable card rail, WHICH member sits off-window
+  // (and so never gets revealed -- on the live site too) depends on scroll
+  // position and timing, so the same faithful behaviour resurfaces under
+  // different copy from run to run and a text- or count-keyed baseline never
+  // matches twice. The bug this gate exists for is different in kind: a
+  // reveal class that NO effect re-applies is frozen at every viewport,
+  // under every signature, and live exhibits none of them. Signature
+  // matching stays precise about that while absorbing rail noise. A bare
+  // number is still honoured for older baselines.
+  const baselineHidden = baseline.hiddenContent?.[viewport.name] ?? 0;
+  const baselinedSigs = Array.isArray(baselineHidden) ? new Set(baselineHidden) : null;
+  const unexplainedHidden = baselinedSigs
+    ? hiddenContent.filter((h) => !baselinedSigs.has(h.sel))
+    : hiddenContent.length > baselineHidden
+      ? hiddenContent
+      : [];
+  if (isLocal && unexplainedHidden.length) problems.push('hidden-content');
+
+  const flag = unexpectedOverflow
+    ? 'OVERFLOW'
+    : overflow
+      ? `ok (baselined +${quirk.by}px, matches live)`
+      : problems.length
+        ? problems.join(',')
+        : 'ok';
+
+  say(
+    `[${target.label} ${viewport.name}] ${viewport.width}x${viewport.height} @${viewport.dpr}x ` +
+      `${viewport.mobile ? 'mobile' : 'desktop'} -> ${flag}`,
+  );
+  say(
+    `  scrollWidth   ${afterScroll.scrollWidth} vs innerWidth ${afterScroll.innerWidth}` +
+      (overflow ? `  (+${afterScroll.overflowBy}px)` : ''),
+  );
+  say(`  page height   ${afterScroll.scrollHeight}px`);
+  say(`  burger/menu   ${afterScroll.burgerDisplay} / ${afterScroll.menuDisplay}`);
+  if (afterScroll.canvases.length) {
+    for (const c of afterScroll.canvases.slice(0, 3)) {
+      say(`  canvas        ${c.backing} backing, ${c.css} css, painted=${c.painted}`);
+    }
+  }
+  say(`  animations    ${afterScroll.animDone}/${afterScroll.animTargets} triggered after scroll`);
+  say(`  carousels     ${afterScroll.carouselsInit} initialised`);
+  say(`  images        ${afterScroll.images} (${badImages} broken)`);
+  say(`  body font     ${afterScroll.bodyFont} (fonts: ${afterScroll.fontsLoaded})`);
+  say(`  h1            ${afterScroll.h1 ?? '(none)'}`);
+  say(
+    `  settle/scan   settled ${settledMs}ms; walked ${hiddenScan.walked} offset(s),` +
+      ` confirmed ${hiddenScan.confirmed}`,
+  );
+
+  if (afterScroll.dupVisibleTextCount) {
+    say(
+      `  DUPLICATE visible headings: ${afterScroll.dupVisibleTextCount}` +
+        (liveDupes ? ` (baselined: ${liveDupes})` : ''),
+    );
+    for (const d of afterScroll.dupVisibleText) {
+      say(`    x${d.count}  ${d.text}`);
+    }
+  }
+
+  if (hiddenContent.length) {
+    const matched = hiddenContent.length - unexplainedHidden.length;
+    say(
+      `  INVISIBLE on-screen content: ${hiddenContent.length} block(s)` +
+        (baselinedSigs
+          ? ` (${matched} matched a live-verified signature, ${unexplainedHidden.length} unexplained)`
+          : baselineHidden
+            ? ` (baselined: ${baselineHidden})`
+            : ''),
+    );
+    for (const h of hiddenContent.slice(0, 5)) {
+      const tag = baselinedSigs && !unexplainedHidden.includes(h) ? '  [baselined]' : '';
+      say(`    opacity~0  ${h.size.padEnd(11)} ${h.sel}${tag}`);
+      if (h.text) say(`               "${h.text}"`);
+    }
+    say('    ^ these were on screen but transparent. Almost always a scroll-reveal');
+    say('      class the live site adds at runtime that no effect re-applies. Find it');
+    say('      with the class-token diff printed by `npm run analyze`.');
+  }
+
+  if (afterScroll.tooWideCount) {
+    say(`  elements wider than viewport: ${afterScroll.tooWideCount}`);
+    for (const el of afterScroll.tooWide) {
+      say(`    - ${el.sel}  w=${el.width} right=${el.right}`);
+    }
+  }
+  for (const src of afterScroll.brokenImages) say(`    broken: ${src.slice(0, 110)}`);
+  if (consoleErrors.length) {
+    say(`  console errors: ${consoleErrors.length}`);
+    for (const e of consoleErrors.slice(0, 4)) say(`    ! ${e}`);
+  }
+  if (failedRequests.length) {
+    const unique = [...new Set(failedRequests)];
+    say(`  failed requests: ${unique.length}`);
+    for (const r of unique.slice(0, 4)) say(`    ! ${r}`);
+  }
+  if (isLocal && remoteRequests.length) {
+    say(`  REMOTE requests: ${remoteRequests.length} (replica should be fully self-hosted)`);
+    for (const r of remoteRequests.slice(0, 5)) say(`    ! ${r}`);
+  }
+
+  return {
+    lines,
+    failed: isLocal && problems.length > 0,
+    viewport,
+    target,
+    entry: {
+      viewport,
+      problems,
+      baselined: isBaselined,
+      metrics: afterScroll,
+      hiddenContent,
+      hiddenScan,
+      settledMs,
+      consoleErrors: consoleErrors.slice(0, 10),
+      failedRequests: [...new Set(failedRequests)].slice(0, 10),
+      remoteRequests: remoteRequests.slice(0, 10),
+    },
   };
 }
 
@@ -340,176 +595,51 @@ async function main() {
   const targets = [{ label: 'local', url: localUrl }];
   if (CHECK_LIVE) targets.push({ label: 'live', url: cfg.targetUrl });
 
-  let failures = 0;
-  const report = { generatedAt: new Date().toISOString(), localUrl, targets: {} };
+  // Every (target, viewport) pair is independent, so the local and live passes
+  // no longer run one after the other either.
+  const tasks = targets.flatMap((target) => viewports.map((viewport) => ({ target, viewport })));
+  const lanes = resolveLanes({ requested: lanesArg, taskCount: tasks.length });
+  const startedAt = Date.now();
 
-  for (const target of targets) {
-    console.log(
-      `\n${'='.repeat(76)}\n${target.label.toUpperCase()}  ${target.url}\n${'='.repeat(76)}`,
-    );
-    report.targets[target.label] = {};
+  console.log(
+    `auditing ${tasks.length} (target, viewport) pair(s) across ${lanes} lane(s)` +
+      `${THOROUGH ? ', thorough hidden-content sampling' : ''}`,
+  );
+  for (const t of targets) console.log(`  ${t.label.padEnd(5)} ${t.url}`);
 
-    for (const viewport of viewports) {
-      let result;
-      try {
-        result = await auditPage(browser, target.label, target.url, viewport, cfg.scrollSettleMs);
-      } catch (err) {
-        console.log(`\n[${viewport.name}] FAILED TO LOAD: ${err.message}`);
-        if (target.label === 'local') failures += 1;
-        continue;
-      }
-
-      const { metrics, afterScroll, hiddenContent, consoleErrors, failedRequests, remoteRequests } =
-        result;
-      const isLocal = target.label === 'local';
-
-      const overflow = metrics.overflowX || afterScroll.overflowX;
-      const badImages = afterScroll.brokenImages.length;
-
-      // Overflow the LIVE site also exhibits is fidelity, not a bug — but only
-      // if it was verified and written into replica.baseline.json on purpose.
-      const quirk = baseline.overflow?.[viewport.name];
-      const isBaselined =
-        Boolean(quirk) && Math.abs(afterScroll.overflowBy - quirk.by) <= (quirk.tolerance ?? 2);
-      const unexpectedOverflow = overflow && !isBaselined;
-
-      const problems = [];
-      if (unexpectedOverflow) problems.push('overflow');
-      if (badImages) problems.push('broken-images');
-      if (consoleErrors.length) problems.push('console-errors');
-      if (isLocal && remoteRequests.length) problems.push('remote-requests');
-      // Duplicated visible copy => runtime-generated nodes were baked into the
-      // capture. Compared against live so genuine site behaviour never fails.
-      const liveDupes = baseline.duplicateVisibleText?.[viewport.name] ?? 0;
-      if (afterScroll.dupVisibleTextCount > liveDupes) problems.push('duplicate-visible-text');
-      // Content on screen yet invisible => a reveal class the live site applies
-      // at runtime is not being re-applied here, so a section ships blank.
-      // Baseline it ONLY after confirming the live page hides the same block.
-      //
-      // Baselining matches a CLASS SIGNATURE, not an element's text or a count.
-      // Inside a horizontally scrollable card rail, WHICH member sits off-window
-      // (and so never gets revealed -- on the live site too) depends on scroll
-      // position and timing, so the same faithful behaviour resurfaces under
-      // different copy from run to run and a text- or count-keyed baseline never
-      // matches twice. The bug this gate exists for is different in kind: a
-      // reveal class that NO effect re-applies is frozen at every viewport,
-      // under every signature, and live exhibits none of them. Signature
-      // matching stays precise about that while absorbing rail noise. A bare
-      // number is still honoured for older baselines.
-      const baselineHidden = baseline.hiddenContent?.[viewport.name] ?? 0;
-      const baselinedSigs = Array.isArray(baselineHidden) ? new Set(baselineHidden) : null;
-      const unexplainedHidden = baselinedSigs
-        ? hiddenContent.filter((h) => !baselinedSigs.has(h.sel))
-        : hiddenContent.length > baselineHidden
-          ? hiddenContent
-          : [];
-      if (isLocal && unexplainedHidden.length) problems.push('hidden-content');
-
-      if (isLocal && problems.length) failures += 1;
-
-      const flag = unexpectedOverflow
-        ? 'OVERFLOW'
-        : overflow
-          ? `ok (baselined +${quirk.by}px, matches live)`
-          : problems.length
-            ? problems.join(',')
-            : 'ok';
-
-      console.log(
-        `\n[${viewport.name}] ${viewport.width}x${viewport.height} @${viewport.dpr}x ` +
-          `${viewport.mobile ? 'mobile' : 'desktop'} -> ${flag}`,
-      );
-      console.log(
-        `  scrollWidth   ${afterScroll.scrollWidth} vs innerWidth ${afterScroll.innerWidth}` +
-          (overflow ? `  (+${afterScroll.overflowBy}px)` : ''),
-      );
-      console.log(`  page height   ${afterScroll.scrollHeight}px`);
-      console.log(`  burger/menu   ${afterScroll.burgerDisplay} / ${afterScroll.menuDisplay}`);
-      if (afterScroll.canvases.length) {
-        for (const c of afterScroll.canvases.slice(0, 3)) {
-          console.log(`  canvas        ${c.backing} backing, ${c.css} css, painted=${c.painted}`);
-        }
-      }
-      console.log(`  animations    ${afterScroll.animDone}/${afterScroll.animTargets} triggered after scroll`);
-      console.log(`  carousels     ${afterScroll.carouselsInit} initialised`);
-      console.log(`  images        ${afterScroll.images} (${badImages} broken)`);
-      console.log(`  body font     ${afterScroll.bodyFont} (fonts: ${afterScroll.fontsLoaded})`);
-      console.log(`  h1            ${afterScroll.h1 ?? '(none)'}`);
-
-      if (afterScroll.dupVisibleTextCount) {
-        console.log(
-          `  DUPLICATE visible headings: ${afterScroll.dupVisibleTextCount}` +
-            (liveDupes ? ` (baselined: ${liveDupes})` : ''),
-        );
-        for (const d of afterScroll.dupVisibleText) {
-          console.log(`    x${d.count}  ${d.text}`);
-        }
-      }
-
-      if (hiddenContent.length) {
-        const matched = hiddenContent.length - unexplainedHidden.length;
-        console.log(
-          `  INVISIBLE on-screen content: ${hiddenContent.length} block(s)` +
-            (baselinedSigs
-              ? ` (${matched} matched a live-verified signature, ${unexplainedHidden.length} unexplained)`
-              : baselineHidden
-                ? ` (baselined: ${baselineHidden})`
-                : ''),
-        );
-        for (const h of hiddenContent.slice(0, 5)) {
-          const tag = baselinedSigs && !unexplainedHidden.includes(h) ? '  [baselined]' : '';
-          console.log(`    opacity~0  ${h.size.padEnd(11)} ${h.sel}${tag}`);
-          if (h.text) console.log(`               "${h.text}"`);
-        }
-        console.log(
-          '    ^ these were on screen but transparent. Almost always a scroll-reveal',
-        );
-        console.log(
-          '      class the live site adds at runtime that no effect re-applies. Find it',
-        );
-        console.log(
-          '      with the class-token diff printed by `npm run analyze`.',
-        );
-      }
-
-      if (afterScroll.tooWideCount) {
-        console.log(`  elements wider than viewport: ${afterScroll.tooWideCount}`);
-        for (const el of afterScroll.tooWide) {
-          console.log(`    - ${el.sel}  w=${el.width} right=${el.right}`);
-        }
-      }
-      for (const src of afterScroll.brokenImages) console.log(`    broken: ${src.slice(0, 110)}`);
-      if (consoleErrors.length) {
-        console.log(`  console errors: ${consoleErrors.length}`);
-        for (const e of consoleErrors.slice(0, 4)) console.log(`    ! ${e}`);
-      }
-      if (failedRequests.length) {
-        const unique = [...new Set(failedRequests)];
-        console.log(`  failed requests: ${unique.length}`);
-        for (const r of unique.slice(0, 4)) console.log(`    ! ${r}`);
-      }
-      if (isLocal && remoteRequests.length) {
-        console.log(`  REMOTE requests: ${remoteRequests.length} (replica should be fully self-hosted)`);
-        for (const r of remoteRequests.slice(0, 5)) console.log(`    ! ${r}`);
-      }
-
-      report.targets[target.label][viewport.name] = {
-        viewport,
-        problems,
-        baselined: isBaselined,
-        metrics: afterScroll,
-        hiddenContent,
-        consoleErrors: consoleErrors.slice(0, 10),
-        failedRequests: [...new Set(failedRequests)].slice(0, 10),
-        remoteRequests: remoteRequests.slice(0, 10),
-      };
-    }
-  }
+  const outcomes = await runLanes(
+    tasks,
+    async ({ target, viewport }) => {
+      const outcome = await auditOne(browser, target, viewport, cfg, baseline);
+      // One write per pair keeps concurrent lanes readable.
+      console.log(`\n${outcome.lines.join('\n')}`);
+      return outcome;
+    },
+    lanes,
+  );
 
   await browser.close();
 
+  const report = {
+    generatedAt: new Date().toISOString(),
+    localUrl,
+    lanes,
+    thorough: THOROUGH,
+    targets: {},
+  };
+  for (const t of targets) report.targets[t.label] = {};
+
+  let failures = 0;
+  for (const outcome of outcomes) {
+    if (outcome.failed) failures += 1;
+    if (outcome.entry) report.targets[outcome.target.label][outcome.viewport.name] = outcome.entry;
+  }
+
+  const elapsedS = (Date.now() - startedAt) / 1000;
   report.failures = failures;
   report.pass = failures === 0;
+  report.elapsedSeconds = Number(elapsedS.toFixed(1));
+
   if (JSON_OUT) {
     mkdirSync(paths.scrape, { recursive: true });
     await writeFile(join(paths.scrape, 'viewport-report.json'), JSON.stringify(report, null, 2));
@@ -518,7 +648,8 @@ async function main() {
 
   console.log(
     `\n${'='.repeat(76)}\n${failures === 0 ? 'PASS' : 'FAIL'}: ` +
-      `${failures} local viewport(s) with problems out of ${viewports.length}\n`,
+      `${failures} local viewport(s) with problems out of ${viewports.length}` +
+      `  (${elapsedS.toFixed(1)}s, ${lanes} lane(s))\n`,
   );
   process.exit(failures === 0 ? 0 : 1);
 }

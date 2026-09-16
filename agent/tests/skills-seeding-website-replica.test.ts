@@ -171,6 +171,89 @@ describe('bundled skill "website-replica" asset upgrades are per-file', () => {
   })
 })
 
+/** Regression for the check ORDER inside seedSkillAssets, from a real install. A fix made live in a
+ *  seeded skill (the multi-token `rel="shortcut icon"` fix in assets.mjs) was later ported into the
+ *  bundled template, leaving that install's file byte-identical to the new bundled content while its
+ *  recorded hash still said "edited". Deciding "edited" before "already current" would keep
+ *  re-reporting the stale hash and silently exclude that one file from every future update, so a
+ *  coincidental match must be re-adopted as pristine — without weakening the never-clobber contract
+ *  for a file that genuinely differs. */
+describe('bundled skill "website-replica" re-adopts an edit that already matches the new bundled content', () => {
+  let tempRoot: string
+  const OLD_SKILL_MD = '---\nname: website-replica\ndescription: an older shipped version\n---\n\nOld body.\n'
+  const STALE_RECORDED = 'the older bundled bytes, from before the fix was ported\n'
+  const CUSTOMIZED = 'export const MY_OWN_TWEAK = true\n'
+  const ADOPTED_REL = 'template/scripts/lib/assets.mjs'
+  const EDITED_REL = 'template/app/lib/reveal.ts'
+
+  beforeAll(async () => {
+    tempRoot = await mkdtemp(join(tmpdir(), 'klenny-skills-seed-website-replica-readopt-'))
+    homeMockState.homeDir = tempRoot
+
+    const { BUNDLED_SKILLS } = await import('../src/main/agent/skills/bundledSkills')
+    const bundled = BUNDLED_SKILLS[SKILL]
+    const dir = skillDirFor(tempRoot)
+    await mkdir(join(dir, 'template', 'scripts', 'lib'), { recursive: true })
+    await mkdir(join(dir, 'template', 'app', 'lib'), { recursive: true })
+    await writeFile(join(dir, 'SKILL.md'), OLD_SKILL_MD, 'utf8')
+
+    // The crux: on disk, this file already equals the CURRENT bundled content...
+    await writeFile(join(dir, ADOPTED_REL), bundled.assets![ADOPTED_REL], 'utf8')
+    // ...while a genuinely-customized neighbour must still be protected.
+    await writeFile(join(dir, EDITED_REL), CUSTOMIZED, 'utf8')
+
+    await writeFile(
+      seedStatePathFor(tempRoot),
+      JSON.stringify(
+        {
+          skills: {
+            [SKILL]: {
+              version: 0,
+              hash: hashContent(OLD_SKILL_MD),
+              // ...but the record says we last wrote something else, i.e. "the user edited both".
+              assetHashes: {
+                [ADOPTED_REL]: hashContent(STALE_RECORDED),
+                [EDITED_REL]: hashContent(STALE_RECORDED)
+              }
+            }
+          }
+        },
+        null,
+        2
+      ),
+      'utf8'
+    )
+
+    const { __resetSeedStateForTests } = await import('../src/main/agent/skills/manager')
+    __resetSeedStateForTests()
+  })
+
+  afterAll(async () => {
+    await rm(tempRoot, { recursive: true, force: true })
+  })
+
+  test('a coincidentally-matching file is re-recorded as pristine, while a real edit stays protected', async () => {
+    const { listSkills } = await import('../src/main/agent/skills/manager')
+    const { BUNDLED_SKILLS } = await import('../src/main/agent/skills/bundledSkills')
+    await listSkills()
+
+    const bundled = BUNDLED_SKILLS[SKILL]
+    const dir = skillDirFor(tempRoot)
+    const state = await readSeedState(tempRoot)
+
+    // Its content was already correct, so it is untouched either way.
+    expect(await readFile(join(dir, ADOPTED_REL), 'utf8')).toBe(bundled.assets![ADOPTED_REL])
+    // The actual point: its RECORD is now the true hash, so future versions reach this file again.
+    expect(state.skills[SKILL].assetHashes[ADOPTED_REL]).toBe(hashContent(bundled.assets![ADOPTED_REL]))
+    expect(state.skills[SKILL].assetHashes[ADOPTED_REL]).not.toBe(hashContent(STALE_RECORDED))
+
+    // Control: the never-clobber contract is unchanged for a file that genuinely differs from both
+    // the record and the bundled content.
+    expect(await readFile(join(dir, EDITED_REL), 'utf8')).toBe(CUSTOMIZED)
+    expect(state.skills[SKILL].assetHashes[EDITED_REL]).toBe(hashContent(STALE_RECORDED))
+  })
+})
+
 describe('bundled skill "website-replica" repairs a partially-written template', () => {
   let tempRoot: string
   const PRISTINE_REL = 'template/package.json'

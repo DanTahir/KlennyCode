@@ -75,10 +75,14 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   with every install — `BUNDLED_SKILLS` entries `{content, version, legacyVariants, assets?}`,
   seeded by `seedBundledSkills()` into `~/.klenny/skills/<name>/` with per-skill `{version, hash}`
   in `skills-seed-state.json` (re-seeded on a version bump only if unedited; a skill the user
-  *deletes* stays deleted). Skills may carry **multi-file assets**: `website-replica`'s 35-file
+  *deletes* stays deleted). Skills may carry **multi-file assets**: `website-replica`'s 36-file
   template is written by `seedSkillAssets()` with *per-file* edit detection
   (`SeedRecord.assetHashes`). A deleted *asset* is rewritten (unlike a deleted skill) — template
-  internals aren't user-facing units.
+  internals aren't user-facing units. Inside `seedSkillAssets` the **check order is load-bearing**:
+  "on disk already equals what we're about to write" is tested *before* "differs from what we last
+  wrote", so a fix made live inside an install and later ported into the bundle is re-adopted as
+  pristine rather than pinned as edited and silently cut off from every future update (the real
+  case: `assets.mjs` during the v6 port). A genuine edit differs from both and is still preserved.
 - **Checkpoint-based long tasks**: auto-pause every N steps (`turnCheckpointSteps`) with one-click
   Continue — bounds runaway turns without stopping prematurely.
 - **Live-progress checklists** (`create_checklist`/`update_checklist`): for any multi-step task,
