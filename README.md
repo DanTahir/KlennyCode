@@ -179,7 +179,7 @@ custom subagents, global memory (`KLENNY.md` + auto-memory notes), and the agent
 on the host the way you, the logged-in user running Klenny Code, can (not limited to the open
 project). A relative path still resolves against the current workspace as before, and with no
 path at all grep/glob still default to the workspace root. `write_file`/`edit_file`/
-`multi_edit`/`multi_write`/`delete_file` are otherwise sandboxed to the currently open workspace (or an
+`multi_edit`/`multi_write`/`parallel_write`/`delete_file` are otherwise sandboxed to the currently open workspace (or an
 Assistant tab's Documents directory) — mutation doesn't reach outside the project/folder you
 have open — **except** for two always-allowed global directories: `~/.klenny/` (global
 memory/skills/subagents/`SOUL.md`) and Klenny Code's own Electron `userData` directory
@@ -199,6 +199,27 @@ into this one" — just by passing an absolute path from `list_projects`. `read_
 project's memory notes instead of the current one. There is still no cross-project write/edit or
 memory write — the agent can only ever modify files or write memory for the project you
 currently have open.
+
+### Parallel content generation
+
+`parallel_write` writes several **unrelated** files at once. Tool *execution* was already
+parallel, but token *generation* wasn't: inside a single assistant message the model produces
+three file bodies one after another. `parallel_write` takes N independent jobs
+(`{kind: 'write' | 'edit', paths, instructions}`) and fans them out to N concurrent single-shot
+completions on that tab's own model, so the bodies are generated simultaneously.
+
+The main model emits only a small *spec* per job. Bulk content — existing file bodies for edit
+jobs, plus any shared context files — is read from disk by Klenny Code and referred to by path,
+so it never passes through the model's output budget; that also removes the main cause of
+truncated tool-call arguments on large batches. Each job gets its own approval card with its own
+diff once its content exists, and the tool call can't resolve (so the agent can't move on) until
+every job has been approved or rejected.
+
+Dependent, coordinated changes still belong in `multi_edit`/`multi_write` — `parallel_write` jobs
+are independent by contract, and two jobs naming the same file is a hard error raised before any
+money is spent. Worth knowing: rejecting a job still costs its generation, because content has to
+exist before a diff can be shown. Available in coding tabs only — not in plan mode, Assistant
+tabs, or subagents.
 
 ### Personal Assistant
 

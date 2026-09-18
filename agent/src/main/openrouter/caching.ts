@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { ModelInfo } from '@shared/types'
 import type { ChatMessage, ContentPart } from './client'
 
@@ -58,6 +59,176 @@ export function computeCacheSavings(
     usage.completionTokens * model.completionPrice
   const costWithoutCacheUsd = Math.max(noCacheCost, 0)
   return { costWithoutCacheUsd, cacheSavingsUsd: costWithoutCacheUsd - usage.costUsd }
+}
+
+// ---------- Cache priming for concurrent fan-out (parallel_write) ----------
+//
+// parallel_write sends N worker requests at once that share a byte-identical system prompt. A
+// provider writes its cache when a request *completes*, so firing all N concurrently means every
+// one of them misses and pays the full prefix. "Priming" sends one throwaway request (maxTokens:
+// 1) with that same prefix first, so the N workers read a cache instead of each writing one.
+//
+// Whether that is actually worth doing is arithmetic, not judgement — hence shouldPrimeCache
+// below rather than a hand-flipped constant. An extra request is real money, and a priming
+// request that doesn't produce cache hits is pure waste, so the gate is deliberately biased
+// toward NOT priming: every precondition must pass and the projected saving must clear a margin.
+
+/** Providers ignore a cache breakpoint on a prefix below roughly this size (Anthropic's documented
+ *  minimum cacheable prefix is ~1024 tokens for most models), so priming one cannot pay off. */
+export const MIN_CACHEABLE_PREFIX_TOKENS = 1024
+
+/** Required projected saving before spending an extra request. Guards against priming on a
+ *  knife-edge where our token estimate being slightly wrong would flip the decision to a loss. */
+export const PRIMING_MARGIN = 0.15
+
+/** How long we assume a just-written ephemeral cache entry stays readable. Deliberately under the
+ *  ~5 minute ephemeral TTL Anthropic documents, so we err toward "assume still cached" (skip
+ *  priming) rather than paying a second write premium for a prefix that is in fact still warm. */
+export const PREFIX_CACHE_TTL_MS = 4 * 60 * 1000
+
+/** Fraction of the shared prefix at least one worker must report as a cache read before we accept
+ *  that priming worked on this model. Well below 1.0 because providers report cached tokens with
+ *  their own block granularity, so an exact match is not expected. */
+const PRIMING_EFFECTIVE_READ_RATIO = 0.5
+
+/** Rough token count for a prompt prefix. Chars/4 is the standard crude estimate; it only needs to
+ *  be good enough to compare against MIN_CACHEABLE_PREFIX_TOKENS and to scale both sides of the
+ *  cost comparison identically (where the estimate cancels out entirely). */
+export function estimatePrefixTokens(text: string): number {
+  return Math.ceil(text.length / 4)
+}
+
+/** Stable identity for a shared prefix, used only as a local map key to remember that we already
+ *  sent this exact prefix recently. */
+export function hashPrefix(text: string): string {
+  return createHash('sha1').update(text).digest('hex')
+}
+
+/**
+ * Models for which priming demonstrably did nothing, learned at runtime and remembered for the
+ * life of the process.
+ *
+ * Mirrors `reasoningRejectedModels` in client.ts, and for the same hard-won reason: a recovery or
+ * optimization path that re-fires every single time despite never working is strictly worse than
+ * never having attempted it. One wasted priming request per model per process is an acceptable
+ * price for discovering this empirically; one per call forever is not.
+ */
+const cachePrimingIneffective = new Set<string>()
+
+/** Shared prefixes we've already sent, and when — a prefix still inside PREFIX_CACHE_TTL_MS is
+ *  assumed warm, making a priming request a pure loss. */
+const prefixSentAt = new Map<string, number>()
+
+export function markCachePrimingIneffective(modelId: string): void {
+  cachePrimingIneffective.add(modelId)
+}
+
+export function isCachePrimingIneffective(modelId: string): boolean {
+  return cachePrimingIneffective.has(modelId)
+}
+
+export function notePrefixSent(prefixHash: string, at: number = Date.now()): void {
+  prefixSentAt.set(prefixHash, at)
+}
+
+export function prefixLastSentAt(prefixHash: string): number | null {
+  return prefixSentAt.get(prefixHash) ?? null
+}
+
+/** Test-only: clears both pieces of process-lived priming state. */
+export function resetCachePrimingState(): void {
+  cachePrimingIneffective.clear()
+  prefixSentAt.clear()
+}
+
+/**
+ * Did a primed batch actually read from the cache?
+ *
+ * Called with each worker's reported `cachedTokens`. If not one worker read a meaningful share of
+ * the shared prefix back, the priming request bought nothing on this model/provider and the model
+ * should be marked ineffective. An empty array means we have no evidence either way (e.g. the
+ * provider reported no usage at all) and is deliberately NOT treated as failure — absence of
+ * telemetry is not proof of absence of caching.
+ */
+export function primingLookedIneffective(cachedTokensPerWorker: number[], prefixTokens: number): boolean {
+  if (cachedTokensPerWorker.length === 0) return false
+  if (prefixTokens <= 0) return false
+  const best = Math.max(...cachedTokensPerWorker)
+  return best < prefixTokens * PRIMING_EFFECTIVE_READ_RATIO
+}
+
+export interface PrimingDecisionInput {
+  model: ModelInfo
+  /** estimated size of the prefix shared byte-for-byte by every worker in this batch */
+  prefixTokens: number
+  /** number of concurrent worker requests that will share that prefix */
+  jobCount: number
+  /** when this exact prefix was last sent, or null if never (see prefixLastSentAt) */
+  prefixLastSentAt: number | null
+  now: number
+  /** whether priming has already been observed to do nothing for this model */
+  ineffective: boolean
+}
+
+/** `reason` is always populated — it's logged next to the `[cache]` lines during the one-time
+ *  empirical validation, and asserted on in tests so a precondition can't silently stop firing. */
+export interface PrimingDecision {
+  prime: boolean
+  reason: string
+  /** projected cost of fanning out cold, in USD, for the shared prefix only */
+  unprimedCostUsd: number
+  /** projected cost of one write plus N reads of that prefix, in USD */
+  primedCostUsd: number
+}
+
+/**
+ * Pure decision: should we spend one extra request to warm the shared prefix before fanning out?
+ *
+ * Kept free of clocks, I/O and module state (everything arrives via `input`) so the whole decision
+ * table can be unit-tested, which is the point — this replaces a human reading logs and flipping a
+ * constant with something a regression test can pin.
+ */
+export function shouldPrimeCache(input: PrimingDecisionInput): PrimingDecision {
+  const { model, prefixTokens, jobCount } = input
+  // Cost of the shared prefix only; per-job content is unaffected by priming either way, so it
+  // cancels out and is deliberately excluded from both sides.
+  const readPrice = model.cacheReadPrice ?? model.promptPrice
+  // A null cacheWritePrice means the provider publishes no write premium (implicit-only or free
+  // writes) — charge the base prompt price rather than assuming free, so the gate never arms on
+  // an optimistic guess about pricing we don't actually have.
+  const writePrice = model.cacheWritePrice ?? model.promptPrice
+  const unprimedCostUsd = jobCount * prefixTokens * model.promptPrice
+  const primedCostUsd = prefixTokens * writePrice + jobCount * prefixTokens * readPrice
+  const decided = (prime: boolean, reason: string): PrimingDecision => ({ prime, reason, unprimedCostUsd, primedCostUsd })
+
+  if (!Number.isFinite(jobCount) || jobCount < 2) {
+    return decided(false, 'only one job — a priming request would add a request without amortizing over anyone')
+  }
+  if (!modelSupportsCaching(model)) {
+    return decided(false, 'model publishes no cache-read price, so there is no cache to prime')
+  }
+  if (!model.supportsExplicitCaching) {
+    return decided(false, 'model caches implicitly; we control no breakpoint here, so priming behaviour is unverifiable')
+  }
+  if (!Number.isFinite(prefixTokens) || prefixTokens < MIN_CACHEABLE_PREFIX_TOKENS) {
+    return decided(false, `shared prefix is ~${prefixTokens} tokens, below the ${MIN_CACHEABLE_PREFIX_TOKENS}-token minimum cacheable prefix`)
+  }
+  if (input.ineffective) {
+    return decided(false, 'priming previously produced no cache reads on this model')
+  }
+  if (input.prefixLastSentAt != null && input.now - input.prefixLastSentAt < PREFIX_CACHE_TTL_MS) {
+    return decided(false, 'this exact prefix was sent recently and is assumed still cached, so priming would pay a second write premium for nothing')
+  }
+  if (primedCostUsd > unprimedCostUsd * (1 - PRIMING_MARGIN)) {
+    return decided(
+      false,
+      `projected saving too small: priming costs ${primedCostUsd.toExponential(2)} vs ${unprimedCostUsd.toExponential(2)} cold, under the ${Math.round(PRIMING_MARGIN * 100)}% margin`
+    )
+  }
+  return decided(
+    true,
+    `priming projected to cost ${primedCostUsd.toExponential(2)} vs ${unprimedCostUsd.toExponential(2)} cold across ${jobCount} workers`
+  )
 }
 
 /**

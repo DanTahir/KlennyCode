@@ -121,7 +121,7 @@ export function getToolDefinitions(
       function: {
         name: 'multi_edit',
         description:
-          'Batch multiple edit_file-style replacements, across one file or several, into a single call needing only one approval. Prefer this over separate edit_file calls whenever you already know all the changes you want to make. Validated as one all-or-nothing batch (if any old_string fails to match, nothing is written); edits apply in order, so a later edit can target text an earlier one just produced. Each edit follows edit_file\'s own rules: old_string must match file contents exactly (read_file first, no line-number prefixes). Top-level `path` is an optional default for any edit entry that omits its own `path`, so a batch can still span multiple files by giving those entries their own.',
+          'Batch multiple edit_file-style replacements, across one file or several, into a single call needing only one approval. Prefer this over separate edit_file calls whenever you already know all the changes you want to make. Validated as one all-or-nothing batch (if any old_string fails to match, nothing is written); edits apply in order, so a later edit can target text an earlier one just produced. Each edit follows edit_file\'s own rules: old_string must match file contents exactly (read_file first, no line-number prefixes). Top-level `path` is an optional default for any edit entry that omits its own `path`, so a batch can still span multiple files by giving those entries their own. One more routing rule: if you are about to issue more than one multi_edit/multi_write call in a single turn because the changes are UNRELATED to each other, send one parallel_write instead with one job per batch — that generates the batches concurrently rather than one after another inside your reply. Keep using multi_edit for a single coordinated change, however many files it touches.',
         parameters: {
           type: 'object',
           properties: {
@@ -155,7 +155,7 @@ export function getToolDefinitions(
       function: {
         name: 'multi_write',
         description:
-          'Write or overwrite SEVERAL whole files in one call, needing only one approval — the write-side counterpart to multi_edit. Strongly prefer this over repeated write_file calls whenever you are creating or replacing more than one file (scaffolding a project, generating a set of components/pages, laying down config files): it is validated as one all-or-nothing batch (if any entry is malformed or outside the sandbox, nothing at all is written) and costs a single round-trip instead of one per file. Parent directories are created automatically. Each entry replaces the whole file, so use multi_edit instead when you only want to change part of an existing file.',
+          'Write or overwrite SEVERAL whole files in one call, needing only one approval — the write-side counterpart to multi_edit. Strongly prefer this over repeated write_file calls whenever you are creating or replacing more than one file (scaffolding a project, generating a set of components/pages, laying down config files): it is validated as one all-or-nothing batch (if any entry is malformed or outside the sandbox, nothing at all is written) and costs a single round-trip instead of one per file. Parent directories are created automatically. Each entry replaces the whole file, so use multi_edit instead when you only want to change part of an existing file. One more routing rule: if you are about to issue more than one multi_write/multi_edit call in a single turn because the changes are UNRELATED to each other (e.g. scaffolding several independent modules), send one parallel_write instead with one job per batch — that generates the batches concurrently rather than one after another inside your reply. Keep using multi_write for a single coordinated change, however many files it spans.',
         parameters: {
           type: 'object',
           properties: {
@@ -174,6 +174,65 @@ export function getToolDefinitions(
             }
           },
           required: ['files']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'parallel_write',
+        description:
+          "Generate the contents of several INDEPENDENT file-writing jobs CONCURRENTLY — each job gets its own model request, so the file bodies are written at the same time instead of one after another inside your own reply. Reach for this exactly when you were about to send more than one multi_write/multi_edit call in a single turn for UNRELATED changes, or to scaffold several independent modules: send one job per batch you would otherwise have sent. You emit only a short spec per job (paths + instructions); the harness reads every context file from disk itself, so file contents never consume your own output budget. Each job is reviewed and applied separately, and jobs are isolated — one job failing or being rejected does not affect the others. IMPORTANT: jobs must be genuinely independent. No file may appear in two jobs, and a worker can see NOTHING except its own instructions plus the context files you name — not this conversation, not the other jobs, not their output. Anything coordinated (a change that must land consistently across several files, or where one file's content depends on another's) stays in multi_edit/multi_write, which are unchanged. Costs one model request per job, and because a diff can only be shown after content exists, a job you then reject has still spent its generation. Prefer kind 'edit' over 'write' for files that already exist: fragments cost far fewer tokens than whole files and cannot silently drop code the worker never saw.",
+        parameters: {
+          type: 'object',
+          properties: {
+            shared_context: {
+              type: 'string',
+              description:
+                'Short prose every worker should know: project conventions, invariants, shared contracts. Keep it small — it is sent with every job.'
+            },
+            shared_context_files: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Paths (NOT contents) of reference files every worker should see, e.g. a types module or an existing component to match style against. The harness reads each one once and shares it across jobs.'
+            },
+            jobs: {
+              type: 'array',
+              description:
+                'The independent jobs to run concurrently. Max 6. Each is one batch of files that belong together.',
+              items: {
+                type: 'object',
+                properties: {
+                  label: { type: 'string', description: 'Short human-readable name shown on this job\'s approval card, e.g. "auth middleware".' },
+                  kind: {
+                    type: 'string',
+                    enum: ['write', 'edit'],
+                    description:
+                      "'write' produces each file's complete contents (use for new files, or a genuine full replacement). 'edit' changes parts of files that already exist. Required — never inferred, because treating an intended edit as a write would overwrite the whole file with a from-scratch reconstruction."
+                  },
+                  paths: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description:
+                      'The files this job owns. Must not overlap any other job\'s paths. For kind "edit" every file must already exist.'
+                  },
+                  context_files: {
+                    type: 'array',
+                    items: { type: 'string' },
+                    description: 'Extra reference file paths for THIS job only (read by the harness, not by you).'
+                  },
+                  instructions: {
+                    type: 'string',
+                    description:
+                      'What this job must produce. Be specific and self-contained: the worker sees only this text plus the context files named here, so an under-specified instruction produces a confidently wrong file. Name the interfaces it must conform to, or pass them via context_files.'
+                  }
+                },
+                required: ['kind', 'paths', 'instructions']
+              }
+            }
+          },
+          required: ['jobs']
         }
       }
     },
@@ -1002,6 +1061,7 @@ export function getToolDefinitions(
     'edit_file',
     'multi_edit',
     'multi_write',
+    'parallel_write',
     'delete_file',
     'read_image',
     'generate_image',

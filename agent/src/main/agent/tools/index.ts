@@ -18,6 +18,18 @@ export {
   type MultiWriteOp
 } from './file-ops'
 
+export {
+  parallelWriteTool,
+  MAX_PARALLEL_JOBS,
+  MAX_TOTAL_CONTEXT_CHARS,
+  PARALLEL_JOB_TIMEOUT_MS,
+  type ParallelWriteJob,
+  type ParallelWriteDeps,
+  type WorkerRequest,
+  type WorkerResult,
+  type JobApprovalRequest
+} from './parallel-write'
+
 export { grepTool, globTool } from './search'
 
 export { readImageTool } from './image'

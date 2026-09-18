@@ -344,6 +344,7 @@ export type ToolName =
   | 'create_pawprint'
   | 'update_pawprint'
   | 'read_pawprint_source'
+  | 'parallel_write'
 
 /** Tools that need a real, open coding-project *workspace* to make sense — a shell to run
  *  commands in, or a semantic index built over a specific project — and so remain gated off
@@ -357,7 +358,11 @@ export type ToolName =
  *  `root` parameter and documentsDir.ts. Reads given an absolute path can still reach anywhere
  *  on the host, same as in a project tab; only the *root* differs (documentsDirectory instead of
  *  the open project) and mutations are sandboxed under that root instead of the workspace. */
-export const CODING_ONLY_TOOLS: ToolName[] = ['run_command', 'read_terminal', 'codebase_search']
+/*  parallel_write IS in this list, unlike the other file tools. It fans out concurrent paid model
+ *  requests and applies their output with one approval per job; that only makes sense against a
+ *  real codebase, and an Assistant tab has no project conventions for a blind worker to match.
+ *  Scope decision, not a capability gap — see its doc comment in tools/parallel-write.ts. */
+export const CODING_ONLY_TOOLS: ToolName[] = ['run_command', 'read_terminal', 'codebase_search', 'parallel_write']
 
 /** The single multiplexed browser-automation tool (action-addressed: open/navigate/snapshot/
  *  click/etc — see agent/tools/browser.ts). Doesn't fit CODING_ONLY_TOOLS (no file/workspace
@@ -475,6 +480,7 @@ export const MUTATING_TOOLS: ToolName[] = [
   'edit_file',
   'multi_edit',
   'multi_write',
+  'parallel_write',
   'delete_file',
   'write_docx',
   'edit_docx',
@@ -503,6 +509,12 @@ export type PendingActionKind =
   | 'edit_file'
   | 'multi_edit'
   | 'multi_write'
+  /** One JOB of a parallel_write call, not the whole call: a single parallel_write queues several
+   *  of these, each with its own diff, and none of them is the tool call itself. Unlike every
+   *  other kind here the approval is requested from *inside* the tool (after that job's content
+   *  has been generated), never by loop.ts's pre-dispatch gate — there is nothing to show a human
+   *  before generation has happened. */
+  | 'parallel_write'
   | 'delete_file'
   | 'write_docx'
   | 'edit_docx'

@@ -35,8 +35,27 @@ import { resolveDocumentsDirectory } from '../../documentsDir'
 import { globalKlennyDir, userDataDir } from '../../dataDir'
 import { getWorkspace } from '../../workspace'
 import { sessionStore } from '../../session/store'
-import { streamChatCompletion, fetchModels, type ToolCall, type ReasoningDetail } from '../../openrouter/client'
-import { modelSupportsCaching, computeCacheSavings } from '../../openrouter/caching'
+import {
+  streamChatCompletion,
+  fetchModels,
+  type ToolCall,
+  type ReasoningDetail,
+  // Aliased: loop.ts's own `ChatMessage` is the app-level message type from @shared/types, while
+  // this is the OpenRouter wire shape that streamChatCompletion actually takes.
+  type ChatMessage as ORChatMessage
+} from '../../openrouter/client'
+import {
+  modelSupportsCaching,
+  computeCacheSavings,
+  shouldPrimeCache,
+  estimatePrefixTokens,
+  hashPrefix,
+  notePrefixSent,
+  prefixLastSentAt,
+  markCachePrimingIneffective,
+  isCachePrimingIneffective,
+  primingLookedIneffective
+} from '../../openrouter/caching'
 import { getToolDefinitions } from '../tools/definitions'
 import {
   readFileTool,
@@ -56,7 +75,10 @@ import {
   fetchUrlTool,
   readImageTool,
   generateImageTool,
-  type GenerateImageToolArgs
+  type GenerateImageToolArgs,
+  parallelWriteTool,
+  type WorkerRequest,
+  type JobApprovalRequest
 } from '../tools/index'
 import { browserTool, isBrowserActionMutating, buildBrowserApprovalPreview } from '../tools/browser'
 import { disposeSession as disposeBrowserSession } from '../../browser/manager'
@@ -754,6 +776,10 @@ export async function agentLoop(
           model: settings.imageModel,
           spendingCapUsd: settings.spendingCapUsd,
           spendingCapPeriod: settings.spendingCapPeriod
+        },
+        {
+          spendingCapUsd: settings.spendingCapUsd,
+          spendingCapPeriod: settings.spendingCapPeriod
         }
       )
     )
@@ -951,6 +977,18 @@ interface ImageGenDispatch {
   spendingCapPeriod: 'session' | 'daily'
 }
 
+/**
+ * The slice of AppSettings parallel_write's dispatch case needs. Kept separate from
+ * ImageGenDispatch — which is specifically the *image model* slice — even though both happen to
+ * carry the spend cap, so neither tool's dispatch has to know about the other's settings. Both are
+ * filled from the same loadSettings() snapshot at the single executeTool call site, so every tool
+ * in one turn still sees one consistent view.
+ */
+interface ParallelWriteDispatch {
+  spendingCapUsd: number | null
+  spendingCapPeriod: 'session' | 'daily'
+}
+
 async function executeTool(
   tc: ToolCall,
   tab: TabSession,
@@ -966,7 +1004,8 @@ async function executeTool(
   shellId?: string | null,
   browserAutomation?: BrowserAutomationSettings,
   docxAvailableInCoding?: boolean,
-  imageGen?: ImageGenDispatch
+  imageGen?: ImageGenDispatch,
+  parallelWrite?: ParallelWriteDispatch
 ): Promise<{ payload: ToolResultPayload; status: ToolCallBlock['status'] }> {
   let args: Record<string, unknown> = {}
   try {
@@ -1093,6 +1132,10 @@ async function executeTool(
     }
   }
 
+  // parallel_write is deliberately ABSENT from this list. At this point its content does not exist
+  // yet — there is nothing to diff or show a human until its workers have generated something — so
+  // it requests approval from inside the tool instead, once per job, through the injected
+  // approve() callback. Listing it here would queue a second, contentless approval card per call.
   if (['write_file', 'edit_file', 'multi_edit', 'multi_write', 'delete_file', 'write_docx', 'edit_docx', 'generate_image', 'run_command'].includes(name)) {
     // 'manual': everything needs review. 'command': only run_command needs review — file edits
     // are auto-applied like 'auto' mode. 'auto': nothing needs review.
@@ -1189,7 +1232,11 @@ async function executeTool(
       browserAutomation,
       onToolProgress,
       fileRoot,
-      imageGen
+      imageGen,
+      parallelWrite,
+      // parallel_write queues its own approval cards from inside the tool, so unlike every other
+      // tool it needs this call's id to attach them to.
+      tc.id
     )
     return { payload, status: payload.ok ? 'success' : 'error' }
   } catch (e) {
@@ -1218,7 +1265,12 @@ async function dispatchTool(
    *  previewMutatingTool above. undefined means "use the open project workspace". */
   fileRoot?: string,
   /** Only generate_image uses this; see ImageGenDispatch. */
-  imageGen?: ImageGenDispatch
+  imageGen?: ImageGenDispatch,
+  /** Only parallel_write uses this; see ParallelWriteDispatch. */
+  parallelWrite?: ParallelWriteDispatch,
+  /** Only parallel_write uses this — it builds its own per-job PendingActions and needs the
+   *  owning tool call's id to hang them off. */
+  toolCallId?: string
 ): Promise<ToolResultPayload> {
   switch (name) {
     case 'read_file':
@@ -1232,6 +1284,173 @@ async function dispatchTool(
       )
     case 'multi_edit':
       return multiEditFileTool(args as unknown as { edits: MultiEditOp[]; path?: string }, fileRoot)
+    case 'parallel_write': {
+      // Subagents are excluded by this RUNTIME check, not by the allow-lists. Plan mode omits
+      // parallel_write from planAllowed and Assistant tabs omit it via CODING_ONLY_TOOLS, but a
+      // subagent *type* can declare `tools: 'all'` (general-purpose does), so allow-lists alone
+      // would let it through — and subagent runs force approvalMode 'auto' (effectiveApprovalMode
+      // in agentLoop), which would apply every worker's output with nobody reviewing any of it,
+      // on top of nesting paid fan-out inside an already-delegated run. Blocked outright rather
+      // than silently degraded, mirroring ALWAYS_BLOCKED_TOOLS's subagent branch in executeTool.
+      if (unattended) {
+        return {
+          ok: false,
+          summary:
+            'parallel_write is not available inside a subagent — its per-job approval needs an interactive human, and subagent runs force auto-approval. Use multi_write/multi_edit here, or report back to the parent task.',
+          error: 'unsupported_in_subagent'
+        }
+      }
+      if (!parallelWrite || !toolCallId) {
+        return { ok: false, summary: 'parallel_write is not available in this context', error: 'not_configured' }
+      }
+      const workerModelInfo = models.find((m) => m.id === tab.model)
+      if (!workerModelInfo) {
+        return {
+          ok: false,
+          summary: `No model metadata for ${tab.model}, so worker token limits and cache pricing can't be resolved`,
+          error: 'not_configured'
+        }
+      }
+      // Same reasoning as generate_image's check directly below: checkSpendCap otherwise runs only
+      // at turn start (turn-lifecycle.ts), so a single turn could fan out many paid generations
+      // before the next check ever happens. It throws after emitting spend_blocked, and
+      // executeTool's try/catch turns that into a normal failed tool result rather than tearing
+      // down the turn.
+      checkSpendCap(tab, parallelWrite.spendingCapUsd, parallelWrite.spendingCapPeriod)
+
+      const workerMaxTokens = workerModelInfo.maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS
+
+      // Attributes one worker's (or the primer's) usage exactly like a chat turn's, so the cap
+      // checked above, the tab total and the Cost Report all account for the fan-out. Without
+      // this, N paid requests would be invisible to the very cap they just passed.
+      const attributeWorkerUsage = (usage: {
+        promptTokens: number
+        completionTokens: number
+        cachedTokens: number
+        cacheWriteTokens: number
+        costUsd: number
+      }): void => {
+        const { costWithoutCacheUsd, cacheSavingsUsd } = computeCacheSavings(workerModelInfo, usage)
+        tab.totalCostUsd += usage.costUsd
+        tab.totalSavingsUsd = (tab.totalSavingsUsd ?? 0) + Math.max(cacheSavingsUsd, 0)
+        trackDailySpend(usage.costUsd)
+        recordUsage(getWorkspace(), tab.model, { ...usage, costWithoutCacheUsd, cacheSavingsUsd })
+        emit({
+          type: 'spend_update',
+          tabId: tab.id,
+          totalCostUsd: tab.totalCostUsd,
+          totalSavingsUsd: tab.totalSavingsUsd,
+          capUsd: parallelWrite.spendingCapUsd
+        })
+      }
+
+      const runWorkerRequest = async (
+        systemPrompt: string,
+        userContent: string,
+        reqSignal: AbortSignal,
+        maxTokens: number
+      ): Promise<{ text: string; cachedTokens: number }> => {
+        const messages: ORChatMessage[] = [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userContent }
+        ]
+        let text = ''
+        let cachedTokens = 0
+        for await (const chunk of streamChatCompletion({
+          apiKey,
+          model: tab.model,
+          messages,
+          signal: reqSignal,
+          supportsExplicitCaching: workerModelInfo.supportsExplicitCaching,
+          // Only the shared system prefix carries a breakpoint: the per-job user content is unique
+          // by construction, so marking it would spend a breakpoint on a guaranteed miss. Same
+          // call runUtilityPrompt makes for the same reason.
+          includeLastMessageCacheBreakpoint: false,
+          maxTokens
+          // Deliberately absent: `tools` (omitting the ~40-tool schema block is the single largest
+          // input saving available here) and any reasoning field (workers transcribe rather than
+          // plan, so reasoning tokens would be pure cost — see client.ts's 3-way reasoning logic,
+          // which sends no `reasoning` field at all when neither option is passed).
+        })) {
+          if (chunk.type === 'text' && chunk.text) text += chunk.text
+          if (chunk.type === 'usage' && chunk.usage) {
+            cachedTokens = chunk.usage.cachedTokens
+            attributeWorkerUsage(chunk.usage)
+          }
+          if (chunk.type === 'error') throw new Error(chunk.error ?? 'worker request failed')
+        }
+        return { text, cachedTokens }
+      }
+
+      // Carried across the prime -> fan-out -> effectiveness-learning sequence.
+      let primedPrefixTokens = 0
+      let didPrime = false
+
+      return parallelWriteTool(args, {
+        root: fileRoot,
+        signal,
+        onProgress: onToolProgress,
+        generate: async (req: WorkerRequest) =>
+          runWorkerRequest(req.systemPrompt, req.userContent, req.signal, workerMaxTokens),
+        prime: async (systemPrompt: string, jobCount: number) => {
+          const prefixTokens = estimatePrefixTokens(systemPrompt)
+          const prefixHash = hashPrefix(systemPrompt)
+          const decision = shouldPrimeCache({
+            model: workerModelInfo,
+            prefixTokens,
+            jobCount,
+            prefixLastSentAt: prefixLastSentAt(prefixHash),
+            now: Date.now(),
+            ineffective: isCachePrimingIneffective(tab.model)
+          })
+          console.log(
+            `[cache] parallel_write priming ${decision.prime ? 'ARMED' : 'skipped'} (${jobCount} jobs, ~${prefixTokens} prefix tokens): ${decision.reason}`
+          )
+          // Recorded whether or not we prime: the workers are about to send this prefix either
+          // way, so a FOLLOWING parallel_write sharing the same context must see it as warm and
+          // not pay a second write premium for nothing.
+          notePrefixSent(prefixHash)
+          if (!decision.prime) return false
+          primedPrefixTokens = prefixTokens
+          try {
+            // maxTokens 1: the point is to make the provider read and cache the prefix, not to
+            // generate anything. The user content just has to be non-empty.
+            await runWorkerRequest(systemPrompt, 'ready', signal, 1)
+            didPrime = true
+            return true
+          } catch (e) {
+            // Priming is a pure optimization — degrade to a cold fan-out, never fail the call.
+            console.log(
+              `[cache] parallel_write priming request failed, continuing cold: ${e instanceof Error ? e.message : String(e)}`
+            )
+            return false
+          }
+        },
+        onPrimingUsage: (cachedTokensPerWorker: number[]) => {
+          if (!didPrime) return
+          if (primingLookedIneffective(cachedTokensPerWorker, primedPrefixTokens)) {
+            markCachePrimingIneffective(tab.model)
+            console.log(
+              `[cache] parallel_write priming produced no cache reads on ${tab.model} — not priming it again this process`
+            )
+          }
+        },
+        approve: async (req: JobApprovalRequest) => {
+          const fileCount = req.paths.length
+          const title = `${req.kind === 'edit' ? 'Edit' : 'Write'} ${fileCount} file${fileCount === 1 ? '' : 's'} — ${req.label}`
+          // N actions deliberately share one toolCallId, exactly as N concurrent write_file calls
+          // already produce today: nothing downstream keys off toolCallId, and ChatPane renders
+          // every pending action for the tab.
+          const action = approvalManager.buildPendingFromTool(tab.id, toolCallId, 'parallel_write', title, {
+            diff: req.diff
+          })
+          emit({ type: 'pending_action', tabId: tab.id, action })
+          const decision = await approvalManager.waitForDecision(action.id)
+          emit({ type: 'pending_action_resolved', tabId: tab.id, actionId: action.id })
+          return decision === 'reject' ? 'reject' : 'approve'
+        }
+      })
+    }
     case 'multi_write':
       return multiWriteFileTool(args as { files?: unknown; path?: unknown; content?: unknown }, fileRoot)
     case 'delete_file':

@@ -78,6 +78,59 @@ export async function readTextForDiff(abs: string): Promise<{ exists: boolean; t
   }
 }
 
+/** A planned, validated change to exactly one file, ready to be written. Both planMultiEdit and
+ *  planMultiWrite produce this shape (plus their own extra bookkeeping fields), so the write
+ *  phase below can be shared by every batch-ish writer. */
+export interface PlannedFileApply {
+  path: string
+  abs: string
+  eol: Eol
+  newContent: string
+}
+
+/** The one and only place a planned change is written to disk.
+ *
+ *  Centralized specifically because of the fileReadCache update below. A caller that reuses
+ *  planMultiEdit/planMultiWrite but reimplements its own writeFile loop leaves this cache holding
+ *  the file's PRE-write content and mtime, so the next edit_file/multi_edit targeting that path
+ *  fails with a spurious 'stale' error (cached mtime no longer matches disk). The bug is
+ *  invisible in the turn that writes and only surfaces a turn later, which makes it exactly the
+ *  kind of thing that must not be left to each caller to remember. */
+export async function applyPlannedFile(f: PlannedFileApply, opts?: { mkdirs?: boolean }): Promise<void> {
+  if (opts?.mkdirs) await mkdir(dirname(f.abs), { recursive: true })
+  await writeFile(f.abs, fromLf(f.newContent, f.eol), 'utf8')
+  const st = await stat(f.abs)
+  fileReadCache.set(f.abs, { mtimeMs: st.mtimeMs, content: f.newContent })
+}
+
+/** Reads a file's LF-normalized text together with the mtime it had at that moment, plus its EOL
+ *  convention.
+ *
+ *  The paired mtime is the entire point. A caller that reads content now and writes much later —
+ *  parallel_write reads context, spends many seconds generating, then waits for a human approval
+ *  decision before writing — needs to verify the file didn't change underneath it in between.
+ *  fileReadCache's own staleness check cannot cover that window: it only fires when a cache entry
+ *  already exists for the path, so a file first read during this very call has nothing to compare
+ *  against. */
+export async function readWithMtime(abs: string): Promise<{ content: string; mtimeMs: number; eol: Eol } | null> {
+  try {
+    const raw = await readFile(abs, 'utf8')
+    const st = await stat(abs)
+    return { content: toLf(raw), mtimeMs: st.mtimeMs, eol: detectEol(raw) }
+  } catch {
+    return null
+  }
+}
+
+/** Current mtime of a path, or null when it doesn't exist / can't be stat'd. */
+export async function currentMtimeMs(abs: string): Promise<number | null> {
+  try {
+    return (await stat(abs)).mtimeMs
+  } catch {
+    return null
+  }
+}
+
 /** `root`, when given, overrides the open-project workspace as the base a relative path
  *  resolves against and (for mutations, via `assertInRoot` below) the sandbox boundary. Used
  *  for Assistant-tab calls, which pass AppSettings.documentsDirectory (resolved once by the
@@ -223,7 +276,7 @@ export interface MultiEditOp {
   replace_all?: boolean
 }
 
-interface PlannedFileEdit {
+export interface PlannedFileEdit {
   path: string
   abs: string
   eol: Eol
@@ -248,7 +301,7 @@ interface PlanMultiEditError {
  *  file is written. Returns either the per-file plan (nothing written yet) or the first failure
  *  encountered, with enough context to report which edit/file it was.
  */
-async function planMultiEdit(
+export async function planMultiEdit(
   edits: MultiEditOp[],
   checkStale: boolean,
   root?: string
@@ -432,9 +485,7 @@ export async function multiEditFileTool(
   const diffs: string[] = []
   let totalEdits = 0
   for (const f of changed) {
-    await writeFile(f.abs, fromLf(f.newContent, f.eol), 'utf8')
-    const st = await stat(f.abs)
-    fileReadCache.set(f.abs, { mtimeMs: st.mtimeMs, content: f.newContent })
+    await applyPlannedFile(f)
     diffs.push(makeDiff(f.oldContent, f.newContent, f.path))
     totalEdits += f.editCount
   }
@@ -477,7 +528,7 @@ export interface MultiWriteOp {
   content: string
 }
 
-interface PlannedFileWrite {
+export interface PlannedFileWrite {
   path: string
   abs: string
   eol: Eol
@@ -675,7 +726,7 @@ export function normalizeFilesArg(
  *  previous contents first (same reasoning as writeFileTool, which also skips the stale guard).
  *  Duplicate paths within one batch are collapsed last-write-wins, keyed by resolved absolute
  *  path so 'a.ts' and './a.ts' count as the same file. */
-async function planMultiWrite(
+export async function planMultiWrite(
   files: MultiWriteOp[],
   root?: string
 ): Promise<{ ok: true; files: PlannedFileWrite[] } | PlanMultiWriteError> {
@@ -774,10 +825,7 @@ export async function multiWriteFileTool(
   const written: PlannedFileWrite[] = []
   const diffs: string[] = []
   for (const f of plan.files) {
-    await mkdir(dirname(f.abs), { recursive: true })
-    await writeFile(f.abs, fromLf(f.newContent, f.eol), 'utf8')
-    const st = await stat(f.abs)
-    fileReadCache.set(f.abs, { mtimeMs: st.mtimeMs, content: f.newContent })
+    await applyPlannedFile(f, { mkdirs: true })
     written.push(f)
     diffs.push(makeDiff(f.oldContent, f.newContent, f.path))
   }

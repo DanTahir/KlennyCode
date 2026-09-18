@@ -71,7 +71,12 @@ const LONG_VALUE_KEYS = [
   'code',
   'prompt',
   'summary',
-  'description'
+  'description',
+  // parallel_write's per-job prose. Same hazard as `content`: an instruction routinely names
+  // files ('write the handler at "path": "src/api/users.ts" ...'), and 'path' is a TARGET_KEY,
+  // so leaving it unstripped would show a path the call doesn't actually own as the target.
+  'instructions',
+  'shared_context'
 ]
 
 /** Generic fallback order for "what is this call about", most identifying first. */
@@ -100,6 +105,11 @@ const TOOL_KEY_PREFERENCE: Record<string, string[]> = {
   run_command: ['command'],
   browser: ['url', 'action'],
   task: ['agent_type'],
+  // parallel_write's identifying text is a job LABEL, not a top-level path: its own args carry no
+  // `path` key at all (paths are nested under jobs[]), so the generic order would find nothing
+  // and the card would show only the tool name. Deliberately not a BATCH_TOOLS member — its args
+  // are small specs rather than the bulk payload, so there is no per-file write to track through.
+  parallel_write: ['label', 'path'],
   gmail_send_message: ['to'],
   web_search: ['query'],
   fetch_url: ['url']

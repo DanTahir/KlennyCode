@@ -1,6 +1,22 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test, beforeEach } from 'bun:test'
 import type { ModelInfo } from '@shared/types'
-import { isExplicitCacheFamily, modelSupportsCaching, computeCacheSavings, applyCacheControl } from '../src/main/openrouter/caching'
+import {
+  isExplicitCacheFamily,
+  modelSupportsCaching,
+  computeCacheSavings,
+  applyCacheControl,
+  shouldPrimeCache,
+  primingLookedIneffective,
+  estimatePrefixTokens,
+  hashPrefix,
+  notePrefixSent,
+  prefixLastSentAt,
+  markCachePrimingIneffective,
+  isCachePrimingIneffective,
+  resetCachePrimingState,
+  MIN_CACHEABLE_PREFIX_TOKENS,
+  PREFIX_CACHE_TTL_MS
+} from '../src/main/openrouter/caching'
 import type { ChatMessage, ContentPart } from '../src/main/openrouter/client'
 
 describe('isExplicitCacheFamily', () => {
@@ -282,5 +298,121 @@ describe('applyCacheControl', () => {
       .filter((i) => i >= 0)
     // system (0) and the breakpoint (2) only — the reserved last slot (3) must never get marked.
     expect(marked).toEqual([0, 2])
+  })
+})
+
+// parallel_write fans N workers out concurrently over one byte-identical shared prefix, so on a
+// cold prefix every worker misses the cache and writes it. Priming = one extra maxTokens:1 request
+// to warm it first. Whether that pays off is pure arithmetic over pricing already on ModelInfo,
+// and it lives in a tested function precisely because it is easy to get backwards by eyeballing:
+// the saving GROWS with N, since the single write premium amortizes across more readers.
+describe('shouldPrimeCache', () => {
+  // Anthropic-shaped ratios: cache write 1.25x the base prompt price, cache read 0.1x.
+  const anthropicish: ModelInfo = {
+    id: 'anthropic/claude-sonnet-5',
+    name: 'Test',
+    contextLength: 200_000,
+    promptPrice: 0.000001,
+    completionPrice: 0.000005,
+    cacheReadPrice: 0.0000001,
+    cacheWritePrice: 0.00000125,
+    supportsExplicitCaching: true,
+    supportsTools: true,
+    supportsReasoning: false,
+    supportsVision: false,
+    supportsEmbeddings: false
+  }
+
+  const ask = (over: Partial<Parameters<typeof shouldPrimeCache>[0]> = {}) =>
+    shouldPrimeCache({
+      model: anthropicish,
+      prefixTokens: 4000,
+      jobCount: 3,
+      prefixLastSentAt: null,
+      now: 1_000_000,
+      ineffective: false,
+      ...over
+    })
+
+  test('primes for a cold, large-enough prefix shared by 2+ workers', () => {
+    const out = ask({ jobCount: 2 })
+    expect(out.prime).toBe(true)
+    expect(out.primedCostUsd).toBeLessThan(out.unprimedCostUsd)
+  })
+
+  test('never primes a single job — there is no one to amortize the write premium over', () => {
+    const out = ask({ jobCount: 1 })
+    expect(out.prime).toBe(false)
+    expect(out.reason).toContain('one job')
+  })
+
+  test('the projected saving grows with job count (the direction that is easy to get backwards)', () => {
+    const ratio = (n: number) => {
+      const d = ask({ jobCount: n })
+      return d.primedCostUsd / d.unprimedCostUsd
+    }
+    expect(ratio(2)).toBeGreaterThan(ratio(3))
+    expect(ratio(3)).toBeGreaterThan(ratio(8))
+    for (const n of [2, 3, 6, 8]) expect(ask({ jobCount: n }).prime).toBe(true)
+  })
+
+  test('does not prime a model that publishes no cache-read price', () => {
+    const out = ask({ model: { ...anthropicish, cacheReadPrice: null } })
+    expect(out.prime).toBe(false)
+    expect(out.reason).toContain('cache-read price')
+  })
+
+  test('does not prime an implicit-caching model, where we control no breakpoint', () => {
+    const out = ask({ model: { ...anthropicish, supportsExplicitCaching: false } })
+    expect(out.prime).toBe(false)
+    expect(out.reason).toContain('implicitly')
+  })
+
+  test('does not prime below the provider minimum cacheable prefix (a breakpoint there is ignored)', () => {
+    expect(ask({ prefixTokens: MIN_CACHEABLE_PREFIX_TOKENS - 1 }).prime).toBe(false)
+    expect(ask({ prefixTokens: MIN_CACHEABLE_PREFIX_TOKENS }).prime).toBe(true)
+  })
+
+  test('does not prime a model already observed to gain nothing from priming', () => {
+    const out = ask({ ineffective: true })
+    expect(out.prime).toBe(false)
+    expect(out.reason).toContain('no cache reads')
+  })
+
+  test('does not prime a prefix sent inside the assumed-warm TTL, but does once it has expired', () => {
+    const now = 1_000_000
+    expect(ask({ now, prefixLastSentAt: now - (PREFIX_CACHE_TTL_MS - 1000) }).prime).toBe(false)
+    expect(ask({ now, prefixLastSentAt: now - (PREFIX_CACHE_TTL_MS + 1000) }).prime).toBe(true)
+  })
+
+  // Negative controls: the gate must be driven by the arithmetic, not by "caching is on".
+  test('does not prime when the write premium is too expensive to recover', () => {
+    const pricey: ModelInfo = { ...anthropicish, cacheWritePrice: 0.000003, cacheReadPrice: 0.0000009 }
+    const out = ask({ model: pricey, jobCount: 2 })
+    expect(out.prime).toBe(false)
+    expect(out.primedCostUsd).toBeGreaterThan(out.unprimedCostUsd)
+  })
+
+  test('does not prime on a knife-edge saving that the margin exists to reject', () => {
+    // primed/unprimed lands at ~0.9 — a real saving, but inside the margin where our crude token
+    // estimate being slightly wrong would flip it into a loss.
+    const knifeEdge: ModelInfo = { ...anthropicish, cacheWritePrice: 0.00000125, cacheReadPrice: 0.000000275 }
+    const out = ask({ model: knifeEdge, jobCount: 2 })
+    expect(out.primedCostUsd).toBeLessThan(out.unprimedCostUsd)
+    expect(out.prime).toBe(false)
+    expect(out.reason).toContain('margin')
+  })
+
+  test('a missing cacheWritePrice is charged at the base prompt price, never assumed free', () => {
+    const out = ask({ model: { ...anthropicish, cacheWritePrice: null }, jobCount: 2 })
+    // 1.0 write + 2 x 0.1 read = 1.2 vs 2.0 cold — still worth it, but priced honestly.
+    expect(out.primedCostUsd).toBeCloseTo(4000 * 0.000001 + 2 * 4000 * 0.0000001, 12)
+  })
+
+  test('always reports both projected costs, even when declining to prime', () => {
+    const out = ask({ jobCount: 1 })
+    expect(out.unprimedCostUsd).toBeGreaterThan(0)
+    expect(out.primedCostUsd).toBeGreaterThan(0)
+    expect(out.reason.length).toBeGreaterThan(0)
   })
 })

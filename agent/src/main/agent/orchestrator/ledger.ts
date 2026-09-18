@@ -61,6 +61,7 @@ const WRITE_TOOLS: ReadonlySet<string> = new Set<ToolName>([
   'edit_file',
   'multi_edit',
   'multi_write',
+  'parallel_write',
   'write_docx',
   'edit_docx',
   'generate_image',
@@ -179,6 +180,27 @@ function collectPathsFromArgs(toolName: string, args: Record<string, unknown>, i
   } else if (files && typeof files === 'object') {
     // path -> content map form: the keys are the paths.
     for (const key of Object.keys(files as Record<string, unknown>)) push(key)
+  }
+  // parallel_write nests its paths one level deeper, as jobs[].paths. It genuinely writes those
+  // files, so without this branch every file it creates would be hard-flagged by C3 as an artifact
+  // that no write targeted — the same false-positive class the multi_write branch above exists to
+  // prevent. Mirrors normalizeJobsArg's tolerance (tools/parallel-write.ts) for the shapes a model
+  // actually sends: a jobs array, a single unwrapped job, or the whole thing JSON-encoded.
+  let rawJobs = args.jobs ?? args.job
+  if (typeof rawJobs === 'string') {
+    try {
+      rawJobs = JSON.parse(rawJobs) as unknown
+    } catch {
+      rawJobs = undefined
+    }
+  }
+  const jobList = Array.isArray(rawJobs) ? rawJobs : rawJobs && typeof rawJobs === 'object' ? [rawJobs] : []
+  for (const job of jobList) {
+    if (!job || typeof job !== 'object') continue
+    const rec = job as Record<string, unknown>
+    const jobPaths = rec.paths ?? rec.path ?? rec.files ?? rec.file
+    if (typeof jobPaths === 'string') push(jobPaths)
+    else if (Array.isArray(jobPaths)) for (const p of jobPaths) push(p)
   }
 }
 
