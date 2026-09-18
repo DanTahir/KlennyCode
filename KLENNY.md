@@ -211,29 +211,33 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
 
 ## Non-obvious gotchas worth knowing before touching these areas
 
-- **Prompt caching: never mark a message INTERIOR to a cached prefix.** `applyCacheControl`
-  (`openrouter/caching.ts`) marks exactly two positions — the system message (fixed forever) and
-  the advancing breakpoint (the *second*-to-last message, since the true last is reserved for the
-  volatile trailing note). It used to **also** re-mark the previous request's breakpoint as
-  "insurance" against implicit cross-request lookback being unreliable through OpenRouter, and
-  that insurance *was* the bug: a `cache_control` marker's presence is part of the cached prefix's
-  identity upstream, and because the re-marked position advances every request, every block got
-  written with an interior marker that was gone by the time the next request tried to read it — so
-  the newest block was re-written at the 1.25x write premium every single turn instead of being
-  read at 0.1x. Measured ladder (Opus 5, one conversation, consecutive requests, via the new `bp=`
-  prefix fingerprints): r1 `cached=0 write=133399` wrote prefix@40; r2 `cached=133399 write=2094`
-  HIT @40 and wrote prefix@44 *with* an interior marker at 40; r3 `cached=133399 write=6393`
-  **MISS @44** (that marker now gone), fell back to @40; r4 `cached=134593 write=6216` **MISS
-  @47**. r3 is also the positive proof the insurance was never needed — it read prefix@40 back
-  *exactly* (133399 tokens) at a position it had **not** marked, where index 40 was an unmarked
-  bare string, i.e. implicit lookback does find the longest previously-written prefix unaided.
-  Three corollaries worth keeping: (1) the provider normalizes both the string-vs-parts container
-  **and** the boundary block's own marker, so the systematic `-62`-char shape flip at the previous
-  breakpoint is real in our bytes but benign — only *interior* churn matters; (2) content was
-  never the problem, the content-only hash was byte-identical at every repeated index
-  (#40/#44/#47/#49) across all five requests; (3) diagnose this only from real `[cache]` lines
-  (readable in-process via `read_app_log`), never from unit tests — they cannot see upstream
-  matching behavior, which is why a plausible-sounding "fix" survived here for so long.
+- **Prompt caching: the advancing cache breakpoint must never land on a `tool` message.**
+  `applyCacheControl` (`openrouter/caching.ts`) marks exactly two positions — the system message
+  (fixed forever) and the advancing breakpoint (the *second*-to-last message, since the true last
+  is reserved for the volatile trailing note) — and walks that advancing one backwards off any
+  `tool`-role message. Across every live `[cache]` ladder measured so far (two sessions, 12
+  rungs), the **boundary role predicts the outcome perfectly** and nothing else correlates at all:
+  - `assistant` boundary → **exact** read-back, every time: old-r2 (#40) read 133399 = r1's whole
+    write; old-r5 (#49) read 140809 = r4's cached+write; new-r2 (#33) read 134396 = r1's write.
+  - `tool` boundary → **miss or partial**, every time: old-r3 (#44), old-r4 (#47), old-r6 (#52),
+    old-r7 (#55), new-r3 (#36 — fell back to the older assistant-boundary block at #33, short by
+    exactly r2's 6944-token write).
+
+  A `tool` message is translated into an Anthropic `tool_result` block inside a user turn, so a
+  breakpoint there appears never to produce a matchable entry — though the write is still billed.
+  This is also the mechanism behind the "every-other-turn double-write" recorded earlier:
+  breakpoints were landing on tool messages roughly half the time. **Two theories died here
+  first, each of which looked compelling and cost a build:** (1) *"an interior `cache_control`
+  marker invalidates the prefix"* — refuted by old-r5, which read its block back exactly while
+  interior index 47 had lost its marker (the same systematic `-62`-char flip), so interior churn
+  is benign; (2) *"the string-vs-parts shape flip at the boundary breaks the match"* — refuted by
+  all three assistant-boundary hits, which matched exactly *across* that flip. Content was never
+  involved: the content-only hash was byte-identical at every repeated index in both sessions. We
+  also no longer re-mark the previous breakpoint (pure churn, no measurable benefit, and implicit
+  lookback demonstrably finds the longest written prefix unaided) — but **removing it alone did
+  not fix the shortfall**, which is exactly why this must only ever be diagnosed from real
+  `[cache]` lines (`read_app_log` + `cacheDiag.ts`'s `bp=` fingerprints), never from unit tests,
+  which cannot see upstream matching behavior.
 - **Never merge `thinking` into assistant `content` — it few-shots the model into serial tool
   calling.** Replaying private reasoning as assistant *content* presents it as something the model
   said out loud, so its own history reads as a worked example of "think a paragraph, narrate a
@@ -514,14 +518,17 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
 
 ## Known open follow-ups (not yet implemented)
 
-- Live re-verification of the prompt-cache interior-marker fix. The code change is done, tested
-  and built, but the *upstream* effect has not yet been observed on a fresh ladder — that needs an
-  app restart on the new build, then `read_app_log` with `filter: '[cache]'`. Prediction to check:
-  `cached(n+1) == cached(n) + write(n)` on every rung (shortfall ~0), versus the pre-fix ladder
-  where r3 and r4 fell short by 2094 and ~5199 tokens. Also note Anthropic allows **4** explicit
-  breakpoints and we now use only **2**; adding the compaction-summary system message (index 1) is
-  safe *because its position is fixed*, but any new breakpoint must obey the invariant — fixed
-  positions only, never an advancing interior one.
+- Live verification of the prompt-cache **tool-boundary** fix. Status: the first live ladder
+  already *disproved* the earlier interior-marker fix (new-r3 still fell short by exactly r2's
+  6944-token write), which is what produced the boundary-role finding now in the gotchas. The
+  tool-skip change is written, unit-tested and built, but its upstream effect has **not** yet been
+  observed — that needs an app restart, then `read_app_log` with `filter: '[cache]'`. Prediction
+  to check: `cached(n+1) == cached(n) + write(n)` on every rung (shortfall ~0), and `bp=` should
+  now show an `assistant`/`user` role at every advancing breakpoint, never `tool`. If a tool-role
+  boundary still appears in the log, the walk-back isn't firing. Also note Anthropic allows **4**
+  explicit breakpoints and we use only **2**; adding the compaction-summary system message
+  (index 1) is safe *because its position is fixed*, but any new breakpoint must obey both
+  invariants — fixed positions only, and never on a `tool` message.
 
 - Compaction-summary manual reset (UX + IPC) — a user-facing "reset conversation summary" button for
   recovery if a summary ever ends up wrong. Not required for the poisoning fix (that's done); purely

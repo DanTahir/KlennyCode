@@ -284,6 +284,38 @@ describe('applyCacheControl', () => {
     expect(markedIndices(applyCacheControl(longer, true, true, 'note'))).toEqual([0, 4])
   })
 
+  // Live `[cache]` ladders showed one perfect correlation across 12 rungs: every exact read-back
+  // had an assistant-role boundary, and every miss had a tool-role boundary. A `tool` message is
+  // translated into an Anthropic `tool_result` block inside a user turn, so a breakpoint there
+  // appears never to produce a matchable entry. The advancing breakpoint therefore walks back off
+  // tool messages — see applyCacheControl's doc comment for the measured table.
+  test('walks the advancing breakpoint back off a tool message', () => {
+    const endsWithToolRun: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Calling tools' },
+      { role: 'tool', content: 'result A', tool_call_id: 'a' },
+      { role: 'tool', content: 'result B', tool_call_id: 'b' },
+      { role: 'user', content: 'note-bearing slot' }
+    ]
+    // trailingNote reserves index 5, so the raw breakpoint is index 4 — a tool message. It has to
+    // walk back past BOTH parallel tool results to the assistant message at index 2.
+    expect(markedIndices(applyCacheControl(endsWithToolRun, true, true, 'note'))).toEqual([0, 2])
+    // Without a trailingNote the raw breakpoint is index 5, already a user message — left alone.
+    expect(markedIndices(applyCacheControl(endsWithToolRun, true, true))).toEqual([0, 5])
+  })
+
+  test('a tool-only history degrades to the system breakpoint rather than marking a tool message', () => {
+    const allTools: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'tool', content: 'result A', tool_call_id: 'a' },
+      { role: 'tool', content: 'result B', tool_call_id: 'b' }
+    ]
+    // Walking back lands on the system message itself, where `breakpointIdx > systemIdx` fails —
+    // so only the system breakpoint is marked, never a tool message.
+    expect(markedIndices(applyCacheControl(allTools, true, true))).toEqual([0])
+  })
+
   // The invariant stated the way it actually matters: as a conversation grows request after
   // request, the marker set INSIDE an already-cached prefix must never change, or the block
   // cached at that prefix stops matching and its tokens get re-written at the write premium.

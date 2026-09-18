@@ -237,11 +237,11 @@ export function shouldPrimeCache(input: PrimingDecisionInput): PrimingDecision {
  * current "advancing" breakpoint position, which is deliberately the SECOND-TO-LAST message, not
  * the true last one. Cache-marking is skipped entirely (no-op) when `enabled` is false.
  *
- * LOAD-BEARING INVARIANT: no message strictly between the system message and the advancing
- * breakpoint is ever marked. A marker's presence is part of a cached prefix's identity upstream,
- * so an *interior* marker that exists when a block is written and is gone when that block is read
- * invalidates it. See "Why we do NOT re-mark the previous position" below — this is the whole
- * reason the newest cache block used to be re-written on every single request.
+ * LOAD-BEARING INVARIANT: the advancing breakpoint never lands on a `tool` message. That is the
+ * one thing live evidence shows actually determines whether a written block can be read back
+ * again — see the measured role table below. (Secondarily, nothing strictly between the system
+ * message and the advancing breakpoint is marked either; that is cheap hygiene rather than a
+ * correctness requirement, and it leaves 2 of Anthropic's 4 breakpoint slots spare.)
  *
  * Why second-to-last, and not the last message: `trailingNote` (a live, per-request value like
  * the current date/time) is appended to the true last message on every request. If that same
@@ -258,28 +258,34 @@ export function shouldPrimeCache(input: PrimingDecisionInput): PrimingDecision {
  * caching worked before a "current date/time" note existed at all: there was nothing to append,
  * so the last message's shape was inherently stable turn to turn.
  *
- * Why we do NOT re-mark the previous position: this function used to also re-mark wherever the
- * previous request's breakpoint landed, as insurance against implicit cross-request lookback
- * being unreliable through OpenRouter. That insurance was itself the bug. Because the re-marked
- * position advances every request, every block got written WITH an interior marker that was gone
- * by the time the next request tried to read it — so the newest block never matched and its
- * delta was re-written at the 1.25x write premium instead of being read at 0.1x.
+ * Why the breakpoint must skip `tool` messages: measured with per-breakpoint prefix fingerprints
+ * (see cacheDiag.ts) across two real Opus 5 sessions, 12 consecutive-request rungs. The role of
+ * the boundary message predicts the outcome perfectly, and nothing else correlates at all:
  *
- * Measured with per-breakpoint prefix fingerprints (see cacheDiag.ts) over one real Opus 5
- * conversation, consecutive requests:
+ *   boundary role   rungs                                    outcome
+ *   assistant       old-r2 (#40), old-r5 (#49), new-r2 (#33)  EXACT read-back, every time
+ *   tool            old-r3 (#44), old-r4 (#47), old-r6 (#52), MISS or partial, every time
+ *                   old-r7 (#55), new-r3 (#36)
  *
- *   rid  cached     write    what happened
- *   r1   0          133399   wrote prefix@40 (no interior markers)
- *   r2   133399     2094     HIT @40; wrote prefix@44 *with* an interior marker at index 40
- *   r3   133399     6393     MISS @44 (that interior marker was gone); fell back to @40
- *   r4   134593     6216     MISS @47 (interior marker at 44 now gone)
+ * e.g. new-r2 read prefix@33 back exactly (134396 = r1's whole write) off an assistant boundary,
+ * while new-r3 could not read prefix@36 off a tool boundary at all and fell back to the older
+ * assistant-boundary block at #33 — short by exactly r2's 6944-token write. A `tool` message is
+ * translated into an Anthropic `tool_result` block inside a user turn, so a breakpoint there
+ * appears never to produce a matchable cache entry (the write is still billed). This is also the
+ * mechanism behind the "every-other-turn double-write" noted earlier in project memory:
+ * breakpoints were landing on tool messages roughly half the time.
  *
- * r3 is also the positive proof the insurance was never needed: it read prefix@40 back exactly
- * (133399 tokens) at a position it had NOT marked, where index 40 was an unmarked bare string —
- * i.e. implicit lookback does find the longest previously-written prefix on its own, and the
- * provider normalizes both the string-vs-parts container and the boundary block's own marker.
- * Content itself was never the problem: the content-only hash was byte-identical at every
- * repeated index (#40, #44, #47, #49) across all five requests.
+ * TWO THEORIES THIS REFUTES, both of which looked compelling and cost a release each:
+ *   1. "An interior cache_control marker invalidates the prefix." Refuted by old-r5, which read
+ *      its block back EXACTLY (140809 = r4's cached+write) while interior index 47 had lost its
+ *      marker — the same systematic -62-char flip. Interior churn is benign.
+ *   2. "The string-vs-parts shape flip at the boundary breaks the match." Refuted by all three
+ *      assistant-boundary hits, which matched exactly ACROSS that flip.
+ * Content was never involved either: the content-only hash was byte-identical at every repeated
+ * index in both sessions. Note that we also no longer re-mark the previous breakpoint (it was
+ * pure churn for no measurable benefit, and implicit lookback demonstrably finds the longest
+ * written prefix unaided) — but removing it alone did NOT fix the shortfall. Only the boundary
+ * role did. Never diagnose this from unit tests; they cannot see upstream matching behavior.
  *
  * `includeLastMessageBreakpoint` should be false on the very first request of a
  * conversation/subagent run, since there's nothing yet to read back from a cache write.
@@ -314,11 +320,32 @@ export function applyCacheControl(
     // that split matters: a message that's marked with cache_control on one turn and then
     // replayed with a different shape (note present vs. absent) on the next breaks caching for
     // the whole conversation, so the note and the mark must never land on the same message.
-    const breakpointIdx = trailingNote ? lastIdx - 1 : lastIdx
+    const rawBreakpointIdx = trailingNote ? lastIdx - 1 : lastIdx
+
+    // ...and it must not land on a `tool` message — see the role table in the doc comment above.
+    // A tool-role boundary has never once produced a readable cache entry across 12 measured
+    // rungs, so walk back to the nearest non-tool message (past a whole run of parallel tool
+    // results if need be).
+    //
+    // What this costs, precisely: nothing is EXCLUDED from caching, it is DEFERRED by exactly one
+    // request. A breakpoint is a prefix cut, so marking the assistant message still caches
+    // everything through it — including that message's own `tool_calls.arguments`, which is where
+    // a big write/edit payload actually lives (see toORMessages in agent/messages.ts). Only the
+    // trailing tool results fall outside this request's cut, and the next request's breakpoint
+    // advances past them, so they are cached from then on. Since a token is always uncached on
+    // its first appearance anyway, the true loss is one extra full-price pass over that final
+    // batch. It is bounded but not always small: each tool result is capped at 40_000 chars
+    // (~10k tokens) by compactToolResult, so a wide parallel fan-out can defer tens of thousands
+    // of tokens by one request. Still strictly cheaper than a tool-boundary breakpoint, which
+    // billed the 1.25x write premium and then re-paid the whole delta every single turn because
+    // the entry was never readable. If this ever needs to be tightened, the measurable signal is
+    // already in the log: `breakpointsAt` vs `messages` in the `[cache] request` line gives the
+    // walk-back distance directly.
+    let breakpointIdx = rawBreakpointIdx
+    while (breakpointIdx > systemIdx && out[breakpointIdx].role === 'tool') breakpointIdx--
 
     // Nothing else is ever marked: these two positions are the system message (fixed forever) and
-    // the tail. Every message in between stays unmarked on every request, which is what keeps an
-    // already-cached prefix byte-stable enough to be matched again.
+    // the tail. Every message in between stays unmarked on every request.
     if (includeLastMessageBreakpoint && breakpointIdx > systemIdx) {
       out[breakpointIdx] = withCacheControlOnLastPart(out[breakpointIdx])
     }
