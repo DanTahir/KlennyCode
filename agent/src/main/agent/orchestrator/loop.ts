@@ -136,8 +136,7 @@ import {
   type SubagentContext,
   throwIfAborted,
   pendingQuestions,
-  questionWaiters,
-  lastCacheBreakpointIdx
+  questionWaiters
 } from './state'
 
 export async function agentLoop(
@@ -223,10 +222,6 @@ export async function agentLoop(
     // to shrink what's sent to the model, not what the user sees in the chat.
     tab.compactionSummary = compacted.summary
     tab.compactedThroughMessageId = compacted.compactedThroughMessageId
-    // Compaction reshuffles wire-message indices (a different prefix is now dropped/replaced by
-    // the summary), so a previously-tracked breakpoint index would silently point at unrelated
-    // content this turn — drop it rather than re-mark the wrong message.
-    lastCacheBreakpointIdx.delete(tab.id)
     await sessionStore.updateTab(tab)
     emit({
       type: 'compaction',
@@ -320,18 +315,12 @@ export async function agentLoop(
   const includeLastMessageCacheBreakpoint = tab.messages.some((m) => m.id !== assistantId && m.usage)
   const supportsExplicitCaching =
     settings.promptCachingEnabled && modelInfo.supportsExplicitCaching && modelSupportsCaching(modelInfo)
-  const priorCacheBreakpointIdx = lastCacheBreakpointIdx.get(tab.id)
-  // This request's own breakpoint, so next turn can explicitly re-mark it too — see
-  // applyCacheControl's doc comment for why that beats relying on implicit cross-request
-  // lookback. `currentTimeNote` (passed below) is always non-empty, so applyCacheControl always
-  // reserves the true last wire message for it and marks the message one before that instead —
-  // this must track the exact same index (orMessages.length - 2, not - 1) or a future turn would
-  // re-mark the wrong message. Recorded now (rather than after the call) since orMessages.length
-  // is already final at this point, and both settings.promptCachingEnabled and modelInfo can
-  // change turn to turn — the value is harmless to keep around even if unused this turn.
-  if (includeLastMessageCacheBreakpoint) {
-    lastCacheBreakpointIdx.set(tab.id, orMessages.length - 2)
-  }
+  // NOTE: this request's breakpoint index is deliberately NOT tracked for re-marking next
+  // request. That "insurance" re-mark was the root cause of the newest cache block never being
+  // read back: a cache_control marker interior to a cached prefix is part of that prefix's
+  // identity upstream, so a marker present at write time and absent at read time invalidates the
+  // block. See applyCacheControl's doc comment in openrouter/caching.ts for the measured
+  // `[cache]` ladder (r1-r4) and the proof that implicit lookback finds the prefix unaided.
 
   // Subagents can't spawn nested subagents — there's no UI to surface a deeper
   // level's approvals/questions, and it would risk runaway recursion. The ephemeral Assistant
@@ -375,7 +364,6 @@ export async function agentLoop(
     providerPreference: settings.providerPreference,
     supportsExplicitCaching,
     includeLastMessageCacheBreakpoint,
-    priorCacheBreakpointIdx,
     maxTokens: modelInfo.maxCompletionTokens ?? DEFAULT_MAX_COMPLETION_TOKENS,
     currentTimeNote: await buildCurrentTimeNote(
       tab.kind === 'assistant' ? tab.id : undefined,

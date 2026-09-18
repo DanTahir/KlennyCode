@@ -109,13 +109,14 @@ describe('fingerprintBreakpoints', () => {
   })
 })
 
-// This is the measurement the whole module exists for, expressed against the real
-// applyCacheControl: it documents (does NOT endorse) today's behaviour, where a message marked as
-// the advancing breakpoint reverts from content-part-array form back to a bare string two requests
-// later, because `priorBreakpointIdx` only ever carries ONE request backwards. If a future change
-// stabilizes message shape, the `noMark` assertion here is the one that should be updated — and
-// the `text` assertion should keep passing either way.
-describe('shape stability of a breakpoint across consecutive requests (live behaviour)', () => {
+// The measurement this module exists for, expressed against the real applyCacheControl. Since the
+// interior-marker fix (see caching.ts's doc comment for the measured `[cache]` ladder), the only
+// message whose wire shape ever changes across requests is the previous request's advancing
+// breakpoint — and it changes exactly AT the boundary of the block it wrote, a difference live
+// evidence proved the provider normalizes away (r3 read prefix@40 back exactly, 133399 tokens,
+// while index 40 was an unmarked bare string). Nothing INTERIOR to a cached prefix ever changes,
+// which is the property that keeps blocks matchable.
+describe('shape stability of a cached prefix across consecutive requests (live behaviour)', () => {
   // Simulates the growth pattern of a real turn: each step appends an assistant + tool message,
   // and the trailing note always reserves the true last slot.
   const step = (n: number): ChatMessage[] => {
@@ -127,29 +128,35 @@ describe('shape stability of a breakpoint across consecutive requests (live beha
     return msgs
   }
 
-  test('the marked index is re-marked on the next request, then reverts to a bare string on the one after', () => {
-    // Request A marks its advancing breakpoint at lastIdx-1 of a 6-message wire payload (idx 4).
+  test('everything interior to a written block is byte-identical on the next request', () => {
     const a = applyCacheControl(step(2), true, true, 'note A')
-    const markedIdx = a.length - 2
-    expect(markedIdx).toBe(4)
-    expect(Array.isArray(a[markedIdx].content)).toBe(true)
+    const bpIdx = a.length - 2
+    expect(bpIdx).toBe(4)
+    const b = applyCacheControl(step(3), true, true, 'note B')
 
-    // Request B (one step later) re-marks idx 4 as priorBreakpointIdx, so its shape is preserved.
-    const b = applyCacheControl(step(3), true, true, 'note B', markedIdx)
-    expect(Array.isArray(b[markedIdx].content)).toBe(true)
+    // The prefix strictly inside the block A wrote is untouched on all three hashes — no interior
+    // marker churn, which is exactly what used to break the match.
+    const [fa] = fingerprintBreakpoints(a, [bpIdx - 1])
+    const [fb] = fingerprintBreakpoints(b, [bpIdx - 1])
+    expect(fa.wire).toBe(fb.wire)
+    expect(fa.noMark).toBe(fb.noMark)
+    expect(fa.text).toBe(fb.text)
+  })
 
-    // Request C's prior is now B's own breakpoint, so idx 4 is marked by nobody and reverts to a
-    // bare string — the same message, the same meaning, different wire bytes.
-    const c = applyCacheControl(step(4), true, true, 'note C', b.length - 2)
-    expect(typeof c[markedIdx].content).toBe('string')
+  test('only the boundary message itself loses its marker — the difference shown to be benign', () => {
+    const a = applyCacheControl(step(2), true, true, 'note A')
+    const bpIdx = a.length - 2
+    const b = applyCacheControl(step(3), true, true, 'note B')
 
-    // And that is precisely what the fingerprints localize: identical content, different bytes.
-    const [fb] = fingerprintBreakpoints(b, [markedIdx])
-    const [fc] = fingerprintBreakpoints(c, [markedIdx])
-    expect(fb.text).toBe(fc.text)
-    expect(fb.noMark).not.toBe(fc.noMark)
-    expect(fb.shape).toBe('parts')
-    expect(fc.shape).toBe('str')
+    expect(Array.isArray(a[bpIdx].content)).toBe(true)
+    expect(typeof b[bpIdx].content).toBe('string')
+
+    const [fa] = fingerprintBreakpoints(a, [bpIdx])
+    const [fb] = fingerprintBreakpoints(b, [bpIdx])
+    expect(fa.text).toBe(fb.text)
+    expect(fa.noMark).not.toBe(fb.noMark)
+    expect(fa.shape).toBe('parts')
+    expect(fb.shape).toBe('str')
   })
 })
 

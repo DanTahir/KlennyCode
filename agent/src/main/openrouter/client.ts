@@ -268,10 +268,6 @@ export async function* streamChatCompletion(opts: {
   supportsExplicitCaching?: boolean
   /** skip the advancing cache breakpoint on the very first request of a conversation (nothing to read back yet) */
   includeLastMessageCacheBreakpoint?: boolean
-  /** wire-message index of the previous request's advancing breakpoint for this tab (NOT
-   *  necessarily messages.length - 1 — see applyCacheControl's doc comment for why it's one
-   *  earlier whenever currentTimeNote is set), so it gets explicitly re-marked this request too */
-  priorCacheBreakpointIdx?: number
   /** explicit output token cap, sized generously off the model's own reported max — reduces how
    *  often generations get cut off mid-response/mid-tool-call by provider defaults */
   maxTokens?: number
@@ -285,8 +281,7 @@ export async function* streamChatCompletion(opts: {
     opts.messages,
     Boolean(opts.supportsExplicitCaching),
     opts.includeLastMessageCacheBreakpoint ?? true,
-    opts.currentTimeNote,
-    opts.priorCacheBreakpointIdx
+    opts.currentTimeNote
   )
   // Correlates this request's `[cache] request` line with its later `[cache] usage` line. Two
   // requests overlapping is the normal case (parallel_write fan-out, subagents), and without an
@@ -300,7 +295,7 @@ export async function* streamChatCompletion(opts: {
     // than we cached" from "we sent identical bytes and the provider still didn't read it back" —
     // see cacheDiag.ts's doc comment for the interpretation table.
     console.log(
-      `[cache] request rid=${rid} model=${opts.model} messages=${messages.length} breakpointsAt=${JSON.stringify(breakpointIdxs)} priorIdx=${opts.priorCacheBreakpointIdx ?? 'none'} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint} bp=${formatFingerprints(fingerprintBreakpoints(messages, breakpointIdxs))}`
+      `[cache] request rid=${rid} model=${opts.model} messages=${messages.length} breakpointsAt=${JSON.stringify(breakpointIdxs)} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint} bp=${formatFingerprints(fingerprintBreakpoints(messages, breakpointIdxs))}`
     )
   }
   // Skip reasoning entirely for a model already known to reject it (see reasoningRejectedModels).

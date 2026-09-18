@@ -10,8 +10,10 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
 
 - `agent/` — the app
   - `src/main/` — Electron main: `workspace.ts` (global workspace singleton), `shells.ts`,
-    `terminalLog.ts` (persistent ANSI-stripped log), `settings.ts`, `ipc.ts`, `scheduler/` (cron),
-    `openrouter/` (`client.ts` streaming + summarization, `images.ts`), `codeindex/` (optional
+    `terminalLog.ts` (persistent ANSI-stripped log of the user's PTY), `processLog.ts` (the app's
+    own stdout/stderr + `console.*` capture behind `read_app_log`), `settings.ts`, `ipc.ts`,
+    `scheduler/` (cron), `openrouter/` (`client.ts` streaming + summarization, `caching.ts`
+    breakpoints, `cacheDiag.ts` prefix fingerprints, `images.ts`), `codeindex/` (optional
     semantic search, embeddings + vectra/Pinecone)
   - `src/main/agent/orchestrator/` — the core loop, split up: `system-prompt.ts`, `loop.ts` (turn
     loop + `dispatchTool()`), `state.ts` (per-tab bookkeeping), `turn-lifecycle.ts` (checkpoints,
@@ -50,6 +52,18 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   or a `project` param to inspect *other* known projects, never writing to them.
 - **Integrated terminal**: node-pty panel, one PTY per workspace, a persistent plain-text log read
   via `read_terminal`, and a selectable shell shared with `run_command`.
+- **Self-logging** (`read_app_log` → `main/processLog.ts` + `agent/tools/appLog.ts`): captures the
+  app's **own** main-process stdout/stderr *and* `console.*` into a persistent, ANSI-stripped
+  `process.log` under `userData` — surviving app restarts (marked `=== App session started … ===`)
+  and working in a packaged build with no console attached. Distinct from `read_terminal`, which is
+  what the *user* ran. Its `filter` is a case-insensitive substring applied **before** the line
+  cap, so an old match buried under recent noise is still found; that is what makes pulling
+  `[cache]` lines out of a chatty log practical. Built specifically so the agent can diagnose its
+  own prompt-caching behavior instead of asking the user to paste terminal output — and that is
+  exactly how the interior-marker cache bug (see gotchas) was found. Non-obvious: under **Bun**,
+  `console.log` bypasses `process.stdout.write` entirely (unlike Node/Electron), so both the
+  streams **and** the console methods are patched, with a `suppressStreamCapture` flag preventing
+  double-capture on Node/Electron.
 - **Batch file editing / writing**: `multi_edit` bundles edit_file-style replacements; `multi_write`
   is the write-side counterpart (`files` array of {path, content}). Both all-or-nothing and
   single-approval, sharing the plan/preview/diff shape in `tools/file-ops.ts`. Results carry exactly
@@ -162,6 +176,11 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
 - System prompt: `orchestrator/system-prompt.ts` → `buildSystemPrompt()`. Per-turn dynamic content
   (clock, ledger digest, checklist, Assistant memory) must stay in the always-uncached trailing
   note, never the cached prefix — see the caching gotchas.
+- Prompt caching: `openrouter/caching.ts` → `applyCacheControl()`, which marks exactly two
+  positions (system + advancing breakpoint) and **never** anything interior. Diagnose only from
+  live `[cache]` lines via `read_app_log`, reading `openrouter/cacheDiag.ts`'s `bp=` prefix
+  fingerprints (`wire` / `noMark` / `text`, which separate a marker-only flip from a shape flip
+  from real content change) plus the `rid=` that correlates a request line with its usage line.
 - Turn loop / dispatch: `orchestrator/loop.ts` → the loop and `dispatchTool()` (per-tool switch,
   per-tab approval mode, Assistant-tab coding-tool gate, `Promise.all` parallel dispatch).
 - Turn budget / empty-generation + truncation retries / compaction and audit resumes:
@@ -192,10 +211,29 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
 
 ## Non-obvious gotchas worth knowing before touching these areas
 
-- **Prompt caching needs an explicit re-mark, not just system + last message**: the *previous*
-  turn's last-message cache breakpoint must be re-marked in the *current* wire payload, or
-  Anthropic's lookback misses it through OpenRouter. Verify with `[cache]` logs (breakpointsAt vs.
-  cachedTokens trend) — implicit behavior is unreliable here.
+- **Prompt caching: never mark a message INTERIOR to a cached prefix.** `applyCacheControl`
+  (`openrouter/caching.ts`) marks exactly two positions — the system message (fixed forever) and
+  the advancing breakpoint (the *second*-to-last message, since the true last is reserved for the
+  volatile trailing note). It used to **also** re-mark the previous request's breakpoint as
+  "insurance" against implicit cross-request lookback being unreliable through OpenRouter, and
+  that insurance *was* the bug: a `cache_control` marker's presence is part of the cached prefix's
+  identity upstream, and because the re-marked position advances every request, every block got
+  written with an interior marker that was gone by the time the next request tried to read it — so
+  the newest block was re-written at the 1.25x write premium every single turn instead of being
+  read at 0.1x. Measured ladder (Opus 5, one conversation, consecutive requests, via the new `bp=`
+  prefix fingerprints): r1 `cached=0 write=133399` wrote prefix@40; r2 `cached=133399 write=2094`
+  HIT @40 and wrote prefix@44 *with* an interior marker at 40; r3 `cached=133399 write=6393`
+  **MISS @44** (that marker now gone), fell back to @40; r4 `cached=134593 write=6216` **MISS
+  @47**. r3 is also the positive proof the insurance was never needed — it read prefix@40 back
+  *exactly* (133399 tokens) at a position it had **not** marked, where index 40 was an unmarked
+  bare string, i.e. implicit lookback does find the longest previously-written prefix unaided.
+  Three corollaries worth keeping: (1) the provider normalizes both the string-vs-parts container
+  **and** the boundary block's own marker, so the systematic `-62`-char shape flip at the previous
+  breakpoint is real in our bytes but benign — only *interior* churn matters; (2) content was
+  never the problem, the content-only hash was byte-identical at every repeated index
+  (#40/#44/#47/#49) across all five requests; (3) diagnose this only from real `[cache]` lines
+  (readable in-process via `read_app_log`), never from unit tests — they cannot see upstream
+  matching behavior, which is why a plausible-sounding "fix" survived here for so long.
 - **Never merge `thinking` into assistant `content` — it few-shots the model into serial tool
   calling.** Replaying private reasoning as assistant *content* presents it as something the model
   said out loud, so its own history reads as a worked example of "think a paragraph, narrate a
@@ -475,6 +513,15 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   worker calls were made — the "an invalid call costs nothing" half of the pre-spend guarantee.
 
 ## Known open follow-ups (not yet implemented)
+
+- Live re-verification of the prompt-cache interior-marker fix. The code change is done, tested
+  and built, but the *upstream* effect has not yet been observed on a fresh ladder — that needs an
+  app restart on the new build, then `read_app_log` with `filter: '[cache]'`. Prediction to check:
+  `cached(n+1) == cached(n) + write(n)` on every rung (shortfall ~0), versus the pre-fix ladder
+  where r3 and r4 fell short by 2094 and ~5199 tokens. Also note Anthropic allows **4** explicit
+  breakpoints and we now use only **2**; adding the compaction-summary system message (index 1) is
+  safe *because its position is fixed*, but any new breakpoint must obey the invariant — fixed
+  positions only, never an advancing interior one.
 
 - Compaction-summary manual reset (UX + IPC) — a user-facing "reset conversation summary" button for
   recovery if a summary ever ends up wrong. Not required for the poisoning fix (that's done); purely

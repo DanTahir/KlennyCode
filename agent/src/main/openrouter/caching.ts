@@ -233,10 +233,15 @@ export function shouldPrimeCache(input: PrimingDecisionInput): PrimingDecision {
 
 /**
  * Shapes an outgoing messages array to add Anthropic/Qwen-style explicit `cache_control`
- * breakpoints: one on the system message (stable, reused every turn), one *re-marking* wherever
- * the previous request's breakpoint landed (`priorBreakpointIdx`), and one on the current
- * "advancing" breakpoint position — which is deliberately the SECOND-TO-LAST message, not the
- * true last one. Cache-marking is skipped entirely (no-op) when `enabled` is false.
+ * breakpoints: exactly two — one on the system message (stable, reused every turn) and one on the
+ * current "advancing" breakpoint position, which is deliberately the SECOND-TO-LAST message, not
+ * the true last one. Cache-marking is skipped entirely (no-op) when `enabled` is false.
+ *
+ * LOAD-BEARING INVARIANT: no message strictly between the system message and the advancing
+ * breakpoint is ever marked. A marker's presence is part of a cached prefix's identity upstream,
+ * so an *interior* marker that exists when a block is written and is gone when that block is read
+ * invalidates it. See "Why we do NOT re-mark the previous position" below — this is the whole
+ * reason the newest cache block used to be re-written on every single request.
  *
  * Why second-to-last, and not the last message: `trailingNote` (a live, per-request value like
  * the current date/time) is appended to the true last message on every request. If that same
@@ -253,12 +258,28 @@ export function shouldPrimeCache(input: PrimingDecisionInput): PrimingDecision {
  * caching worked before a "current date/time" note existed at all: there was nothing to append,
  * so the last message's shape was inherently stable turn to turn.
  *
- * Why also re-mark the previous position (`priorBreakpointIdx`): even with the note-vs-breakpoint
- * split above, empirical `[cache]` log evidence (see client.ts) showed a newly-marked breakpoint
- * is not reliably picked up via implicit cross-request lookback through OpenRouter on its own —
- * explicitly re-marking the exact position written last time turns that into a direct breakpoint
- * hit. This is kept as extra insurance on top of the note/breakpoint split; see project notes for
- * whether it's still necessary once the split above is verified to hold on its own.
+ * Why we do NOT re-mark the previous position: this function used to also re-mark wherever the
+ * previous request's breakpoint landed, as insurance against implicit cross-request lookback
+ * being unreliable through OpenRouter. That insurance was itself the bug. Because the re-marked
+ * position advances every request, every block got written WITH an interior marker that was gone
+ * by the time the next request tried to read it — so the newest block never matched and its
+ * delta was re-written at the 1.25x write premium instead of being read at 0.1x.
+ *
+ * Measured with per-breakpoint prefix fingerprints (see cacheDiag.ts) over one real Opus 5
+ * conversation, consecutive requests:
+ *
+ *   rid  cached     write    what happened
+ *   r1   0          133399   wrote prefix@40 (no interior markers)
+ *   r2   133399     2094     HIT @40; wrote prefix@44 *with* an interior marker at index 40
+ *   r3   133399     6393     MISS @44 (that interior marker was gone); fell back to @40
+ *   r4   134593     6216     MISS @47 (interior marker at 44 now gone)
+ *
+ * r3 is also the positive proof the insurance was never needed: it read prefix@40 back exactly
+ * (133399 tokens) at a position it had NOT marked, where index 40 was an unmarked bare string —
+ * i.e. implicit lookback does find the longest previously-written prefix on its own, and the
+ * provider normalizes both the string-vs-parts container and the boundary block's own marker.
+ * Content itself was never the problem: the content-only hash was byte-identical at every
+ * repeated index (#40, #44, #47, #49) across all five requests.
  *
  * `includeLastMessageBreakpoint` should be false on the very first request of a
  * conversation/subagent run, since there's nothing yet to read back from a cache write.
@@ -273,8 +294,7 @@ export function applyCacheControl(
   messages: ChatMessage[],
   enabled: boolean,
   includeLastMessageBreakpoint: boolean,
-  trailingNote?: string,
-  priorBreakpointIdx?: number
+  trailingNote?: string
 ): ChatMessage[] {
   if (messages.length === 0) return messages
   if (!enabled && !trailingNote) return messages
@@ -284,7 +304,6 @@ export function applyCacheControl(
 
   if (enabled) {
     const systemIdx = out.findIndex((m) => m.role === 'system')
-    const markedIdxs = new Set<number>(systemIdx >= 0 ? [systemIdx] : [])
     if (systemIdx >= 0) {
       out[systemIdx] = withCacheControlOnLastPart(out[systemIdx])
     }
@@ -295,25 +314,12 @@ export function applyCacheControl(
     // that split matters: a message that's marked with cache_control on one turn and then
     // replayed with a different shape (note present vs. absent) on the next breaks caching for
     // the whole conversation, so the note and the mark must never land on the same message.
-    // `reservedIdx` is that off-limits note slot (only exists when trailingNote is set) — used
-    // below purely to keep `priorBreakpointIdx` from ever re-marking it by coincidence.
     const breakpointIdx = trailingNote ? lastIdx - 1 : lastIdx
-    const reservedIdx = trailingNote ? lastIdx : undefined
 
-    // Re-mark wherever the previous request left its breakpoint, so this request has a direct
-    // breakpoint hit there instead of relying on cross-request lookback.
-    if (
-      priorBreakpointIdx != null &&
-      priorBreakpointIdx >= 0 &&
-      priorBreakpointIdx > systemIdx &&
-      priorBreakpointIdx !== reservedIdx &&
-      !markedIdxs.has(priorBreakpointIdx)
-    ) {
-      out[priorBreakpointIdx] = withCacheControlOnLastPart(out[priorBreakpointIdx])
-      markedIdxs.add(priorBreakpointIdx)
-    }
-
-    if (includeLastMessageBreakpoint && breakpointIdx > systemIdx && !markedIdxs.has(breakpointIdx)) {
+    // Nothing else is ever marked: these two positions are the system message (fixed forever) and
+    // the tail. Every message in between stays unmarked on every request, which is what keeps an
+    // already-cached prefix byte-stable enough to be matched again.
+    if (includeLastMessageBreakpoint && breakpointIdx > systemIdx) {
       out[breakpointIdx] = withCacheControlOnLastPart(out[breakpointIdx])
     }
   }

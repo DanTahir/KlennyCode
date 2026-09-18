@@ -115,6 +115,12 @@ describe('computeCacheSavings', () => {
   })
 })
 
+/** Indices of every message carrying a cache_control marker, in ascending order. */
+const markedIndices = (msgs: ChatMessage[]): number[] =>
+  msgs
+    .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
+    .filter((i) => i >= 0)
+
 describe('applyCacheControl', () => {
   const messages: ChatMessage[] = [
     { role: 'system', content: 'You are a helpful assistant.' },
@@ -237,20 +243,33 @@ describe('applyCacheControl', () => {
     const breakpointParts = out[2].content as ContentPart[]
     expect(breakpointParts).toEqual([{ type: 'text', text: 'Hi there!', cache_control: { type: 'ephemeral' } }])
 
-    // ...and once this exact message is replayed as history on a later turn (no longer last,
-    // no trailingNote appended to it, freshly rebuilt from storage), re-marking it produces the
-    // exact same shape/content — the breakpoint the model needs to match against.
+    // ...and once this exact message is replayed as history on a later turn (no longer last, no
+    // trailingNote appended to it), it is left completely UNMARKED rather than re-marked. That is
+    // the property that keeps an already-cached prefix matchable — see the interior-marker
+    // regression test below for the measured evidence.
     const laterTurnMessages: ChatMessage[] = [...turn2Messages, { role: 'assistant', content: 'Doing well!' }, { role: 'user', content: 'Great' }]
-    const outLater = applyCacheControl(laterTurnMessages, true, true, 'Current date/time: 12:10:00', 2)
-    expect(outLater[2].content).toEqual(breakpointParts)
+    const outLater = applyCacheControl(laterTurnMessages, true, true, 'Current date/time: 12:10:00')
+    expect(outLater[2].content).toBe('Hi there!')
+    expect(breakpointParts[0].cache_control).toEqual({ type: 'ephemeral' })
   })
 
-  // Regression test for the "cached_tokens never grows past the system prompt" bug: relying on
-  // OpenRouter to find a non-system breakpoint via implicit cross-request lookback never actually
-  // produced a read hit in practice (see the `[cache]` log evidence in client.ts's history), so
-  // every turn re-wrote the entire conversation-since-system from scratch. Explicitly re-marking
-  // the previous turn's breakpoint position fixes this by giving every request a direct hit.
-  test('priorBreakpointIdx re-marks the previous turn\'s breakpoint in addition to the new one', () => {
+  // Regression test for the real "newest cache block is never read back" bug, diagnosed from live
+  // `[cache]` evidence rather than reasoning. This function used to ALSO re-mark the previous
+  // request's breakpoint position, as insurance against implicit cross-request lookback being
+  // unreliable. That insurance WAS the bug: a cache_control marker interior to a cached prefix is
+  // part of that prefix's identity upstream, and since the re-marked position advances every
+  // request, every block was written with an interior marker that had vanished by the time the
+  // next request tried to read it.
+  //
+  // Measured ladder (Opus 5, one conversation, consecutive requests):
+  //   r1  cached=0       write=133399   wrote prefix@40 (no interior markers)
+  //   r2  cached=133399  write=2094     HIT @40, wrote prefix@44 WITH an interior marker at 40
+  //   r3  cached=133399  write=6393     MISS @44 (marker at 40 now gone), fell back to @40
+  //   r4  cached=134593  write=6216     MISS @47 (marker at 44 now gone)
+  //
+  // r3 also proves the insurance was never needed: it read prefix@40 back exactly (133399 tokens)
+  // at a position it had not marked, where index 40 was an unmarked bare string.
+  test('never marks any message between the system prompt and the advancing breakpoint', () => {
     const longer: ChatMessage[] = [
       { role: 'system', content: 'You are a helpful assistant.' },
       { role: 'user', content: 'Hello' },
@@ -259,45 +278,39 @@ describe('applyCacheControl', () => {
       { role: 'assistant', content: 'Following up' },
       { role: 'user', content: 'Great, one more thing' }
     ]
-    // No trailingNote here, so the breakpoint sits on the true last message (index 5) — simulate
-    // turn 3, where turn 2 marked index 3 (a tool result) as its own breakpoint.
-    const out = applyCacheControl(longer, true, true, undefined, 3)
-
-    const marked = out
-      .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
-      .filter((i) => i >= 0)
-    // system (0), the carried-forward prior breakpoint (3), and the new last message (5).
-    expect(marked).toEqual([0, 3, 5])
+    // No trailingNote, so the advancing breakpoint sits on the true last message (index 5).
+    expect(markedIndices(applyCacheControl(longer, true, true))).toEqual([0, 5])
+    // With a trailingNote it sits one earlier (index 4) — still nothing interior.
+    expect(markedIndices(applyCacheControl(longer, true, true, 'note'))).toEqual([0, 4])
   })
 
-  test('priorBreakpointIdx is ignored when it points at the system message or the current last message', () => {
-    const out1 = applyCacheControl(messages, true, true, undefined, 0)
-    const marked1 = out1
-      .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
-      .filter((i) => i >= 0)
-    expect(marked1).toEqual([0, messages.length - 1])
+  // The invariant stated the way it actually matters: as a conversation grows request after
+  // request, the marker set INSIDE an already-cached prefix must never change, or the block
+  // cached at that prefix stops matching and its tokens get re-written at the write premium.
+  test('a prefix that was cached once keeps an identical marker set on every later request', () => {
+    const grow = (n: number): ChatMessage[] => {
+      const msgs: ChatMessage[] = [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Hello' }
+      ]
+      for (let i = 0; i < n; i++) {
+        msgs.push({ role: 'assistant', content: `step ${i}` })
+        msgs.push({ role: 'tool', content: `result ${i}`, tool_call_id: `c${i}` })
+      }
+      return msgs
+    }
 
-    const out2 = applyCacheControl(messages, true, true, undefined, messages.length - 1)
-    const marked2 = out2
-      .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
-      .filter((i) => i >= 0)
-    expect(marked2).toEqual([0, messages.length - 1])
-  })
+    // Request A writes a block ending at its advancing breakpoint...
+    const a = applyCacheControl(grow(2), true, true, 'note A')
+    const bpIdx = a.length - 2
+    expect(markedIndices(a)).toEqual([0, bpIdx])
 
-  test('priorBreakpointIdx is ignored when it points at the reserved trailingNote slot', () => {
-    const turn2Messages: ChatMessage[] = [
-      { role: 'system', content: 'You are a helpful assistant.' },
-      { role: 'user', content: 'Hello' },
-      { role: 'assistant', content: 'Hi there!' },
-      { role: 'user', content: 'How are you?' }
-    ]
-    // Pretend a stale prior breakpoint pointed at the true-last (reserved, note-only) slot.
-    const out = applyCacheControl(turn2Messages, true, true, 'Current date/time: 12:00:00', turn2Messages.length - 1)
-    const marked = out
-      .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
-      .filter((i) => i >= 0)
-    // system (0) and the breakpoint (2) only — the reserved last slot (3) must never get marked.
-    expect(marked).toEqual([0, 2])
+    // ...and three successively longer later requests all present that same prefix with exactly
+    // one marker inside it: the system message, at its fixed position 0.
+    for (const n of [3, 4, 5]) {
+      const later = applyCacheControl(grow(n), true, true, `note ${n}`)
+      expect(markedIndices(later).filter((i) => i <= bpIdx)).toEqual([0])
+    }
   })
 })
 
