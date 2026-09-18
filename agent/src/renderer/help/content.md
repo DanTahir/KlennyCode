@@ -32,6 +32,7 @@ Read-only tools only. Klenny Code will ask clarifying questions, research your c
 | `glob` | Find files by pattern — global, same as `read_file` |
 | `run_command` | Run shell commands (with approval) |
 | `read_terminal` | Read the persistent log of the Terminal panel below, including past sessions |
+| `read_app_log` | Read Klenny Code's own main-process diagnostics (prompt-cache decisions, errors) — how the agent debugs the app itself |
 | `web_search` / `fetch_url` | Look up docs and references |
 | `ask_question` | Ask you structured multiple-choice questions |
 | `task` | Spawn an isolated subagent |
@@ -158,6 +159,14 @@ to paste them.
 
 Pick which shell to use — Git Bash, PowerShell, cmd, WSL, or your OS default — under **Settings → Shell**.
 This same setting also controls the shell `run_command` uses.
+
+## App log (self-diagnostics)
+
+Separately from the terminal panel, Klenny Code captures **its own** main-process output — prompt-cache
+decisions, background task activity, provider errors and stack traces — to a size-capped, ANSI-stripped
+`process.log` in its app data directory. The agent reads it back with the `read_app_log` tool, so it can
+diagnose and verify fixes to the app itself without you running a build from a terminal and pasting the
+output in. This works in the normal packaged app, which has no console attached at all.
 
 ## Spending cap
 

@@ -16,6 +16,14 @@ import { startDiscordClient, stopDiscordClient, setInboundCommandHandler } from 
 import { runInboundDiscordCommand } from './agent/discordBridge'
 import { registerPawprintSchemePrivileges } from './agent/pawprints/protocol'
 import { reopenAllOnLaunch as reopenAllPawprintsOnLaunch, closeAllPawprintWindows } from './agent/pawprints/manager'
+import { installProcessLogTee, appendProcessLogMarker } from './processLog'
+
+// FIRST statement in the main process: everything logged before this point is not captured, and
+// the app's own `[cache]`/diagnostic output is the only evidence for whole classes of bug (see
+// processLog.ts). Module-level side effects in the imports above still precede it — acceptable,
+// since they don't log.
+installProcessLogTee()
+appendProcessLogMarker(`App session started (v${app.getVersion()}, pid ${process.pid}) — ${new Date().toLocaleString()}`)
 
 // Must run before app.whenReady() per Electron's custom-scheme privilege requirement.
 registerPawprintSchemePrivileges()

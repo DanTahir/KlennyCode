@@ -71,6 +71,7 @@ import {
   globTool,
   runCommandTool,
   readTerminalTool,
+  readAppLogTool,
   webSearchTool,
   fetchUrlTool,
   readImageTool,
@@ -1526,6 +1527,8 @@ async function dispatchTool(
       return runCommandTool(args as { command: string; cwd?: string; timeout_ms?: number }, signal, shellId)
     case 'read_terminal':
       return readTerminalTool(args as { lines?: number })
+    case 'read_app_log':
+      return readAppLogTool(args as { lines?: number; filter?: string })
     case 'web_search':
       return webSearchTool(args as { query: string })
     case 'fetch_url':
@@ -1895,6 +1898,8 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       return `Running: ${str(args.command) ?? 'command'}`
     case 'read_terminal':
       return 'Reading terminal log'
+    case 'read_app_log':
+      return 'Reading app log'
     case 'web_search':
       return `Searching the web for "${str(args.query) ?? ''}"`
     case 'fetch_url':

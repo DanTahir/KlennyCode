@@ -314,6 +314,7 @@ export type ToolName =
   | 'glob'
   | 'run_command'
   | 'read_terminal'
+  | 'read_app_log'
   | 'web_search'
   | 'fetch_url'
   | 'list_skills'

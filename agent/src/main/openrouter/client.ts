@@ -1,6 +1,7 @@
 import type { ModelInfo, ProviderPreference } from '@shared/types'
 import { CURATED_MODEL_IDS } from '@shared/types'
 import { applyCacheControl, isExplicitCacheFamily } from './caching'
+import { breakpointIndices, fingerprintBreakpoints, formatFingerprints, nextRequestId } from './cacheDiag'
 
 const BASE = 'https://openrouter.ai/api/v1'
 
@@ -287,12 +288,19 @@ export async function* streamChatCompletion(opts: {
     opts.currentTimeNote,
     opts.priorCacheBreakpointIdx
   )
+  // Correlates this request's `[cache] request` line with its later `[cache] usage` line. Two
+  // requests overlapping is the normal case (parallel_write fan-out, subagents), and without an
+  // id the log cannot be read back unambiguously.
+  const rid = nextRequestId()
   if (opts.supportsExplicitCaching) {
-    const breakpointIdxs = messages
-      .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
-      .filter((i) => i >= 0)
+    const breakpointIdxs = breakpointIndices(messages)
+    // `bp=` fingerprints the whole cacheable prefix ending at each breakpoint, not just the marked
+    // message, because that prefix is what a cached block is keyed on. Comparing the three hashes
+    // at the same index across consecutive requests is what distinguishes "we sent different bytes
+    // than we cached" from "we sent identical bytes and the provider still didn't read it back" —
+    // see cacheDiag.ts's doc comment for the interpretation table.
     console.log(
-      `[cache] request model=${opts.model} messages=${messages.length} breakpointsAt=${JSON.stringify(breakpointIdxs)} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint}`
+      `[cache] request rid=${rid} model=${opts.model} messages=${messages.length} breakpointsAt=${JSON.stringify(breakpointIdxs)} priorIdx=${opts.priorCacheBreakpointIdx ?? 'none'} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint} bp=${formatFingerprints(fingerprintBreakpoints(messages, breakpointIdxs))}`
     )
   }
   // Skip reasoning entirely for a model already known to reject it (see reasoningRejectedModels).
@@ -493,7 +501,7 @@ export async function* streamChatCompletion(opts: {
             if (parsed.usage) {
               if (opts.supportsExplicitCaching) {
                 console.log(
-                  `[cache] usage model=${opts.model} promptTokens=${parsed.usage.prompt_tokens ?? 0} cachedTokens=${parsed.usage.prompt_tokens_details?.cached_tokens ?? 0} cacheWriteTokens=${parsed.usage.prompt_tokens_details?.cache_write_tokens ?? 0}`
+                  `[cache] usage rid=${rid} model=${opts.model} promptTokens=${parsed.usage.prompt_tokens ?? 0} cachedTokens=${parsed.usage.prompt_tokens_details?.cached_tokens ?? 0} cacheWriteTokens=${parsed.usage.prompt_tokens_details?.cache_write_tokens ?? 0}`
                 )
               }
               yield {

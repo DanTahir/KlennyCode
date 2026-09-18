@@ -438,6 +438,24 @@ export function getToolDefinitions(
     {
       type: 'function',
       function: {
+        name: 'read_app_log',
+        description:
+          "Read Klenny Code's OWN main-process log (plain text, ANSI stripped) — the diagnostics the app itself prints while running, e.g. `[cache]` prompt-caching request/usage lines, `[parallel_write]` decisions, provider errors and stack traces. This is your own stdout/stderr, not the user's shell: use read_terminal for what the USER ran. Works in a packaged build with no console attached, and persists across app restarts (marked \"=== App session started … ===\"). Strongly prefer passing `filter` — the log is chatty, and an unfiltered read wastes context.",
+        parameters: {
+          type: 'object',
+          properties: {
+            lines: { type: 'number', description: 'Number of most recent matching lines to return (default 200, max 5000).' },
+            filter: {
+              type: 'string',
+              description: "Case-insensitive substring; only matching lines are returned (applied before the line cap, so it finds old matches buried under recent noise). Not a regex. E.g. '[cache]' to inspect prompt-cache behaviour."
+            }
+          }
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
         name: 'web_search',
         description: 'Search the web for documentation or errors. Returns a list of { title, url } results — pass a result\'s url to fetch_url to read its content.',
         parameters: {
@@ -1040,6 +1058,7 @@ export function getToolDefinitions(
     'grep',
     'glob',
     'read_terminal',
+    'read_app_log',
     'web_search',
     'fetch_url',
     'list_skills',
@@ -1072,6 +1091,7 @@ export function getToolDefinitions(
     'glob',
     'run_command',
     'read_terminal',
+    'read_app_log',
     'web_search',
     'fetch_url',
     'list_skills',
