@@ -18,6 +18,7 @@ import type {
   ToolCallBlock,
   UpdateStatusEvent
 } from '@shared/types'
+import { dropWritingPlaceholders } from '@shared/toolWriting'
 
 /** A plan opened as a tab in the main tab bar (client-side only — plans themselves live on disk). */
 export interface OpenPlanTab {
@@ -239,12 +240,71 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ tabs })
         break
       }
+      // The model is still streaming this call's arguments. Upserts a placeholder block so a long
+      // write_file/multi_write payload shows live progress instead of looking like a frozen app;
+      // `tool_call_start` below swaps it for the real block once the arguments are complete.
+      case 'tool_call_writing': {
+        const tabs = state.tabs.map((t) => {
+          if (t.id !== e.tabId) return t
+          const messages = t.messages.map((m) => {
+            if (m.id !== e.messageId) return m
+            const idx = m.blocks.findIndex((b) => b.type === 'tool_call' && b.id === e.toolCallId)
+            const placeholder: ToolCallBlock = {
+              type: 'tool_call',
+              id: e.toolCallId,
+              toolName: e.toolName || 'tool call',
+              args: {},
+              status: 'writing',
+              writingChars: e.charsSoFar,
+              writingLabel: e.label
+            }
+            if (idx < 0) return { ...m, blocks: [...m.blocks, placeholder] }
+            // Never let a late/reordered writing event regress a call that already has real
+            // arguments or has started executing.
+            if ((m.blocks[idx] as ToolCallBlock).status !== 'writing') return m
+            const blocks = [...m.blocks]
+            blocks[idx] = placeholder
+            return { ...m, blocks }
+          })
+          return { ...t, messages }
+        })
+        set({ tabs })
+        break
+      }
+      // Arguments finished: replace the placeholder with the same id IN PLACE, so the card keeps
+      // its position in the transcript rather than disappearing and reappearing at the bottom.
       case 'tool_call_start': {
         const tabs = state.tabs.map((t) => {
           if (t.id !== e.tabId) return t
-          const messages = t.messages.map((m) =>
-            m.id === e.messageId ? { ...m, blocks: [...m.blocks, e.block] } : m
-          )
+          const messages = t.messages.map((m) => {
+            if (m.id !== e.messageId) return m
+            const idx = m.blocks.findIndex(
+              (b) => b.type === 'tool_call' && b.id === e.block.id && b.status === 'writing'
+            )
+            if (idx < 0) return { ...m, blocks: [...m.blocks, e.block] }
+            const blocks = [...m.blocks]
+            blocks[idx] = e.block
+            return { ...m, blocks }
+          })
+          return { ...t, messages }
+        })
+        set({ tabs })
+        break
+      }
+      // Lifecycle transition with no result yet ('queued' -> 'running'). Guarded on `!b.result` so
+      // it can never overwrite an already-finished call if events arrive out of order.
+      case 'tool_call_status': {
+        const tabs = state.tabs.map((t) => {
+          if (t.id !== e.tabId) return t
+          const messages = t.messages.map((m) => {
+            if (m.id !== e.messageId) return m
+            const blocks = m.blocks.map((b) =>
+              b.type === 'tool_call' && b.id === e.toolCallId && !b.result
+                ? ({ ...b, status: e.status } as ToolCallBlock)
+                : b
+            )
+            return { ...m, blocks }
+          })
           return { ...t, messages }
         })
         set({ tabs })
@@ -304,7 +364,9 @@ export const useAppStore = create<AppState>((set, get) => ({
           const messages = t.messages.map((m) =>
             m.id === e.messageId ? { ...m, usage: e.usage ?? m.usage } : m
           )
-          return { ...t, messages }
+          // A stream that ended mid-arguments (truncation, provider error) leaves a placeholder
+          // standing; drop it rather than leave a card pulsing "writing…" forever.
+          return { ...t, messages: dropWritingPlaceholders(messages) }
         })
         set({ tabs })
         break
@@ -322,13 +384,22 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ tabs })
         break
       }
-      case 'error':
-        set({ tabErrors: { ...state.tabErrors, [e.tabId]: e.message } })
+      case 'error': {
+        const tabs = state.tabs.map((t) =>
+          t.id === e.tabId ? { ...t, messages: dropWritingPlaceholders(t.messages) } : t
+        )
+        set({ tabs, tabErrors: { ...state.tabErrors, [e.tabId]: e.message } })
         break
+      }
       case 'turn_end': {
         const streaming = new Set(state.streamingTabIds)
         streaming.delete(e.tabId)
-        set({ streamingTabIds: streaming })
+        // Backstop for the abort path: Stop can unwind a turn mid-arguments without a
+        // message_end, which would otherwise strand a "writing…" card in the transcript.
+        const tabs = state.tabs.map((t) =>
+          t.id === e.tabId ? { ...t, messages: dropWritingPlaceholders(t.messages) } : t
+        )
+        set({ tabs, streamingTabIds: streaming })
         break
       }
       case 'turn_paused': {

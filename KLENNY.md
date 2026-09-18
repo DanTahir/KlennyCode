@@ -89,6 +89,13 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   not just approved plans. `create_checklist` won't clobber an existing one unless `replace: true`;
   both paths share `buildChecklist()` and the same widget/reinjection machinery.
   `update_checklist` takes an optional per-item `evidence` string (~300 chars) — see its gotcha.
+- **Live tool-call "writing" status** (`shared/toolWriting.ts`): a call whose arguments are still
+  streaming shows a pulsing `writing… 3.4 KB agent/src/foo.ts` card, sniffed out of the *partial*
+  argument JSON. `client.ts` relays each fragment as a `'tool_call_delta'` chunk, `loop.ts` throttles
+  it into `tool_call_writing` events (120 ms/call), and the renderer keeps a disposable placeholder
+  block until `tool_call_start` replaces it in place. Also splits the old blanket `'running'` into
+  `'queued'` (recorded, maybe sitting in the approval queue) vs `'running'` (actually in
+  `dispatchTool`) — see the gotcha.
 - **Fabrication guard** (`agent/verify/`, `orchestrator/ledger.ts`): cross-checks the model's claims
   against harness-owned ground truth — the **verification ledger** (tool calls that actually ran,
   derived from `tab.messages` so it can't drift), the injected clock, the live checklist, the
@@ -407,6 +414,24 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
      is an unbounded DOM, and pre-fix sessions still hold huge diffs on disk.
   Pinned by `diff-safety.test.ts` + `session-sanitize.test.ts` (including negative controls so a
   future "simplification" can't pass by blinding the binary sniffer).
+- **The "writing…" placeholder is renderer-only, and its three prune points are all load-bearing.**
+  Tool-call arguments used to stream invisibly: `client.ts` accumulated `delta.tool_calls` and
+  yielded nothing until `[DONE]`, so a big `write_file`/`multi_write` payload produced *zero*
+  observable output for many seconds and read as a frozen app. The fix relays fragments for UI only
+  — mid-stream JSON is invalid by construction, so a `'tool_call_delta'` must never be executed or
+  replayed to a provider; the authoritative calls still arrive in the single end-of-stream
+  `'tool_calls'` chunk. Placeholders are never persisted and never sent to the model, and because a
+  stream can end mid-arguments (abort, provider error, truncation) without a matching
+  `tool_call_start`, `dropWritingPlaceholders()` runs at **`message_end`, `error` AND `turn_end`**
+  (the last is the Stop/abort backstop, which can unwind with no `message_end`) or a card pulses
+  "writing…" forever. Two more non-obvious bits: `sniffWritingTarget()` erases `content`/`new_string`
+  values *before* scanning, because such a value routinely contains a literal `"path":"..."` (this
+  agent writes code about paths) which would otherwise be shown as the target and inflate a batch's
+  file count; and the throttle is **time-only** — a char-delta threshold would fire constantly at
+  real streaming rates and defeat the rate limit entirely. Note that within one step a provider
+  writes calls *sequentially* and they all launch together afterwards, so "writing" legitimately
+  appears one call at a time, then all flip to `'queued'` at once. Pinned by
+  `tests/tool-writing-status.test.ts`.
 - **Fuzzy edit matching** (`edit-match.ts`): handles CRLF, escaped chars and em-dash/hyphen variants
   — but line-number prefixes from `read_file` output are NOT in the real file bytes; never include
   them in `old_string`.

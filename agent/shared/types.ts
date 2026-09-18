@@ -101,8 +101,25 @@ export interface ToolCallBlock {
   id: string
   toolName: string
   args: Record<string, unknown>
-  /** populated once the tool finishes */
-  status: 'running' | 'success' | 'error' | 'awaiting_approval' | 'rejected'
+  /**
+   * Lifecycle of the call:
+   *  'writing'  — the model is still streaming this call's arguments; the block is a RENDERER-ONLY
+   *               placeholder (see `tool_call_writing`) that is replaced by the real block once
+   *               the arguments finish. It is never persisted and never sent to the model.
+   *  'queued'   — arguments complete and recorded, but execution hasn't begun (this also covers
+   *               sitting in the approval queue, which can be an arbitrarily long human wait).
+   *  'running'  — actually executing, i.e. past every gate and inside dispatchTool.
+   *  then a terminal 'success' | 'error' | 'rejected'.
+   * ('awaiting_approval' predates the queued/running split and is kept for stored sessions.)
+   */
+  status: 'writing' | 'queued' | 'running' | 'success' | 'error' | 'awaiting_approval' | 'rejected'
+  /** Characters of raw argument JSON received so far. Only meaningful while status === 'writing';
+   *  drives the live size readout on the card. */
+  writingChars?: number
+  /** Best-effort target of the in-progress call sniffed out of the PARTIAL argument JSON (e.g.
+   *  'agent/src/foo.ts', '3 files · b.ts', a grep pattern). Cosmetic and approximate by design —
+   *  see sniffWritingTarget in shared/toolWriting.ts. */
+  writingLabel?: string
   result?: ToolResultPayload
   /** Short human-readable label for a long-running step within a still-`running` tool call
    *  (e.g. "Downloading Chromium (42 MB)…" for the browser tool's one-time first-run install).
@@ -1001,7 +1018,32 @@ export interface ShellInfo {
 export type AgentStreamEvent =
   | { type: 'text_delta'; tabId: string; messageId: string; delta: string }
   | { type: 'thinking_delta'; tabId: string; messageId: string; delta: string }
+  /**
+   * The model is streaming this tool call's arguments right now. Emitted (throttled to
+   * WRITING_EMIT_INTERVAL_MS per call) while the JSON arrives, so a big write_file/multi_write
+   * payload shows visible progress instead of looking like a frozen app for many seconds — the
+   * provider sends a step's calls sequentially in one stream, so these appear one call at a time
+   * and then all flip to 'queued' together when the stream ends.
+   *
+   * Renderer-only and disposable: it creates/updates a placeholder ToolCallBlock with
+   * status 'writing' that `tool_call_start` replaces by id. Nothing here is persisted to the
+   * session or sent to the model, and any placeholder still standing when the message/turn ends
+   * (e.g. an aborted or errored stream) is pruned by the store.
+   */
+  | {
+      type: 'tool_call_writing'
+      tabId: string
+      messageId: string
+      toolCallId: string
+      toolName: string
+      charsSoFar: number
+      label?: string
+    }
   | { type: 'tool_call_start'; tabId: string; messageId: string; block: ToolCallBlock }
+  /** Lifecycle transition for an already-recorded call with no result yet — currently the
+   *  'queued' -> 'running' flip at the moment the tool clears every gate and actually starts
+   *  executing, which is what distinguishes "waiting on approval" from "doing the work". */
+  | { type: 'tool_call_status'; tabId: string; messageId: string; toolCallId: string; status: ToolCallBlock['status'] }
   /** Cosmetic progress update for a still-running tool call (currently only emitted by the
    *  browser tool's one-time Chromium download). Never changes `status`. */
   | { type: 'tool_call_progress'; tabId: string; messageId: string; toolCallId: string; message: string }

@@ -29,6 +29,7 @@ import type {
   ToolResultPayload
 } from '@shared/types'
 import { DEFAULT_BROWSER_AUTOMATION, CODING_ONLY_TOOLS, DOCX_TOOLS, ALWAYS_BLOCKED_TOOLS } from '@shared/types'
+import { shouldEmitWriting, sniffWritingTarget } from '@shared/toolWriting'
 import { loadSettings } from '../../settings'
 import { resolveDocumentsDirectory } from '../../documentsDir'
 import { globalKlennyDir, userDataDir } from '../../dataDir'
@@ -282,6 +283,13 @@ export async function agentLoop(
   // preserve reasoning continuity across tool calls (see ChatMessage.reasoningDetails).
   let streamedReasoningDetails: ReasoningDetail[] | undefined
   const toolCallsById = new Map<string, ToolCall>()
+  // Live "writing…" bookkeeping for tool calls whose arguments are still streaming, keyed by the
+  // provider's delta index. Purely cosmetic and never persisted — the authoritative calls come
+  // from the end-of-stream 'tool_calls' chunk into toolCallsById above.
+  const writingByIndex = new Map<
+    number,
+    { id: string; name: string; args: string; lastEmitAt: number; lastEmitChars: number }
+  >()
 
   // Skip the "last message" cache breakpoint on the very first request of a
   // conversation/subagent run, since there's nothing yet to read back from a cache write
@@ -366,6 +374,37 @@ export async function agentLoop(
     if (chunk.type === 'reasoning' && chunk.text) {
       thinkingBuf += chunk.text
       emit({ type: 'thinking_delta', tabId: tab.id, messageId: assistantId, delta: chunk.text })
+    }
+    if (chunk.type === 'tool_call_delta' && chunk.toolCallDelta) {
+      const d = chunk.toolCallDelta
+      const w =
+        writingByIndex.get(d.index) ??
+        { id: d.id, name: '', args: '', lastEmitAt: 0, lastEmitChars: -1 }
+      w.id = d.id
+      if (d.name) w.name += d.name
+      if (d.argsDelta) w.args += d.argsDelta
+      writingByIndex.set(d.index, w)
+      const now = Date.now()
+      if (
+        shouldEmitWriting({
+          now,
+          lastEmitAt: w.lastEmitAt,
+          charsSoFar: w.args.length,
+          lastEmitChars: w.lastEmitChars
+        })
+      ) {
+        w.lastEmitAt = now
+        w.lastEmitChars = w.args.length
+        emit({
+          type: 'tool_call_writing',
+          tabId: tab.id,
+          messageId: assistantId,
+          toolCallId: w.id,
+          toolName: w.name,
+          charsSoFar: w.args.length,
+          label: sniffWritingTarget(w.name, w.args)
+        })
+      }
     }
     if (chunk.type === 'tool_calls' && chunk.toolCalls) {
       for (const tc of chunk.toolCalls) toolCallsById.set(tc.id, tc)
@@ -669,7 +708,10 @@ export async function agentLoop(
       id: tc.id,
       toolName: tc.function.name,
       args,
-      status: 'running'
+      // 'queued', not 'running': every call in a step is recorded here up front, but execution
+      // may not begin for a long time (approval queues are a human wait). executeTool flips this
+      // to 'running' at the moment it actually reaches dispatch.
+      status: 'queued'
     }
     assistantMsg.blocks.push(block)
     emit({ type: 'tool_call_start', tabId: tab.id, messageId: assistantId, block })
@@ -1109,6 +1151,22 @@ async function executeTool(
       }
     }
   }
+
+  // Past every gate (tool availability, approval, browser policy): the work starts now. Mutating
+  // the recorded block as well as emitting keeps stored history honest about which calls actually
+  // began, and matches the pre-split behavior where a dispatched call read as 'running'.
+  const assistantMessage = tab.messages.find((m) => m.id === assistantMessageId)
+  const recordedBlock = assistantMessage?.blocks.find(
+    (b): b is ToolCallBlock => b.type === 'tool_call' && b.id === tc.id
+  )
+  if (recordedBlock && recordedBlock.status === 'queued') recordedBlock.status = 'running'
+  emit({
+    type: 'tool_call_status',
+    tabId: tab.id,
+    messageId: assistantMessageId,
+    toolCallId: tc.id,
+    status: 'running'
+  })
 
   try {
     // Only the browser tool's one-time Chromium download uses this today — cosmetic progress

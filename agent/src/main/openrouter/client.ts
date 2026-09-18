@@ -75,9 +75,24 @@ export interface UsageChunk {
 }
 
 export interface StreamChunk {
-  type: 'text' | 'reasoning' | 'tool_calls' | 'usage' | 'done' | 'error'
+  type: 'text' | 'reasoning' | 'tool_calls' | 'tool_call_delta' | 'usage' | 'done' | 'error'
   text?: string
   toolCalls?: ToolCall[]
+  /** One raw tool-call fragment, relayed as it arrives so callers can show live progress while a
+   *  large argument payload streams. The authoritative, fully-accumulated calls still come in the
+   *  single 'tool_calls' chunk at end of stream — these are a strictly additive UI signal, are
+   *  incremental (append `name`/`argsDelta`, don't replace), and must never be executed or
+   *  replayed to a provider, since mid-stream JSON is invalid by construction. */
+  toolCallDelta?: {
+    index: number
+    /** Call id as known so far: the provider's id once it has arrived, else a positional stand-in
+     *  identical to the one 'tool_calls' will carry, so the two always line up. */
+    id: string
+    /** Name fragment from THIS delta only (providers may split it), not the accumulated name. */
+    name?: string
+    /** Argument-JSON fragment from THIS delta only. */
+    argsDelta?: string
+  }
   /** Structured reasoning blocks accumulated across the whole stream, attached to the 'done'
    *  chunk only (not the incremental 'reasoning' text chunks, which exist for live UI display).
    *  Callers persist these and hand them back on later turns — see ChatMessage.reasoning_details. */
@@ -459,6 +474,19 @@ export async function* streamChatCompletion(opts: {
                 if (tc.function?.name) existing.function.name += tc.function.name
                 if (tc.function?.arguments) existing.function.arguments += tc.function.arguments
                 toolCalls.set(tc.index, existing)
+                // Relay the fragment for live "writing…" UI. Yielded in addition to (never instead
+                // of) the accumulated 'tool_calls' chunk at end of stream: a model emitting a large
+                // payload otherwise produces zero observable output for many seconds, which is
+                // indistinguishable from a hung app.
+                yield {
+                  type: 'tool_call_delta',
+                  toolCallDelta: {
+                    index: tc.index,
+                    id: existing.id,
+                    name: tc.function?.name,
+                    argsDelta: tc.function?.arguments
+                  }
+                }
               }
             }
 
