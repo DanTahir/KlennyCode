@@ -17,8 +17,18 @@ const MAX_DOCUMENT_FILE_BYTES = 8 * 1024 * 1024
 const DOCUMENT_ACCEPT = '.md,.txt,.docx'
 
 export function ChatPane() {
-  const { tabs, activeTabId, pendingActions, pendingQuestions, streamingTabIds, workspace, settings, tabErrors, pausedTabs } =
-    useAppStore()
+  const {
+    tabs,
+    activeTabId,
+    pendingActions,
+    pendingQuestions,
+    streamingTabIds,
+    compactingTabIds,
+    workspace,
+    settings,
+    tabErrors,
+    pausedTabs
+  } = useAppStore()
   const tab = getActiveTab(tabs, activeTabId)
   const [text, setText] = useState('')
   const [images, setImages] = useState<string[]>([])
@@ -27,6 +37,7 @@ export function ChatPane() {
   const fileRef = useRef<HTMLInputElement>(null)
   const docFileRef = useRef<HTMLInputElement>(null)
   const isStreaming = tab ? streamingTabIds.has(tab.id) : false
+  const isCompacting = tab ? compactingTabIds.has(tab.id) : false
   const paused = tab ? pausedTabs[tab.id] : undefined
 
   const canSend = Boolean(workspace && settings?.hasApiKey)
@@ -147,6 +158,19 @@ export function ChatPane() {
             )}
           </div>
         ))}
+        {isCompacting && (
+          <div className="flex items-center gap-2.5 text-xs text-klenny-muted border border-klenny-border rounded px-3 py-2">
+            <span
+              className="inline-block w-3.5 h-3.5 shrink-0 rounded-full border-2 border-klenny-accent border-t-transparent animate-spin"
+              aria-hidden="true"
+            />
+            <span>
+              <span className="text-klenny-text animate-pulse">Compacting context…</span>{' '}
+              summarizing earlier messages so the conversation keeps fitting in the model's context window. This
+              takes a few seconds.
+            </span>
+          </div>
+        )}
         {tabPendingActions.map((a) => (
           <ApprovalCard key={a.id} action={a} />
         ))}

@@ -1081,6 +1081,13 @@ export type AgentStreamEvent =
   | { type: 'pending_question'; tabId: string; question: PendingQuestion }
   | { type: 'pending_question_resolved'; tabId: string; questionId: string }
   | { type: 'subagent_update'; tabId: string; run: SubagentRun }
+  /** Context compaction actually started for this tab — the (slow) summarization request to the
+   *  utility model is in flight. Emitted ONLY on the path where compaction really runs, never on
+   *  the far more common below-threshold no-op, and always followed by `compaction_end` whether it
+   *  succeeded, failed, or was aborted. Purely a UI signal: this step produces no other stream
+   *  output for many seconds, which reads as a frozen app. */
+  | { type: 'compaction_start'; tabId: string }
+  | { type: 'compaction_end'; tabId: string }
   | { type: 'compaction'; tabId: string; compactedThroughMessageId: string; summary: string }
   | { type: 'spend_update'; tabId: string; totalCostUsd: number; totalSavingsUsd: number; capUsd: number | null }
   | { type: 'spend_blocked'; tabId: string }

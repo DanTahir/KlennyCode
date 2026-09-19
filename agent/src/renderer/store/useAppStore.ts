@@ -68,6 +68,11 @@ interface AppState {
   toggleTerminal: () => void
   setTerminalHeight: (h: number) => void
   streamingTabIds: Set<string>
+  /** Tabs currently running context compaction (summarization request in flight). Drives the
+   *  "Compacting context" indicator — that step emits no other stream output for many seconds,
+   *  so without this the app looks frozen. Cleared by `compaction_end`, with `turn_end`/`error`
+   *  as backstops. */
+  compactingTabIds: Set<string>
   tabErrors: Record<string, string>
   /** Tabs whose turn stopped early (checkpoint step count reached, or the hard safety ceiling
    *  was hit) and are waiting for the user to click Continue. Cleared as soon as a new
@@ -130,6 +135,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   toggleTerminal: () => set((s) => ({ terminalOpen: !s.terminalOpen })),
   setTerminalHeight: (terminalHeight) => set({ terminalHeight: Math.max(120, Math.min(720, terminalHeight)) }),
   streamingTabIds: new Set(),
+  compactingTabIds: new Set(),
   tabErrors: {},
   pausedTabs: {},
   updateStatus: null,
@@ -388,7 +394,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         const tabs = state.tabs.map((t) =>
           t.id === e.tabId ? { ...t, messages: dropWritingPlaceholders(t.messages) } : t
         )
-        set({ tabs, tabErrors: { ...state.tabErrors, [e.tabId]: e.message } })
+        const compacting = new Set(state.compactingTabIds)
+        compacting.delete(e.tabId)
+        set({ tabs, compactingTabIds: compacting, tabErrors: { ...state.tabErrors, [e.tabId]: e.message } })
         break
       }
       case 'turn_end': {
@@ -399,7 +407,11 @@ export const useAppStore = create<AppState>((set, get) => ({
         const tabs = state.tabs.map((t) =>
           t.id === e.tabId ? { ...t, messages: dropWritingPlaceholders(t.messages) } : t
         )
-        set({ tabs, streamingTabIds: streaming })
+        // Same backstop reasoning as the writing placeholders above: a turn can unwind without
+        // the compaction bracket closing cleanly, and a stuck spinner is worse than none.
+        const compacting = new Set(state.compactingTabIds)
+        compacting.delete(e.tabId)
+        set({ tabs, streamingTabIds: streaming, compactingTabIds: compacting })
         break
       }
       case 'turn_paused': {
@@ -430,6 +442,18 @@ export const useAppStore = create<AppState>((set, get) => ({
         if (existing >= 0) runs[existing] = { ...e.run, hidden: runs[existing].hidden }
         else runs.push(e.run)
         set({ subagentRuns: runs })
+        break
+      }
+      case 'compaction_start': {
+        const compacting = new Set(state.compactingTabIds)
+        compacting.add(e.tabId)
+        set({ compactingTabIds: compacting })
+        break
+      }
+      case 'compaction_end': {
+        const compacting = new Set(state.compactingTabIds)
+        compacting.delete(e.tabId)
+        set({ compactingTabIds: compacting })
         break
       }
       case 'compaction': {

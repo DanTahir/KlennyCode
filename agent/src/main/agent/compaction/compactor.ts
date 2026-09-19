@@ -32,6 +32,10 @@ export async function maybeCompact(opts: {
    *  the summarizer beyond however it already naturally appears in the transcript being folded)
    *  so the exact approved plan text is guaranteed to survive compaction unchanged. */
   activePlan?: { title: string; markdown: string }
+  /** Called exactly once, immediately before the slow summarization request goes out — i.e. only
+   *  on the path where compaction actually runs, never on the below-threshold/too-short no-op
+   *  paths. The orchestrator uses it to emit `compaction_start` for the progress indicator. */
+  onCompactionStart?: () => void
 }): Promise<{
   compacted: boolean
   summary?: string
@@ -53,7 +57,8 @@ export async function maybeCompact(opts: {
     models,
     priorSummary,
     priorCompactedThroughMessageId,
-    activePlan
+    activePlan,
+    onCompactionStart
   } = opts
 
   // Only the messages after whatever's already been folded into the summary are candidates for
@@ -99,6 +104,9 @@ export async function maybeCompact(opts: {
   const summaryModelId = utilityModelInfo.id
   const supportsExplicitCaching =
     Boolean(promptCachingEnabled) && utilityModelInfo.supportsExplicitCaching && modelSupportsCaching(utilityModelInfo)
+  // Past every no-op early return: compaction is definitely happening now, and the call below is
+  // the slow part, so tell the caller before awaiting rather than after.
+  onCompactionStart?.()
   const summaryText = await summarizeMessages(
     apiKey,
     summaryModelId,

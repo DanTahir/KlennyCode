@@ -204,6 +204,11 @@ export async function agentLoop(
     return 'error'
   }
 
+  // Compaction can take many seconds (a whole summarization round-trip) while emitting nothing
+  // else, so bracket it with start/end events that drive the "Compacting context" indicator.
+  // `.finally` (rather than try/finally around the assignment) keeps `compacted` a const and
+  // still fires on the throw/abort path.
+  let compactionStarted = false
   const compacted = await maybeCompact({
     messages: tab.messages,
     model: modelInfo,
@@ -214,7 +219,13 @@ export async function agentLoop(
     models,
     priorSummary: tab.compactionSummary,
     priorCompactedThroughMessageId: tab.compactedThroughMessageId,
-    activePlan: tab.activePlan
+    activePlan: tab.activePlan,
+    onCompactionStart: () => {
+      compactionStarted = true
+      emit({ type: 'compaction_start', tabId: tab.id })
+    }
+  }).finally(() => {
+    if (compactionStarted) emit({ type: 'compaction_end', tabId: tab.id })
   })
   if (compacted.compacted && compacted.summary && compacted.compactedThroughMessageId) {
     // `tab.messages` (the UI-facing history) is left completely untouched here — only these two

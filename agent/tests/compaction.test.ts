@@ -69,6 +69,58 @@ describe('maybeCompact', () => {
     expect(result.compacted).toBe(false)
   })
 
+  // The "Compacting context" progress indicator is driven entirely by this callback, so it must
+  // fire on exactly the path where the slow summarization request actually goes out. Firing it on
+  // a no-op step would flash the spinner on essentially every turn (compaction is checked on every
+  // step), and not firing it at all leaves the UI looking frozen for the whole summarization.
+  test('onCompactionStart fires exactly once when compaction runs, and never on a no-op step', async () => {
+    let noOpCalls = 0
+    const noOp = await maybeCompact({
+      messages: buildMessages(3),
+      model,
+      apiKey: 'k',
+      utilityModel: 'test/model',
+      models: [model],
+      onCompactionStart: () => {
+        noOpCalls++
+      }
+    })
+    expect(noOp.compacted).toBe(false)
+    expect(noOpCalls).toBe(0)
+
+    let startCalls = 0
+    const ran = await maybeCompact({
+      messages: [...buildMessages(20), assistantMsg('a_last', 'ok', { promptTokens: 900_000, completionTokens: 10 })],
+      model,
+      apiKey: 'k',
+      utilityModel: 'test/model',
+      models: [model],
+      onCompactionStart: () => {
+        startCalls++
+      }
+    })
+    expect(ran.compacted).toBe(true)
+    expect(startCalls).toBe(1)
+  })
+
+  // A long tail that is still too short to have anything foldable (<= KEEP_RECENT + 2) returns
+  // early *after* the threshold check — a separate no-op path, which must also stay silent.
+  test('onCompactionStart does not fire when over threshold but there is nothing to fold', async () => {
+    let startCalls = 0
+    const result = await maybeCompact({
+      messages: [assistantMsg('a_only', 'ok', { promptTokens: 900_000, completionTokens: 10 })],
+      model,
+      apiKey: 'k',
+      utilityModel: 'test/model',
+      models: [model],
+      onCompactionStart: () => {
+        startCalls++
+      }
+    })
+    expect(result.compacted).toBe(false)
+    expect(startCalls).toBe(0)
+  })
+
   test('uses real usage.promptTokens instead of the char heuristic to decide when to compact', async () => {
     // Tiny text bodies (heuristic would estimate near-zero tokens) but a huge reported
     // promptTokens on the latest message — this should trigger compaction even though the

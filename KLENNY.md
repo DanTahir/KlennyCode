@@ -238,6 +238,20 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   not fix the shortfall**, which is exactly why this must only ever be diagnosed from real
   `[cache]` lines (`read_app_log` + `cacheDiag.ts`'s `bp=` fingerprints), never from unit tests,
   which cannot see upstream matching behavior.
+
+  **Live-verified (v0.2.155).** Fresh ladder: 5 rungs, **shortfall 0 on all four transitions**
+  (44865+24314=69179; 69179+628=69807; 69807+12202=82009; 82009+1678=83687), where prior builds
+  never managed even two exact transitions in a row. The walk-back provably *fired* rather than
+  sitting inert: r2's raw breakpoint 19 landed on 18, r3's raw 23 landed on 21 (past two parallel
+  tool results). Re-check it session-scoped and automated rather than by eyeballing the tail —
+  `awk '/App session started \(vX\.Y\.Z/{f=1} f' process.log | grep -c ':tool:parts'` must be
+  **0**. Known cost, by design: a breakpoint is a prefix *cut*, so walking back **defers** the
+  trailing tool results into the next request's block rather than excluding them — and a big
+  write/edit payload rides the **assistant** message's `tool_calls.arguments`, which is exactly
+  where the boundary lands, so it is still cached. Bounded but not always small: each tool result
+  is capped at 40 000 chars (~10k tokens) by `compactToolResult`, so a wide parallel fan-out can
+  defer tens of thousands of tokens by one request — visible above as r2's 628-token write
+  followed by r3's 12202.
 - **Never merge `thinking` into assistant `content` — it few-shots the model into serial tool
   calling.** Replaying private reasoning as assistant *content* presents it as something the model
   said out loud, so its own history reads as a worked example of "think a paragraph, narrate a
@@ -518,17 +532,11 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
 
 ## Known open follow-ups (not yet implemented)
 
-- Live verification of the prompt-cache **tool-boundary** fix. Status: the first live ladder
-  already *disproved* the earlier interior-marker fix (new-r3 still fell short by exactly r2's
-  6944-token write), which is what produced the boundary-role finding now in the gotchas. The
-  tool-skip change is written, unit-tested and built, but its upstream effect has **not** yet been
-  observed — that needs an app restart, then `read_app_log` with `filter: '[cache]'`. Prediction
-  to check: `cached(n+1) == cached(n) + write(n)` on every rung (shortfall ~0), and `bp=` should
-  now show an `assistant`/`user` role at every advancing breakpoint, never `tool`. If a tool-role
-  boundary still appears in the log, the walk-back isn't firing. Also note Anthropic allows **4**
-  explicit breakpoints and we use only **2**; adding the compaction-summary system message
-  (index 1) is safe *because its position is fixed*, but any new breakpoint must obey both
-  invariants — fixed positions only, and never on a `tool` message.
+- A **third** cache breakpoint on the compaction-summary system message. Anthropic allows **4**
+  explicit breakpoints and we currently use only **2** (system + advancing). Adding the
+  compaction summary (index 1) is safe *because its position is fixed*, but any new breakpoint
+  must obey both invariants — fixed positions only, and never on a `tool` message. (The
+  tool-boundary fix itself is **done and live-verified** — see the caching gotcha for the ladder.)
 
 - Compaction-summary manual reset (UX + IPC) — a user-facing "reset conversation summary" button for
   recovery if a summary ever ends up wrong. Not required for the poisoning fix (that's done); purely
