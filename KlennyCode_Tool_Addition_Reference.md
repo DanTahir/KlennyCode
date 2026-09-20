@@ -42,8 +42,7 @@ export function getToolDefinitions(
   codebaseSearchAvailable = false,
   hasWorkspace = true,
   isAssistant = false,
-  gating: ToolGatingOptions = {},
-  hasActiveChecklist = false
+  gating: ToolGatingOptions = {}
 ): ToolDef[]
 ```
 

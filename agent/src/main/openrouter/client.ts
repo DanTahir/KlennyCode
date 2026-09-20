@@ -1,7 +1,15 @@
 import type { ModelInfo, ProviderPreference } from '@shared/types'
 import { CURATED_MODEL_IDS } from '@shared/types'
 import { applyCacheControl, isExplicitCacheFamily, planAdvancingBreakpoint } from './caching'
-import { breakpointIndices, fingerprintBreakpoints, formatFingerprints, nextRequestId } from './cacheDiag'
+import {
+  breakpointIndices,
+  fingerprintBreakpoints,
+  fingerprintTools,
+  formatFingerprints,
+  formatToolsFingerprint,
+  nextRequestId,
+  noteToolsFingerprint
+} from './cacheDiag'
 
 const BASE = 'https://openrouter.ai/api/v1'
 
@@ -304,8 +312,14 @@ export async function* streamChatCompletion(opts: {
     // at the same index across consecutive requests is what distinguishes "we sent different bytes
     // than we cached" from "we sent identical bytes and the provider still didn't read it back" —
     // see cacheDiag.ts's doc comment for the interpretation table.
+    //
+    // `tools=` closes that table's one blind spot: tool definitions are hashed by the provider
+    // AHEAD of the system prompt, so a tools-array change invalidates every block while leaving
+    // all the message fingerprints byte-identical. Without this field such a request is
+    // indistinguishable from an upstream miss, which is exactly how one went unnoticed.
+    const toolsFp = fingerprintTools(opts.tools)
     console.log(
-      `[cache] request rid=${rid} model=${opts.model} messages=${messages.length} breakpointsAt=${JSON.stringify(breakpointIdxs)} bpIntended=${plan.intendedIdx} bpActual=${plan.index} bpSkipped=tool:${plan.skippedTool}+unmarkable:${plan.skippedUnmarkable} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint} bp=${formatFingerprints(fingerprintBreakpoints(messages, breakpointIdxs))}`
+      `[cache] request rid=${rid} model=${opts.model} messages=${messages.length} tools=${formatToolsFingerprint(toolsFp)} breakpointsAt=${JSON.stringify(breakpointIdxs)} bpIntended=${plan.intendedIdx} bpActual=${plan.index} bpSkipped=tool:${plan.skippedTool}+unmarkable:${plan.skippedUnmarkable} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint} bp=${formatFingerprints(fingerprintBreakpoints(messages, breakpointIdxs))}`
     )
     // The one case where this request genuinely ships without an advancing breakpoint despite
     // wanting one, i.e. the whole conversation past the system block is about to be re-paid at
@@ -314,6 +328,16 @@ export async function* streamChatCompletion(opts: {
     if ((opts.includeLastMessageCacheBreakpoint ?? true) && plan.index < 0) {
       console.warn(
         `[cache] request rid=${rid} could not place the advancing breakpoint anywhere: every message from ${plan.intendedIdx} back to the system prompt was a tool result (${plan.skippedTool}) or had no markable content part (${plan.skippedUnmarkable}). Only the system block is cached this request.`
+      )
+    }
+    // A tools-array change is a guaranteed total cache miss for this request, so it gets flagged
+    // at the moment it happens. Keyed per conversation (sessionId) and per model, since both
+    // change the upstream cache identity anyway. Legitimate exactly once after an app update or a
+    // settings change; a recurring one means a gate is being driven by per-turn conversation
+    // state, which is the bug this warning exists to catch — see fingerprintTools in cacheDiag.ts.
+    if (noteToolsFingerprint(`${opts.sessionId ?? 'nosession'}:${opts.model}`, toolsFp)) {
+      console.warn(
+        `[cache] request rid=${rid} tools array CHANGED since the previous request on this conversation (now ${formatToolsFingerprint(toolsFp)}). Tool definitions are serialized ahead of the system prompt, so every cached block including the fixed system breakpoint is invalidated and the entire prefix is re-written at full price this request.`
       )
     }
   }

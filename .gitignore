@@ -54,3 +54,7 @@ KLENNY.local.md
 .klenny/memory/
 .klenny/plans/
 .klenny/index/
+
+# Key for cache testing, not for public use
+cachetestingkey.txt 
+

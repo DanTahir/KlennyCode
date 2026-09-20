@@ -60,11 +60,7 @@ export function getToolDefinitions(
   isAssistant = false,
   /** docx/Gmail/Discord gating — see ToolGatingOptions. Every field defaults to false/absent
    *  when omitted, so existing callers (and tests) that don't pass this get none of those tools. */
-  gating: ToolGatingOptions = {},
-  /** false (default) hides update_checklist entirely — it's only meaningful once a plan has
-   *  actually been approved into this tab (TabSession.activeChecklist is set); until then there's
-   *  nothing for it to update, so the model should never see a tool call guaranteed to fail. */
-  hasActiveChecklist = false
+  gating: ToolGatingOptions = {}
 ): ToolDef[] {
   const all: ToolDef[] = [
     {
@@ -720,7 +716,7 @@ export function getToolDefinitions(
       function: {
         name: 'update_checklist',
         description:
-          "Mark items in the current live-progress checklist (from an approved plan, or from create_checklist) as done/not-done, by 1-based index matching the order shown in the checklist widget. Call this as you actually finish each major milestone (not all at once at the end) so the user watches real progress, plus once more right before your final closing summary once everything is complete. Only mark an item done after actually completing and verifying the underlying work in this same turn — optionally supply `evidence`, a short note on what you actually verified (e.g. \"read file X, confirmed line Y\"; \"ran tests, N passed\"); when unsure, leave the item undone rather than guess.",
+          "Mark items in the current live-progress checklist (from an approved plan, or from create_checklist) as done/not-done, by 1-based index matching the order shown in the checklist widget. Requires a checklist to already exist on this tab — if none does, this returns a no_active_checklist error, so call create_checklist first. Call this as you actually finish each major milestone (not all at once at the end) so the user watches real progress, plus once more right before your final closing summary once everything is complete. Only mark an item done after actually completing and verifying the underlying work in this same turn — optionally supply `evidence`, a short note on what you actually verified (e.g. \"read file X, confirmed line Y\"; \"ran tests, N passed\"); when unsure, leave the item undone rather than guess.",
         parameters: {
           type: 'object',
           properties: {
@@ -1177,16 +1173,31 @@ export function getToolDefinitions(
     defs = defs.filter((t) => t.function.name !== 'generate_image')
   }
 
-  // update_checklist: only ever offered once this tab actually has an active checklist to
-  // update (see hasActiveChecklist's doc comment above) — never in plan mode (save_plan/
-  // approvePlan is what creates the plan-checklist in the first place). create_checklist (its
-  // sibling entry point for non-plan work) is deliberately NOT gated here — it's always offered
-  // in agent mode (project or Assistant tab, since it's part of both agentAllowed and
-  // ASSISTANT_TOOLS) regardless of whether a checklist already exists; its own dispatch handler
-  // (loop.ts) enforces the replace-gate instead of hiding the tool entirely.
-  if (!hasActiveChecklist) {
-    defs = defs.filter((t) => t.function.name !== 'update_checklist')
-  }
+  // update_checklist is deliberately NOT gated on whether a checklist currently exists, and that
+  // is a prompt-caching requirement rather than a preference.
+  //
+  // This function's output IS the `tools` array of every request in a conversation, and a
+  // provider serializes tool definitions AHEAD of the system prompt. A cached block is keyed on
+  // its entire preceding prefix, so a tools array that changes mid-conversation invalidates every
+  // breakpoint in the request — including the fixed system block. It used to change: this tool was
+  // hidden until `TabSession.activeChecklist` was set, so the first create_checklist call of a
+  // turn made a ~700-char definition appear and silently re-wrote the whole prefix at full price.
+  // Measured live (process.log, v0.2.157 r4): cachedTokens=0 with cacheWriteTokens=53456 on the
+  // request right after a checklist was created, while the system message's own fingerprint was
+  // byte-identical — the bp= fingerprints cover messages only, which is why this hid so well. See
+  // fingerprintTools in openrouter/cacheDiag.ts (the `tools=` field now makes it greppable) and
+  // the tools-stability gotcha in KLENNY.md.
+  //
+  // The cost of always offering it is one clean error result (`no_active_checklist`) if the model
+  // calls it before creating a checklist — dispatch in loop.ts already handles that, the tool's
+  // own description now says so, and one recoverable error is far cheaper than re-writing the
+  // entire conversation prefix. The same reasoning already applied to create_checklist, which has
+  // never been gated on live state (its dispatch handler enforces the replace-gate instead).
+  //
+  // Plan mode is unaffected: update_checklist simply isn't in planAllowed, so its absence there is
+  // constant for the whole of plan mode rather than state-dependent. Every remaining gate in this
+  // function is derived from settings, the tab kind or the subagent type — all fixed for the life
+  // of a conversation. Do not add a gate driven by per-turn conversation state.
 
   // Word .docx tools: always fine on the Assistant tab (already scoped to exactly
   // ASSISTANT_TOOLS above). On a project-kind tab, additionally require

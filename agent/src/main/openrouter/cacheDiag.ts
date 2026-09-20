@@ -31,7 +31,13 @@ import type { ChatMessage, ContentPart } from './client'
  *   | diff | diff   | diff | real content changed upstream of the breakpoint — prefix poisoning |
  *   | same | diff   | diff | content identical, wire SHAPE flipped (string <-> parts array)     |
  *   | same | same   | diff | only the marker itself moved; prefix content was stable            |
- *   | same | same   | same | prefix fully stable — a cache miss here is upstream, not ours      |
+ *   | same | same   | same | prefix stable — check `tools=` before blaming upstream (see below) |
+ *
+ * The last row deliberately does NOT say "therefore upstream": these hashes cover the MESSAGES
+ * only, and tool definitions are serialized ahead of the system prompt, so a tools-array change
+ * invalidates every block while leaving all three message hashes byte-identical. That exact
+ * false negative was observed live, which is why `fingerprintTools` exists and why the request
+ * line carries a `tools=` field — check it first, then conclude upstream.
  *
  * The second row is the one worth naming explicitly, because marking a breakpoint is what
  * converts a message's `content` from a bare string into a content-part array (see
@@ -168,6 +174,77 @@ export function formatFingerprints(fps: BreakpointFingerprint[]): string {
   return fps
     .map((f) => `#${f.idx}:${f.role}:${f.shape} on=${f.markedOn} chars=${f.chars} wire=${f.wire} noMark=${f.noMark} text=${f.text}`)
     .join(' | ')
+}
+
+/**
+ * Fingerprint of the `tools` array going out with a request — the one part of the cacheable
+ * prefix the message fingerprints above structurally cannot see.
+ *
+ * A provider serializes tool definitions BEFORE the system prompt, and a cached block is keyed on
+ * its entire preceding prefix. So a single changed tool description invalidates every breakpoint
+ * in the request, the fixed system block included, while `wire`/`noMark`/`text` at every index
+ * stay byte-identical — the one cache failure this module was otherwise blind to, and one that
+ * looks exactly like "identical bytes, provider still didn't read it back". Measured live
+ * (process.log v0.2.157 r4): a tool appearing mid-conversation cost a 53,456-token re-write with
+ * an unchanged system fingerprint.
+ *
+ * Two hashes, because the two causes call for different responses:
+ *   - `names` — ordered tool NAMES only. Moves when a tool appears/disappears, i.e. a gating flag
+ *     flipped mid-conversation. That is our bug and is fixable (see the update_checklist comment
+ *     in agent/tools/definitions.ts for the one that actually happened).
+ *   - `defs`  — the fully serialized array. Moves additionally when a description or schema is
+ *     edited, i.e. a new build changed the prompt surface. Expected exactly once per conversation
+ *     after an app update.
+ * Both are order-sensitive on purpose: the provider hashes bytes, not sets, so a reordered array
+ * is just as fatal as an added entry and must not fingerprint identically.
+ */
+export interface ToolsFingerprint {
+  count: number
+  names: string
+  defs: string
+}
+
+/** Structurally typed rather than importing ToolDef, so this stays usable from tests and from any
+ *  caller shape without coupling the diagnostic to the tool-definition module. */
+export function fingerprintTools(tools?: ReadonlyArray<{ function?: { name?: string } }>): ToolsFingerprint {
+  if (!tools || tools.length === 0) return { count: 0, names: sha8(''), defs: sha8('') }
+  return {
+    count: tools.length,
+    names: sha8(tools.map((t) => t.function?.name ?? '?').join('\u0000')),
+    defs: sha8(JSON.stringify(tools))
+  }
+}
+
+/** Compact rendering for the `[cache] request` line, in the same style as formatFingerprints. */
+export function formatToolsFingerprint(fp: ToolsFingerprint): string {
+  return `n=${fp.count} names=${fp.names} defs=${fp.defs}`
+}
+
+/**
+ * Last tools fingerprint seen per conversation, so a CHANGE can be reported at the moment it
+ * happens rather than inferred later by diffing two log lines by hand — that manual comparison is
+ * precisely what nobody does, which is how a mid-conversation change went unnoticed.
+ *
+ * Bounded rather than per-tab-cleaned: this holds one short string per conversation key and is
+ * pure diagnostics, so a hard cap is simpler (and safer) than hooking tab teardown.
+ */
+const lastToolsFingerprint = new Map<string, string>()
+const MAX_TRACKED_CONVERSATIONS = 200
+
+/** Records this request's tools fingerprint and returns true only when it DIFFERS from the
+ *  previous request on the same conversation. False on the first request (nothing to differ
+ *  from), so a fresh conversation never warns. */
+export function noteToolsFingerprint(conversationKey: string, fp: ToolsFingerprint): boolean {
+  const key = `${fp.count}:${fp.names}:${fp.defs}`
+  const prev = lastToolsFingerprint.get(conversationKey)
+  if (prev == null && lastToolsFingerprint.size >= MAX_TRACKED_CONVERSATIONS) lastToolsFingerprint.clear()
+  lastToolsFingerprint.set(conversationKey, key)
+  return prev != null && prev !== key
+}
+
+/** Test-only: forgets every tracked conversation's tools fingerprint. */
+export function resetToolsFingerprints(): void {
+  lastToolsFingerprint.clear()
 }
 
 /**

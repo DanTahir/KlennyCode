@@ -2,9 +2,13 @@ import { describe, expect, test, beforeEach } from 'bun:test'
 import {
   breakpointIndices,
   fingerprintBreakpoints,
+  fingerprintTools,
   formatFingerprints,
+  formatToolsFingerprint,
   nextRequestId,
-  resetRequestIds
+  noteToolsFingerprint,
+  resetRequestIds,
+  resetToolsFingerprints
 } from '../src/main/openrouter/cacheDiag'
 import { applyCacheControl } from '../src/main/openrouter/caching'
 import type { ChatMessage, ContentPart } from '../src/main/openrouter/client'
@@ -63,6 +67,74 @@ describe('breakpointIndices', () => {
     expect(marked.wire).not.toBe(unmarked.wire)
     expect(marked.noMark).toBe(unmarked.noMark)
     expect(marked.text).toBe(unmarked.text)
+  })
+})
+
+// The `tools` array is the one part of the cacheable prefix the message fingerprints above cannot
+// see, since a provider hashes tool definitions ahead of the system prompt. These tests pin that
+// the diagnostic can tell the two causes apart (a tool appearing vs. a description edited) — that
+// distinction is what makes the `tools=` field actionable instead of just another hash.
+describe('fingerprintTools', () => {
+  const tool = (name: string, description = 'does a thing') => ({
+    type: 'function' as const,
+    function: { name, description, parameters: { type: 'object', properties: {} } }
+  })
+
+  beforeEach(resetToolsFingerprints)
+
+  test('an unchanged array fingerprints identically; absent/empty is explicitly n=0', () => {
+    expect(fingerprintTools([tool('read_file'), tool('write_file')])).toEqual(
+      fingerprintTools([tool('read_file'), tool('write_file')])
+    )
+    expect(fingerprintTools(undefined).count).toBe(0)
+    expect(fingerprintTools([]).count).toBe(0)
+    expect(formatToolsFingerprint(fingerprintTools(undefined))).toMatch(/^n=0 /)
+  })
+
+  test('a tool appearing mid-conversation moves count, names AND defs — the bug this exists for', () => {
+    const before = fingerprintTools([tool('create_checklist')])
+    const after = fingerprintTools([tool('create_checklist'), tool('update_checklist')])
+    expect(after.count).toBe(before.count + 1)
+    expect(after.names).not.toBe(before.names)
+    expect(after.defs).not.toBe(before.defs)
+  })
+
+  test('an edited description moves defs but NOT names — a new build, not a gating flip', () => {
+    const v1 = fingerprintTools([tool('browser', 'old description')])
+    const v2 = fingerprintTools([tool('browser', 'new description')])
+    expect(v2.names).toBe(v1.names)
+    expect(v2.defs).not.toBe(v1.defs)
+  })
+
+  test('reordering is a real difference — the provider hashes bytes, not a set', () => {
+    const asc = fingerprintTools([tool('a'), tool('b')])
+    const desc = fingerprintTools([tool('b'), tool('a')])
+    expect(desc.count).toBe(asc.count)
+    expect(desc.names).not.toBe(asc.names)
+    expect(desc.defs).not.toBe(asc.defs)
+  })
+
+  test('noteToolsFingerprint stays silent on a first request and reports only a later change', () => {
+    const fp = fingerprintTools([tool('read_file')])
+    expect(noteToolsFingerprint('tab-1:opus', fp)).toBe(false)
+    expect(noteToolsFingerprint('tab-1:opus', fp)).toBe(false)
+    const grown = fingerprintTools([tool('read_file'), tool('update_checklist')])
+    expect(noteToolsFingerprint('tab-1:opus', grown)).toBe(true)
+    // Reported once, not every request thereafter — the new shape is now the baseline.
+    expect(noteToolsFingerprint('tab-1:opus', grown)).toBe(false)
+  })
+
+  test('tracking is per conversation, so one tab changing never warns on another', () => {
+    const one = fingerprintTools([tool('read_file')])
+    const two = fingerprintTools([tool('read_file'), tool('grep')])
+    expect(noteToolsFingerprint('tab-1:opus', one)).toBe(false)
+    expect(noteToolsFingerprint('tab-2:opus', two)).toBe(false)
+    expect(noteToolsFingerprint('tab-2:opus', two)).toBe(false)
+    expect(noteToolsFingerprint('tab-1:opus', one)).toBe(false)
+  })
+
+  test('the rendered field is one greppable trio of tokens', () => {
+    expect(formatToolsFingerprint(fingerprintTools([tool('x')]))).toMatch(/^n=1 names=[0-9a-f]{8} defs=[0-9a-f]{8}$/)
   })
 })
 

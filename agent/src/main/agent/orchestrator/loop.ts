@@ -358,8 +358,11 @@ export async function agentLoop(
       discordAvailableInCoding: settings.discordAvailableInCoding,
       browserAutomationAvailable: (settings.browserAutomation?.policy ?? 'off') !== 'off',
       imageGenerationAvailable: settings.imageModel != null
-    },
-    Boolean(tab.activeChecklist)
+    }
+    // NB: nothing per-turn is passed here on purpose. This array is the request's `tools` block,
+    // which a provider hashes ahead of the system prompt, so anything conversation-state-derived
+    // (this used to pass Boolean(tab.activeChecklist)) invalidates the whole cached prefix the
+    // moment it flips. See the update_checklist comment in tools/definitions.ts.
   ).filter((t) => !subagentCtx || t.function.name !== 'task')
   const knownToolNames = toolDefs.map((t) => t.function.name)
 

@@ -284,6 +284,40 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   cache models (qwen3-coder-plus, deepseek-v3.2) accept the marker without error and cache
   implicitly regardless. `cacheDiag` reports placement as `on=part` / `on=call` in the `bp=`
   field, so a silent regression back to text-marking is greppable.
+- **The `tools` array must never change mid-conversation — it is hashed AHEAD of the system
+  prompt.** `getToolDefinitions`'s output *is* the request's `tools` block, and a provider
+  serializes tool definitions before the system message, so a cached block — keyed on its entire
+  preceding prefix — dies the moment that array changes, and **every** breakpoint dies with it,
+  the fixed system one included. It used to change once per task: `update_checklist` was hidden
+  until `TabSession.activeChecklist` existed (`loop.ts` passed `Boolean(tab.activeChecklist)`), so
+  the first `create_checklist` call of a task grew the array by one ~700-char definition. Measured
+  cost, live (v0.2.157 r4): `cachedTokens=0` with `cacheWriteTokens=53456` on the very next
+  request, while the system message's own `bp=` fingerprint was **byte-identical** — the `bp=`
+  hashes cover *messages only*, which is precisely why this hid behind "identical bytes, so the
+  miss must be upstream". The gate is gone (the tool is always offered; dispatch returns
+  `no_active_checklist` and the description tells the model to call `create_checklist` first), and
+  `fingerprintTools` (`cacheDiag.ts`) now adds `tools=n=<count> names=<sha8> defs=<sha8>` to every
+  `[cache] request` line plus a one-shot `console.warn` when it changes within a conversation.
+  `names` vs `defs` separates the two causes: a tool appearing/disappearing (our bug, fixable) vs.
+  an edited description/schema (a new build, legitimately once per conversation). Both are
+  order-sensitive — the provider hashes bytes, not a set. Every remaining gate is derived from
+  settings, tab kind or subagent type, all fixed for the life of a conversation; **never add one
+  driven by per-turn conversation state.** Verify with
+  `grep -o 'tools=n=[0-9]* names=[a-f0-9]*' process.log | sort -u` — more than one distinct value
+  inside a single session means something is still mutating. Pinned by
+  `tests/tools-cache-stability.test.ts` (with a positive control, so it cannot pass vacuously) and
+  the `fingerprintTools` block in `cacheDiag.test.ts`. **Live-verified on a real 5-rung ladder**
+  (sonnet-5, $0.11): a stable array gave shortfall **0** on all three transitions
+  (12970 → 12970; 12970+1443 = 14413; 17616 → 17616), while flipping the array by ONE definition
+  mid-conversation (35 → 36 defs, replaying the old gate) gave `cachedTokens=0` and a full
+  17616-token rewrite — with the system block's `bp=#0 … wire=e9cb6aed` **byte-identical on all
+  five requests**, which is the exact shape that reads as "upstream miss" and isn't. The procedure
+  and this baseline are codified in the project skill **`caching-live-verification`**, which is
+  mandatory for any change touching caching: unit tests cannot observe upstream behavior, so write
+  a throwaway live-ladder script, run it, then delete it. Separately, and NOT this bug: the same
+  session's r1–r3 also read back 0 with a byte-stable prefix *and* an unchanged tools array, then
+  every transition from r4 on was exact (six consecutive, shortfall 0) — cold-start/upstream
+  behaviour, nothing our placement controls.
 - **Never merge `thinking` into assistant `content` — it few-shots the model into serial tool
   calling.** Replaying private reasoning as assistant *content* presents it as something the model
   said out loud, so its own history reads as a worked example of "think a paragraph, narrate a
