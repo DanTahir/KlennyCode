@@ -246,12 +246,44 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   tool results). Re-check it session-scoped and automated rather than by eyeballing the tail —
   `awk '/App session started \(vX\.Y\.Z/{f=1} f' process.log | grep -c ':tool:parts'` must be
   **0**. Known cost, by design: a breakpoint is a prefix *cut*, so walking back **defers** the
-  trailing tool results into the next request's block rather than excluding them — and a big
-  write/edit payload rides the **assistant** message's `tool_calls.arguments`, which is exactly
-  where the boundary lands, so it is still cached. Bounded but not always small: each tool result
-  is capped at 40 000 chars (~10k tokens) by `compactToolResult`, so a wide parallel fan-out can
-  defer tens of thousands of tokens by one request — visible above as r2's 628-token write
-  followed by r3's 12202.
+  trailing tool results into the next request's block rather than excluding them. Bounded but not
+  always small: each tool result is capped at 40 000 chars (~10k tokens) by `compactToolResult`,
+  so a wide parallel fan-out can defer tens of thousands of tokens by one request — visible above
+  as r2's 628-token write followed by r3's 12202.
+
+  **That v0.2.155 verification was wrong, and the way it was wrong is the lesson.** It read only
+  r1–r5. The same session's first *dropped* breakpoint is **r30**, and drops continue through
+  r83. Session-scoped counts of `breakpointsAt=[0]` on requests that asked for an advancing
+  breakpoint: **0/16 and 0/11 before** the tool-skip shipped, **13/85 and 7/16 after**. Cause: an
+  assistant turn that calls tools with no preamble has `content: ''` → zero content parts → the
+  marker had nowhere to live, and the old `withCacheControlOnLastPart` returned the message
+  untouched instead of failing. The walk-back landed on exactly that message every normal step.
+  Always verify whole-session:
+  `grep 'includeLastMsgBreakpoint=true' process.log | grep -c 'breakpointsAt=\[0\] '` must be **0**.
+
+- **A `cache_control` marker belongs on the assistant turn's LAST `tool_call`, not on its text.**
+  OpenRouter *does* forward `cache_control` from an OpenAI-format `tool_calls[i]` object to
+  Anthropic's `tool_use` block — live-verified, and it produces a genuinely **readable** entry,
+  not just a billed write. This is what makes a prose-free tool-calling turn markable at all.
+  It is also strictly better than marking text, because Anthropic orders an assistant turn as
+  `[text, tool_use...]` and a breakpoint is a prefix cut, so marking the text cuts *before* the
+  calls and strands `tool_calls.arguments` (where big write/edit payloads live). Measured on
+  claude-sonnet-5, same conversation, ~8k-token write payload:
+
+  | marker on | cache write | uncached tail |
+  |-----------|-------------|---------------|
+  | text part | 7 074       | **8 483**     |
+  | last tool call | 16 208 | **12**        |
+
+  Both read back exactly on the next identical request. End-to-end through the real
+  `toORMessages` → `applyCacheControl` path, a prose-free parallel-tool turn now gives
+  `breakpointsAt=[0,2]` with shortfall **0** on both opus-5 and sonnet-5. Mark the *last* call
+  specifically — an earlier one cuts between calls and strands the rest. Rejected alternatives,
+  both measured: a synthesized **empty** text part is silently ignored (no cache at all), and a
+  synthesized **space** works but needlessly changes model-visible content. The Alibaba explicit-
+  cache models (qwen3-coder-plus, deepseek-v3.2) accept the marker without error and cache
+  implicitly regardless. `cacheDiag` reports placement as `on=part` / `on=call` in the `bp=`
+  field, so a silent regression back to text-marking is greppable.
 - **Never merge `thinking` into assistant `content` — it few-shots the model into serial tool
   calling.** Replaying private reasoning as assistant *content* presents it as something the model
   said out loud, so its own history reads as a worked example of "think a paragraph, narrate a

@@ -1,6 +1,6 @@
 import type { ModelInfo, ProviderPreference } from '@shared/types'
 import { CURATED_MODEL_IDS } from '@shared/types'
-import { applyCacheControl, isExplicitCacheFamily } from './caching'
+import { applyCacheControl, isExplicitCacheFamily, planAdvancingBreakpoint } from './caching'
 import { breakpointIndices, fingerprintBreakpoints, formatFingerprints, nextRequestId } from './cacheDiag'
 
 const BASE = 'https://openrouter.ai/api/v1'
@@ -56,6 +56,10 @@ export interface ToolCall {
   id: string
   type: 'function'
   function: { name: string; arguments: string }
+  /** Prompt-cache breakpoint, set only by applyCacheControl. OpenRouter forwards this to
+   *  Anthropic's `tool_use` block, which is live-verified to produce a readable cache entry —
+   *  see the doc comment there for the measurements. */
+  cache_control?: { type: 'ephemeral' }
 }
 
 export interface ToolDef {
@@ -289,14 +293,29 @@ export async function* streamChatCompletion(opts: {
   const rid = nextRequestId()
   if (opts.supportsExplicitCaching) {
     const breakpointIdxs = breakpointIndices(messages)
+    // Where the advancing breakpoint MEANT to go vs. where it ended up. Logging only the final
+    // positions is what hid the last regression for two releases: a request that failed to place
+    // the advancing breakpoint at all looked identical to a first-request-of-a-conversation that
+    // deliberately skips it. `bpIntended`/`bpActual`/`bpSkipped` make the walk-back itself
+    // visible, so "we intended to mark index N and couldn't" is greppable rather than invisible.
+    const plan = planAdvancingBreakpoint(messages, Boolean(opts.currentTimeNote))
     // `bp=` fingerprints the whole cacheable prefix ending at each breakpoint, not just the marked
     // message, because that prefix is what a cached block is keyed on. Comparing the three hashes
     // at the same index across consecutive requests is what distinguishes "we sent different bytes
     // than we cached" from "we sent identical bytes and the provider still didn't read it back" —
     // see cacheDiag.ts's doc comment for the interpretation table.
     console.log(
-      `[cache] request rid=${rid} model=${opts.model} messages=${messages.length} breakpointsAt=${JSON.stringify(breakpointIdxs)} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint} bp=${formatFingerprints(fingerprintBreakpoints(messages, breakpointIdxs))}`
+      `[cache] request rid=${rid} model=${opts.model} messages=${messages.length} breakpointsAt=${JSON.stringify(breakpointIdxs)} bpIntended=${plan.intendedIdx} bpActual=${plan.index} bpSkipped=tool:${plan.skippedTool}+unmarkable:${plan.skippedUnmarkable} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint} bp=${formatFingerprints(fingerprintBreakpoints(messages, breakpointIdxs))}`
     )
+    // The one case where this request genuinely ships without an advancing breakpoint despite
+    // wanting one, i.e. the whole conversation past the system block is about to be re-paid at
+    // full price. Only reachable when every message back to the system prompt is a tool result
+    // or carries no markable content part.
+    if ((opts.includeLastMessageCacheBreakpoint ?? true) && plan.index < 0) {
+      console.warn(
+        `[cache] request rid=${rid} could not place the advancing breakpoint anywhere: every message from ${plan.intendedIdx} back to the system prompt was a tool result (${plan.skippedTool}) or had no markable content part (${plan.skippedUnmarkable}). Only the system block is cached this request.`
+      )
+    }
   }
   // Skip reasoning entirely for a model already known to reject it (see reasoningRejectedModels).
   const knownReasoningRejector = reasoningRejectedModels.has(opts.model)

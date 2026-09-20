@@ -48,6 +48,10 @@ export interface BreakpointFingerprint {
   role: string
   /** whether this message's own `content` went out as a bare string or a content-part array */
   shape: 'str' | 'parts'
+  /** which slot actually carries the marker. `call` is the normal case for an assistant turn
+   *  with tool calls (it cuts after `tool_calls.arguments` rather than before — see `tryMark`),
+   *  so seeing `part` on a tool-calling assistant message means the preference didn't apply. */
+  markedOn: 'part' | 'call' | 'none'
   /** serialized length of the whole prefix through `idx`, a cheap proxy for cacheable size */
   chars: number
   wire: string
@@ -80,27 +84,48 @@ function partsText(content: ChatMessage['content']): string {
 /** Everything about a message that is real content rather than wire shape. `tool_calls` and
  *  `tool_call_id` are included because they are genuine payload the provider hashes too. */
 function canonicalText(m: ChatMessage): string {
-  const withExtras = m as ChatMessage & { tool_call_id?: string; tool_calls?: unknown }
+  // Marks are stripped first: `text` must answer "is the CONTENT the same?", so a cache_control
+  // marker — which now normally rides a tool_call rather than a content part — must not move it,
+  // or the interpretation table's "same text, different wire" row can never be observed.
+  const withExtras = withoutMarks(m) as ChatMessage & { tool_call_id?: string; tool_calls?: unknown }
   const tcs = withExtras.tool_calls ? JSON.stringify(withExtras.tool_calls) : ''
-  return [m.role, withExtras.tool_call_id ?? '', tcs, partsText(m.content)].join('\u0001')
+  return [m.role, withExtras.tool_call_id ?? '', tcs, partsText(withExtras.content)].join('\u0001')
 }
 
 function withoutMarks(m: ChatMessage): ChatMessage {
-  if (typeof m.content === 'string' || !Array.isArray(m.content)) return m
-  const parts = m.content.map((p) => {
+  const withCalls = m as ChatMessage & { tool_calls?: Array<Record<string, unknown>> }
+  let out = m
+  if (withCalls.tool_calls?.some((c) => c.cache_control)) {
+    out = {
+      ...out,
+      tool_calls: withCalls.tool_calls.map((c) => {
+        const { cache_control: _dropped, ...rest } = c
+        return rest
+      })
+    } as ChatMessage
+  }
+  if (typeof out.content === 'string' || !Array.isArray(out.content)) return out
+  const parts = out.content.map((p) => {
     const { cache_control: _dropped, ...rest } = p as ContentPart & { cache_control?: unknown }
     return rest as ContentPart
   })
-  return { ...m, content: parts }
+  return { ...out, content: parts }
+}
+
+/** Whether this message carries a `cache_control` marker, on a content part or on a tool call.
+ *  Both placements are real breakpoints upstream (see `tryMark` in caching.ts), so a checker
+ *  that only knew about content parts would under-report the very thing it exists to verify. */
+export function hasBreakpoint(m: ChatMessage): boolean {
+  if (Array.isArray(m.content) && m.content.some((p) => (p as { cache_control?: unknown }).cache_control)) return true
+  const calls = (m as ChatMessage & { tool_calls?: Array<{ cache_control?: unknown }> }).tool_calls
+  return Boolean(calls?.some((c) => c.cache_control))
 }
 
 /** Indices of every message carrying a `cache_control` marker, in ascending order. */
 export function breakpointIndices(messages: ChatMessage[]): number[] {
   const idxs: number[] = []
   messages.forEach((m, i) => {
-    if (Array.isArray(m.content) && m.content.some((p) => (p as { cache_control?: unknown }).cache_control)) {
-      idxs.push(i)
-    }
+    if (hasBreakpoint(m)) idxs.push(i)
   })
   return idxs
 }
@@ -118,10 +143,16 @@ export function fingerprintBreakpoints(messages: ChatMessage[], idxs: number[]):
   for (const idx of sorted) {
     const prefix = messages.slice(0, idx + 1)
     const wireJson = JSON.stringify(prefix)
+    const m = messages[idx]
+    const markedOnCall = Boolean(
+      (m as ChatMessage & { tool_calls?: Array<{ cache_control?: unknown }> }).tool_calls?.some((c) => c.cache_control)
+    )
+    const markedOnPart = Array.isArray(m.content) && m.content.some((p) => (p as { cache_control?: unknown }).cache_control)
     out.push({
       idx,
       role: String(messages[idx].role),
       shape: typeof messages[idx].content === 'string' ? 'str' : 'parts',
+      markedOn: markedOnCall ? 'call' : markedOnPart ? 'part' : 'none',
       chars: wireJson.length,
       wire: sha8(wireJson),
       noMark: sha8(JSON.stringify(prefix.map(withoutMarks))),
@@ -135,7 +166,7 @@ export function fingerprintBreakpoints(messages: ChatMessage[], idxs: number[]):
 export function formatFingerprints(fps: BreakpointFingerprint[]): string {
   if (fps.length === 0) return 'none'
   return fps
-    .map((f) => `#${f.idx}:${f.role}:${f.shape} chars=${f.chars} wire=${f.wire} noMark=${f.noMark} text=${f.text}`)
+    .map((f) => `#${f.idx}:${f.role}:${f.shape} on=${f.markedOn} chars=${f.chars} wire=${f.wire} noMark=${f.noMark} text=${f.text}`)
     .join(' | ')
 }
 

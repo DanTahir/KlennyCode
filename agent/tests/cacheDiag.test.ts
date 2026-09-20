@@ -22,6 +22,48 @@ describe('breakpointIndices', () => {
     ]
     expect(breakpointIndices(msgs)).toEqual([0, 2])
   })
+
+  // A breakpoint on an assistant turn now normally rides its last tool_call rather than a
+  // content part (see `tryMark`). A checker that only looked at content would report
+  // `breakpointsAt=[0]` for a perfectly healthy request — i.e. it would recreate the exact false
+  // alarm this diagnostic exists to rule out.
+  test('finds a marker carried on a tool call, not just on a content part', () => {
+    const msgs: ChatMessage[] = [
+      { role: 'system', content: mark('sys') },
+      { role: 'user', content: 'hello' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'a', type: 'function', function: { name: 'read_file', arguments: '{}' } },
+          { id: 'b', type: 'function', function: { name: 'read_file', arguments: '{}' }, cache_control: { type: 'ephemeral' } }
+        ]
+      },
+      { role: 'tool', content: 'result', tool_call_id: 'a' }
+    ]
+    expect(breakpointIndices(msgs)).toEqual([0, 2])
+    // And the log says WHERE it landed, so a silent regression back to part-marking is visible.
+    expect(fingerprintBreakpoints(msgs, [0, 2]).map((f) => f.markedOn)).toEqual(['part', 'call'])
+  })
+
+  test('the noMark fingerprint ignores a tool-call marker, so only the marker moving is invisible', () => {
+    const base: ChatMessage = {
+      role: 'assistant',
+      content: 'text',
+      tool_calls: [{ id: 'a', type: 'function', function: { name: 'read_file', arguments: '{}' } }]
+    }
+    const markedCall: ChatMessage = {
+      ...base,
+      tool_calls: [{ id: 'a', type: 'function', function: { name: 'read_file', arguments: '{}' }, cache_control: { type: 'ephemeral' } }]
+    }
+    const unmarked = fingerprintBreakpoints([base], [0])[0]
+    const marked = fingerprintBreakpoints([markedCall], [0])[0]
+    // Same conversation, marker added: the wire hash must change and noMark/text must not —
+    // that's the "only the marker itself moved" row of the interpretation table.
+    expect(marked.wire).not.toBe(unmarked.wire)
+    expect(marked.noMark).toBe(unmarked.noMark)
+    expect(marked.text).toBe(unmarked.text)
+  })
 })
 
 describe('fingerprintBreakpoints', () => {

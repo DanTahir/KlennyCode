@@ -231,6 +231,46 @@ export function shouldPrimeCache(input: PrimingDecisionInput): PrimingDecision {
   )
 }
 
+export interface AdvancingBreakpointPlan {
+  /** Where position alone would put the breakpoint, before any walk-back: the second-to-last
+   *  message when a trailingNote reserves the last one, the last message otherwise. */
+  intendedIdx: number
+  /** Where it actually lands, or -1 when no legal position exists and only the fixed system
+   *  breakpoint gets applied. Guaranteed markable, so a -1 here is the ONLY way the advancing
+   *  breakpoint can go missing — which is what makes it loggable rather than silent. */
+  index: number
+  /** How far the walk-back travelled, split by cause, so the `[cache]` log distinguishes the
+   *  routine one-step skip off a tool run from a long slide back over prose-free steps. */
+  skippedTool: number
+  skippedUnmarkable: number
+}
+
+/**
+ * Pure, side-effect-free resolution of where the advancing breakpoint goes, split out from
+ * `applyCacheControl` so the decision can be asserted on directly in tests and reported in the
+ * `[cache] request` log line (see streamChatCompletion) without re-deriving it from the marked
+ * output. Both of `applyCacheControl`'s load-bearing invariants are enforced here and nowhere
+ * else: skip `tool` roles, skip messages with nothing to carry a marker.
+ */
+export function planAdvancingBreakpoint(messages: ChatMessage[], hasTrailingNote: boolean): AdvancingBreakpointPlan {
+  const systemIdx = messages.findIndex((m) => m.role === 'system')
+  const intendedIdx = hasTrailingNote ? messages.length - 2 : messages.length - 1
+  let idx = intendedIdx
+  let skippedTool = 0
+  let skippedUnmarkable = 0
+  while (idx > systemIdx) {
+    if (messages[idx].role === 'tool') {
+      skippedTool++
+    } else if (!isMarkable(messages[idx])) {
+      skippedUnmarkable++
+    } else {
+      break
+    }
+    idx--
+  }
+  return { intendedIdx, index: idx > systemIdx ? idx : -1, skippedTool, skippedUnmarkable }
+}
+
 /**
  * Shapes an outgoing messages array to add Anthropic/Qwen-style explicit `cache_control`
  * breakpoints: exactly two — one on the system message (stable, reused every turn) and one on the
@@ -242,6 +282,25 @@ export function shouldPrimeCache(input: PrimingDecisionInput): PrimingDecision {
  * again — see the measured role table below. (Secondarily, nothing strictly between the system
  * message and the advancing breakpoint is marked either; that is cheap hygiene rather than a
  * correctness requirement, and it leaves 2 of Anthropic's 4 breakpoint slots spare.)
+ *
+ * SECOND LOAD-BEARING INVARIANT: the advancing breakpoint never lands on a message with nothing
+ * to carry the marker. A `cache_control` marker has to hang on something concrete, and an
+ * assistant turn that called tools without writing any prose has `content: ''` (see
+ * toORMessages in agent/messages.ts — deliberate, since `thinking` must not be folded into
+ * `content`), which serializes to zero content parts. Because the tool-skip above walks back
+ * onto precisely that message in a normal agent step (the wire tail is
+ * `[..., assistant(tool_calls), tool, tool]`), the two rules combined used to drop the marker
+ * entirely and ship a request carrying only the fixed system breakpoint. Measured across four
+ * app sessions in `process.log`: 0 dropped markers in 27 requests before the tool-skip shipped,
+ * then 13 of 85 and 7 of 16 after it — every one a step where the model went straight to tool
+ * calls, with `cachedTokens` then pinned at exactly the system block's size while promptTokens
+ * climbed past 100k.
+ *
+ * The resolution is that such a message is NOT actually unmarkable: `tryMark` attaches the
+ * marker to its last `tool_call` instead, which OpenRouter forwards to Anthropic's `tool_use`
+ * block. That is live-verified, not assumed — see `tryMark` for the numbers. A message with
+ * neither content parts nor tool calls is still genuinely unmarkable, and for that the walk-back
+ * simply continues rather than silently giving up.
  *
  * Why second-to-last, and not the last message: `trailingNote` (a live, per-request value like
  * the current date/time) is appended to the true last message on every request. If that same
@@ -311,7 +370,7 @@ export function applyCacheControl(
   if (enabled) {
     const systemIdx = out.findIndex((m) => m.role === 'system')
     if (systemIdx >= 0) {
-      out[systemIdx] = withCacheControlOnLastPart(out[systemIdx])
+      out[systemIdx] = tryMark(out[systemIdx]) ?? out[systemIdx]
     }
 
     // The "advancing" breakpoint normally sits on the true last message, EXCEPT when a
@@ -320,17 +379,20 @@ export function applyCacheControl(
     // that split matters: a message that's marked with cache_control on one turn and then
     // replayed with a different shape (note present vs. absent) on the next breaks caching for
     // the whole conversation, so the note and the mark must never land on the same message.
-    const rawBreakpointIdx = trailingNote ? lastIdx - 1 : lastIdx
-
+    //
     // ...and it must not land on a `tool` message — see the role table in the doc comment above.
     // A tool-role boundary has never once produced a readable cache entry across 12 measured
     // rungs, so walk back to the nearest non-tool message (past a whole run of parallel tool
-    // results if need be).
+    // results if need be) — and past any message with no content part to carry the marker, which
+    // is what an assistant turn that called tools without prose looks like.
     //
     // What this costs, precisely: nothing is EXCLUDED from caching, it is DEFERRED by exactly one
     // request. A breakpoint is a prefix cut, so marking the assistant message still caches
     // everything through it — including that message's own `tool_calls.arguments`, which is where
-    // a big write/edit payload actually lives (see toORMessages in agent/messages.ts). Only the
+    // a big write/edit payload actually lives (see toORMessages in agent/messages.ts). That last
+    // part is only true because the marker goes on the LAST tool_call rather than on the text
+    // part; marking the text cuts before the tool calls and strands the arguments, which was
+    // measured at 8,483 uncached tokens on a single write. See `tryMark`. Only the
     // trailing tool results fall outside this request's cut, and the next request's breakpoint
     // advances past them, so they are cached from then on. Since a token is always uncached on
     // its first appearance anyway, the true loss is one extra full-price pass over that final
@@ -339,15 +401,20 @@ export function applyCacheControl(
     // of tokens by one request. Still strictly cheaper than a tool-boundary breakpoint, which
     // billed the 1.25x write premium and then re-paid the whole delta every single turn because
     // the entry was never readable. If this ever needs to be tightened, the measurable signal is
-    // already in the log: `breakpointsAt` vs `messages` in the `[cache] request` line gives the
-    // walk-back distance directly.
-    let breakpointIdx = rawBreakpointIdx
-    while (breakpointIdx > systemIdx && out[breakpointIdx].role === 'tool') breakpointIdx--
+    // already in the log: `bpIntended` vs `bpActual` in the `[cache] request` line gives the
+    // walk-back distance directly, split by cause.
+    const plan = planAdvancingBreakpoint(out, Boolean(trailingNote))
 
     // Nothing else is ever marked: these two positions are the system message (fixed forever) and
     // the tail. Every message in between stays unmarked on every request.
-    if (includeLastMessageBreakpoint && breakpointIdx > systemIdx) {
-      out[breakpointIdx] = withCacheControlOnLastPart(out[breakpointIdx])
+    //
+    // `tryMark` returning null is why the marker can no longer go missing unnoticed: the
+    // planner only ever hands back a markable index, so the fallback here is unreachable, and the
+    // one genuinely marker-less case (plan.index === -1) is reported by the caller instead of
+    // being indistinguishable from success. It used to be neither — marking an `''`-content
+    // message just returned it untouched.
+    if (includeLastMessageBreakpoint && plan.index >= 0) {
+      out[plan.index] = tryMark(out[plan.index]) ?? out[plan.index]
     }
   }
 
@@ -358,11 +425,51 @@ export function applyCacheControl(
   return out
 }
 
-function withCacheControlOnLastPart(message: ChatMessage): ChatMessage {
+/**
+ * Whether a `cache_control` marker can physically be attached to this message — i.e. whether it
+ * has a tool call or a content part to hang one on. See the second load-bearing invariant in
+ * `applyCacheControl`'s doc comment for the regression this predicate exists to prevent.
+ */
+function isMarkable(message: ChatMessage): boolean {
+  return (message.tool_calls?.length ?? 0) > 0 || toContentParts(message.content).length > 0
+}
+
+/**
+ * Marks the last thing in this message that a breakpoint can attach to, or returns `null` when
+ * there is nothing.
+ *
+ * Prefers the last `tool_call` over the content part, and the ordering is load-bearing in both
+ * directions. Anthropic serializes an assistant turn as `[text, tool_use, tool_use, ...]`, and a
+ * breakpoint is a prefix CUT — so marking the text cuts *before* the tool calls and leaves
+ * `tool_calls.arguments` (where a big write/edit payload actually lives) outside the cached
+ * prefix, while marking the LAST tool call takes the whole message. Measured on
+ * claude-sonnet-5 with an ~8k-token write payload, same conversation both ways:
+ *
+ *   marked on text          write= 7074   uncached tail = 8483 tokens
+ *   marked on last tool_call write=16208  uncached tail =   12 tokens
+ *
+ * Both were read back exactly on the next identical request, so this is 9k more tokens cached
+ * for free. Marking an earlier tool call instead of the last would cut between them and strand
+ * the rest, hence specifically the last.
+ *
+ * The `null` — rather than the silent "return the message unchanged" this used to do — is the
+ * other half of the fix. A caller that forgets to handle failure gets a type error instead of a
+ * request that quietly ships one fewer breakpoint than intended and re-pays the whole
+ * conversation at full price, which is exactly how the drop went unnoticed across two releases.
+ */
+function tryMark(message: ChatMessage): ChatMessage | null {
+  const calls = message.tool_calls
+  if (calls?.length) {
+    const lastCall = calls.length - 1
+    return {
+      ...message,
+      tool_calls: calls.map((c, i) => (i === lastCall ? { ...c, cache_control: { type: 'ephemeral' as const } } : c))
+    }
+  }
   const parts = toContentParts(message.content)
-  if (parts.length === 0) return message
-  const lastIdx = parts.length - 1
-  const updatedParts = parts.map((p, i) => (i === lastIdx ? { ...p, cache_control: { type: 'ephemeral' as const } } : p))
+  if (parts.length === 0) return null
+  const lastPart = parts.length - 1
+  const updatedParts = parts.map((p, i) => (i === lastPart ? { ...p, cache_control: { type: 'ephemeral' as const } } : p))
   return { ...message, content: updatedParts }
 }
 

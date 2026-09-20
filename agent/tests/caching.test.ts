@@ -5,6 +5,7 @@ import {
   modelSupportsCaching,
   computeCacheSavings,
   applyCacheControl,
+  planAdvancingBreakpoint,
   shouldPrimeCache,
   primingLookedIneffective,
   estimatePrefixTokens,
@@ -18,6 +19,8 @@ import {
   PREFIX_CACHE_TTL_MS
 } from '../src/main/openrouter/caching'
 import type { ChatMessage, ContentPart } from '../src/main/openrouter/client'
+import type { ChatMessage as UiMessage } from '@shared/types'
+import { toORMessages } from '../src/main/agent/messages'
 
 describe('isExplicitCacheFamily', () => {
   test('anthropic models need explicit cache_control', () => {
@@ -115,10 +118,14 @@ describe('computeCacheSavings', () => {
   })
 })
 
-/** Indices of every message carrying a cache_control marker, in ascending order. */
+/** Indices of every message carrying a cache_control marker, in ascending order. Checks tool
+ *  calls as well as content parts, since both are real breakpoints upstream — deliberately the
+ *  same rule as cacheDiag's `hasBreakpoint`, which is what the `[cache]` log reports. */
 const markedIndices = (msgs: ChatMessage[]): number[] =>
   msgs
-    .map((m, i) => (Array.isArray(m.content) && m.content.some((p) => p.cache_control) ? i : -1))
+    .map((m, i) =>
+      (Array.isArray(m.content) && m.content.some((p) => p.cache_control)) || m.tool_calls?.some((c) => c.cache_control) ? i : -1
+    )
     .filter((i) => i >= 0)
 
 describe('applyCacheControl', () => {
@@ -305,6 +312,127 @@ describe('applyCacheControl', () => {
     expect(markedIndices(applyCacheControl(endsWithToolRun, true, true))).toEqual([0, 5])
   })
 
+  // THE regression this file exists to catch, reproduced from live `[cache]` evidence rather
+  // than reasoning. An assistant turn that calls tools without writing any prose first goes out
+  // as `content: ''` (deliberate — `thinking` must never be folded into content, see
+  // toORMessages), and `''` serializes to ZERO content parts. Since a cache_control marker lives
+  // on a part, that message cannot carry one. The tool-skip walk-back lands on exactly that
+  // message in a normal agent step, so the marker was silently discarded and the request shipped
+  // with only the fixed system breakpoint — re-paying the entire conversation at full price on
+  // every step.
+  //
+  // Counted in process.log across four app sessions: 0 dropped markers in 27 advancing-breakpoint
+  // requests before the tool-skip shipped, then 13/85 and 7/16 after it, each one a step where
+  // the model went straight to tool calls. Symptom in the log: `cachedTokens` pinned at exactly
+  // the system block's size while `promptTokens` climbed past 100k.
+  test('still places the advancing breakpoint when the assistant called tools with no prose (content: "")', () => {
+    const proseFreeStep: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Working on it' },
+      { role: 'tool', content: 'result A', tool_call_id: 'a' },
+      // The model went straight to tool calls this step — no preamble, so content is ''.
+      { role: 'assistant', content: '', tool_calls: [{ id: 'b', type: 'function', function: { name: 'read_file', arguments: '{}' } }] },
+      { role: 'tool', content: 'result B', tool_call_id: 'b' }
+    ]
+
+    // trailingNote reserves index 5, so the raw breakpoint is index 4 — the '' assistant. Its
+    // content can't hold a marker, but its tool_call can, so the breakpoint stays right there
+    // instead of being dropped (the original bug) or sliding back to index 2.
+    expect(markedIndices(applyCacheControl(proseFreeStep, true, true, 'note'))).toEqual([0, 4])
+
+    // Without a trailingNote the raw breakpoint is index 5, a tool message: skip it and land on
+    // the same tool-calling assistant at 4.
+    expect(markedIndices(applyCacheControl(proseFreeStep, true, true))).toEqual([0, 4])
+
+    const marked = applyCacheControl(proseFreeStep, true, true, 'note')
+    expect(marked[4].tool_calls?.[0].cache_control).toEqual({ type: 'ephemeral' })
+    // ...and the content stays a bare string: nothing model-visible was synthesized to carry it.
+    expect(marked[4].content).toBe('')
+  })
+
+  // A breakpoint is a prefix CUT, so it must land after ALL of the turn's tool calls. Marking an
+  // earlier call would strand the remaining ones — and their `arguments`, where a big write/edit
+  // payload lives — outside the cached prefix. Live-verified on claude-sonnet-5: marking the
+  // text part instead of the last call left an 8,483-token tail uncached where marking the last
+  // call left 12.
+  test('marks the LAST tool call of a parallel batch, not an earlier one', () => {
+    const parallel: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 'a', type: 'function', function: { name: 'read_file', arguments: '{"path":"a"}' } },
+          { id: 'b', type: 'function', function: { name: 'read_file', arguments: '{"path":"b"}' } },
+          { id: 'c', type: 'function', function: { name: 'write_file', arguments: '{"path":"c","content":"big"}' } }
+        ]
+      },
+      { role: 'tool', content: 'result', tool_call_id: 'a' }
+    ]
+    const calls = applyCacheControl(parallel, true, true, 'note')[2].tool_calls
+    expect(calls?.map((c) => Boolean(c.cache_control))).toEqual([false, false, true])
+  })
+
+  // The same preference when the model DID write a preamble: the text part is markable, but the
+  // tool calls come after it in Anthropic's block order, so the last call still wins.
+  test('prefers the last tool call over the text part when the assistant wrote both', () => {
+    const both: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      {
+        role: 'assistant',
+        content: 'Let me write that file.',
+        tool_calls: [{ id: 'a', type: 'function', function: { name: 'write_file', arguments: '{"path":"a","content":"big"}' } }]
+      },
+      { role: 'tool', content: 'result', tool_call_id: 'a' }
+    ]
+    const marked = applyCacheControl(both, true, true, 'note')[2]
+    expect(marked.tool_calls?.[0].cache_control).toEqual({ type: 'ephemeral' })
+    // The prose is left exactly as it was — still a bare string, still unmarked.
+    expect(marked.content).toBe('Let me write that file.')
+  })
+
+  // Same hole, reached through a content-parts array rather than a bare string: an assistant
+  // message whose parts list is empty is just as unmarkable as one whose content is ''.
+  test('skips a message whose content is an empty parts array', () => {
+    const emptyParts: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Real text' },
+      { role: 'assistant', content: [] },
+      { role: 'user', content: 'note-bearing slot' }
+    ]
+    expect(markedIndices(applyCacheControl(emptyParts, true, true, 'note'))).toEqual([0, 2])
+  })
+
+  // The property that actually matters, stated directly: whenever the plan says a breakpoint is
+  // placeable, a marker must genuinely appear there. The old code could report a position and
+  // then no-op, which is the failure mode that shipped.
+  test('a placed breakpoint always produces a real marker, across every tail shape', () => {
+    const tails: ChatMessage[][] = [
+      [{ role: 'assistant', content: '', tool_calls: [] }, { role: 'tool', content: 'r', tool_call_id: 'a' }],
+      [{ role: 'assistant', content: 'prose' }, { role: 'tool', content: 'r', tool_call_id: 'a' }],
+      [{ role: 'tool', content: 'r', tool_call_id: 'a' }, { role: 'tool', content: 'r2', tool_call_id: 'b' }],
+      [{ role: 'assistant', content: [] }, { role: 'assistant', content: '' }],
+      [{ role: 'user', content: 'plain' }]
+    ]
+    for (const tail of tails) {
+      const msgs: ChatMessage[] = [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'user', content: 'Hello' },
+        ...tail
+      ]
+      for (const note of [undefined, 'note']) {
+        const plan = planAdvancingBreakpoint(msgs, Boolean(note))
+        const marked = markedIndices(applyCacheControl(msgs, true, true, note))
+        // -1 means "nowhere legal to put it", and then ONLY the system breakpoint may appear.
+        expect(marked).toEqual(plan.index < 0 ? [0] : [0, plan.index])
+      }
+    }
+  })
+
   test('a tool-only history degrades to the system breakpoint rather than marking a tool message', () => {
     const allTools: ChatMessage[] = [
       { role: 'system', content: 'You are a helpful assistant.' },
@@ -343,6 +471,158 @@ describe('applyCacheControl', () => {
       const later = applyCacheControl(grow(n), true, true, `note ${n}`)
       expect(markedIndices(later).filter((i) => i <= bpIdx)).toEqual([0])
     }
+  })
+
+  // The two invariants the advancing breakpoint must never violate, checked against a realistic
+  // prose-free agent turn rather than a hand-picked tail.
+  test('the advancing breakpoint is never a tool message and never the note-bearing last message', () => {
+    const msgs: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' }
+    ]
+    for (let step = 0; step < 6; step++) {
+      msgs.push({ role: 'assistant', content: '', tool_calls: [{ id: `c${step}`, type: 'function', function: { name: 'read_file', arguments: '{}' } }] })
+      msgs.push({ role: 'tool', content: `result ${step}`, tool_call_id: `c${step}` })
+      msgs.push({ role: 'tool', content: `result ${step}b`, tool_call_id: `c${step}b` })
+
+      const marked = markedIndices(applyCacheControl(msgs, true, true, 'note'))
+      for (const idx of marked) {
+        expect(msgs[idx].role).not.toBe('tool')
+        expect(idx).not.toBe(msgs.length - 1)
+      }
+    }
+  })
+})
+
+describe('planAdvancingBreakpoint', () => {
+  const proseFreeTurn = (steps: number): ChatMessage[] => {
+    const msgs: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Last thing I said out loud' }
+    ]
+    for (let i = 0; i < steps; i++) {
+      msgs.push({ role: 'assistant', content: '', tool_calls: [{ id: `c${i}`, type: 'function', function: { name: 'read_file', arguments: '{}' } }] })
+      msgs.push({ role: 'tool', content: `result ${i}`, tool_call_id: `c${i}` })
+    }
+    return msgs
+  }
+
+  test('reports both causes of the walk-back separately', () => {
+    // Assistant messages with neither content nor tool calls are the only truly unmarkable ones
+    // left, so this fixture interleaves them with tool results to exercise both counters.
+    const msgs: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Prose' },
+      { role: 'assistant', content: [] },
+      { role: 'tool', content: 'result', tool_call_id: 'a' },
+      { role: 'assistant', content: [] },
+      { role: 'tool', content: 'result', tool_call_id: 'b' },
+      { role: 'user', content: 'note-bearing slot' }
+    ]
+    const plan = planAdvancingBreakpoint(msgs, true)
+    expect(plan.intendedIdx).toBe(6)
+    expect(plan.index).toBe(2)
+    expect(plan.skippedTool).toBe(2)
+    expect(plan.skippedUnmarkable).toBe(2)
+  })
+
+  test('a normal step with prose needs no unmarkable skipping at all', () => {
+    const msgs: ChatMessage[] = [
+      { role: 'system', content: 'You are a helpful assistant.' },
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Let me look at that' },
+      { role: 'tool', content: 'result', tool_call_id: 'a' }
+    ]
+    const plan = planAdvancingBreakpoint(msgs, true)
+    expect(plan).toEqual({ intendedIdx: 2, index: 2, skippedTool: 0, skippedUnmarkable: 0 })
+  })
+
+  // -1 is the ONLY way the advancing breakpoint can go missing now, which is what makes it
+  // loggable (streamChatCompletion warns on it) instead of silent.
+  test('reports -1, not a bogus index, when nothing legal is left to mark', () => {
+    const plan = planAdvancingBreakpoint(
+      [
+        { role: 'system', content: 'You are a helpful assistant.' },
+        { role: 'assistant', content: '', tool_calls: [] },
+        { role: 'tool', content: 'result', tool_call_id: 'a' }
+      ],
+      false
+    )
+    expect(plan.index).toBe(-1)
+    expect(plan.skippedTool).toBe(1)
+    expect(plan.skippedUnmarkable).toBe(1)
+  })
+
+  // The property the original bug destroyed: the cached prefix must grow with the conversation.
+  // A prose-free turn used to pin it at the system block (marker dropped) and, with only the
+  // walk-back fix, at the last prose-bearing message. Marking tool calls makes it advance on
+  // every single step regardless of whether the model narrates.
+  test('the breakpoint advances every step through a prose-free turn', () => {
+    let previous = -1
+    for (let steps = 1; steps <= 6; steps++) {
+      const plan = planAdvancingBreakpoint(proseFreeTurn(steps), true)
+      // Always the tool-calling assistant of the newest step, never a slide backwards.
+      expect(plan.index).toBe(1 + steps * 2)
+      expect(plan.skippedUnmarkable).toBe(0)
+      expect(plan.index).toBeGreaterThan(previous)
+      previous = plan.index
+    }
+  })
+})
+
+// The hand-written tails above all assume `toORMessages` really does emit `content: ''` for a
+// prose-free tool-calling turn. This block removes that assumption by building the wire from a
+// real UI history, so the two modules can't drift apart and silently re-open the hole: if
+// messages.ts ever stops producing unmarkable assistant messages, these still pass; if caching.ts
+// stops tolerating them, they fail.
+describe('advancing breakpoint on a wire built by toORMessages', () => {
+  const uiTurn = (opts: { preamble: string }): UiMessage[] => [
+    { id: 'u1', role: 'user', blocks: [{ type: 'text', text: 'do the thing' }], createdAt: 1 },
+    {
+      id: 'a1',
+      role: 'assistant',
+      blocks: [
+        // Thinking is never folded into content (see toORMessages), so a turn with reasoning but
+        // no spoken text still produces content: ''. That combination is the bug's trigger.
+        { type: 'thinking', text: 'private reasoning that must not reach content' },
+        ...(opts.preamble ? [{ type: 'text' as const, text: opts.preamble }] : []),
+        { type: 'tool_call', id: 'c1', toolName: 'read_file', args: { path: 'a.ts' }, status: 'success', result: { ok: true, summary: 'read' } }
+      ],
+      createdAt: 2
+    },
+    {
+      id: 't1',
+      role: 'tool',
+      blocks: [{ type: 'tool_call', id: 'c1', toolName: 'read_file', args: { path: 'a.ts' }, status: 'success', result: { ok: true, summary: 'read' } }],
+      createdAt: 3
+    }
+  ]
+
+  test('a prose-free tool-calling turn still gets an advancing breakpoint', () => {
+    const wire = toORMessages(uiTurn({ preamble: '' }), 'SYSTEM PROMPT')
+    // Precondition: this is the shape that broke — index 2 is an assistant tool-call message
+    // whose content is the empty string, so it cannot carry a marker.
+    expect(wire[2]).toMatchObject({ role: 'assistant', content: '' })
+
+    const out = applyCacheControl(wire, true, true, 'Current date/time: noon')
+    // Before the fix this was [0]: the walk-back skipped the tool at index 3, landed on the
+    // unmarkable assistant at 2, and dropped the marker without a word. Now the marker rides
+    // that message's tool_call instead.
+    expect(markedIndices(out)).toEqual([0, 2])
+    expect(out[2].tool_calls?.[0].cache_control).toEqual({ type: 'ephemeral' })
+    expect(out[2].content).toBe('')
+  })
+
+  test('the same turn WITH preamble lands on the same message, also via its tool call', () => {
+    const wire = toORMessages(uiTurn({ preamble: 'Let me read that file.' }), 'SYSTEM PROMPT')
+    expect(wire[2]).toMatchObject({ role: 'assistant', content: 'Let me read that file.' })
+    const out = applyCacheControl(wire, true, true, 'Current date/time: noon')
+    // Whether the model narrated or not no longer changes where the breakpoint goes — which is
+    // exactly what the r6/r7-vs-r10..r15 split in process.log was caused by.
+    expect(markedIndices(out)).toEqual([0, 2])
+    expect(out[2].tool_calls?.[0].cache_control).toEqual({ type: 'ephemeral' })
   })
 })
 
