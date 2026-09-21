@@ -86,11 +86,31 @@ import type { ChecklistItem } from '@shared/types'
 const BATCHING_NUDGE =
   `\n\nBefore you call tools this turn: first privately list what you need next, then request every item on that list that doesn't depend on another item's result — all in this one response, not one per turn.`
 
+/**
+ * Told to the model when the system prefix it was just sent is a deliberately frozen snapshot whose
+ * on-disk sources (project/global memory, the auto-memory index, SOUL.md, skills/subagents) have
+ * since changed — see prompt-snapshot.ts for why the prefix is not rebuilt.
+ *
+ * This lives in the uncached trailing note for exactly the same reason as the clock, the ledger and
+ * the checklist: it is per-turn-variable state, so putting it in the prefix would be self-defeating
+ * (it would itself change the bytes whose stability it exists to preserve). Being here is free.
+ *
+ * Phrased as "re-read if you need it" rather than a correction, because the snapshot is usually
+ * still accurate in every way that matters — the model mostly needs to know not to trust the
+ * catalog as an exhaustive, current listing after it has written a memory note or skill this
+ * session.
+ */
+const PROMPT_PREFIX_STALE_NOTE =
+  `Note on your own context: the large reference block in your system prompt (project/global memory, auto-memory index, skills and subagents catalogs, personality) is a snapshot taken when this conversation started, and its underlying files have changed on disk since — most likely because you wrote a memory note, skill or subagent this session. It is deliberately NOT refreshed mid-conversation: rebuilding it would invalidate the prompt cache for this entire conversation and re-bill every token of it. Treat that block as possibly out of date, and use list_memory/read_memory/list_skills/read_skill (or just re-read the file) whenever you need the current state — in particular, don't conclude a note or skill you just wrote is missing because it isn't listed there.`
+
 export async function buildCurrentTimeNote(
   assistantTabId?: string,
   activeChecklist?: { title: string; items: ChecklistItem[] },
   justCompacted?: boolean,
-  ledgerDigest?: string
+  ledgerDigest?: string,
+  /** True when the frozen prefix no longer matches what buildSystemPrompt() would produce now
+   *  (see resolveSystemPrompt in prompt-snapshot.ts). */
+  promptPrefixStale?: boolean
 ): Promise<string> {
   const now = new Date()
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone
@@ -115,6 +135,9 @@ export async function buildCurrentTimeNote(
     if (justCompacted && activeChecklist.items.some((it) => it.done)) {
       timeNote += `\n\nNote: the items already checked off above are self-reported (from a prior turn, before this compaction) and were never independently re-verified — spot-check them if you're about to rely on "already done" to decide what still needs doing, rather than assuming they're correct.`
     }
+  }
+  if (promptPrefixStale) {
+    timeNote += `\n\n${PROMPT_PREFIX_STALE_NOTE}`
   }
   if (!assistantTabId) return `${timeNote}${BATCHING_NUDGE}`
   const digest = await buildAssistantMemoryDigestForTab(assistantTabId)

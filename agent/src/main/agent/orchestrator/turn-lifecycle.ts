@@ -22,6 +22,7 @@ import {
   pendingQuestions,
   endedTurns,
   activeRuns,
+  systemPromptSnapshots,
   emitToAll,
   endTurn
 } from './state'
@@ -62,7 +63,7 @@ export function stopGeneration(tabId: string): void {
  *
  *  stopGeneration() already resolves/removes any pending questions and approvals for this tab
  *  as part of aborting it, so this only needs to clean up what stopGeneration itself doesn't:
- *  the abort-controller, ended-turn, and active-run bookkeeping. */
+ *  the abort-controller, ended-turn, active-run and frozen-system-prompt bookkeeping. */
 export function clearTabState(tabId: string): void {
   // Abort first so any in-flight agentLoop/streaming for this tab stops touching the (now
   // gone) tab object and its own cleanup in startAgentLoop's finally block gets a chance to run.
@@ -71,6 +72,10 @@ export function clearTabState(tabId: string): void {
   abortControllers.delete(tabId)
   endedTurns.delete(tabId)
   activeRuns.delete(tabId)
+  // The frozen prompt prefix is scoped to this conversation by definition (see
+  // prompt-snapshot.ts) — a closed tab's entry is pure leaked memory, and a reopened tab from
+  // History is a new conversation that should rebuild from current disk state.
+  systemPromptSnapshots.delete(tabId)
 
   // Best-effort — don't let a slow/failed browser teardown block tab close. No-op if this tab
   // never used the browser tool (disposeSession() checks the session map first).

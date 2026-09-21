@@ -5,6 +5,7 @@
 // they all observe the same, single set of live turns/questions/abort-controllers.
 import { BrowserWindow } from 'electron'
 import type { AgentStreamEvent, PendingQuestion, QuestionAnswer, ToolName } from '@shared/types'
+import type { SystemPromptSnapshot } from './prompt-snapshot'
 
 export type Emit = (event: AgentStreamEvent) => void
 
@@ -49,6 +50,29 @@ export const endedTurns = new Set<string>()
  *  concurrently (e.g. user sends a second message before the first turn's abort is even wired
  *  up), both mutating tab.messages and both calling the model API at the same time. */
 export const activeRuns = new Map<string, Promise<void>>()
+/** The frozen system-prompt prefix per conversation. Deliberately module state here rather than a
+ *  field on TabSession: TabSession is persisted to disk and shipped over IPC on every update, so
+ *  parking a ~80 KB prompt string in it would bloat every session file and every renderer payload
+ *  (see the binary-diff session-log incident for what oversized persisted payloads cost). This is
+ *  pure cache — losing it on restart just means the next turn rebuilds the prompt once, which is
+ *  correct behavior for a new conversation anyway. See prompt-snapshot.ts for the why. */
+export const systemPromptSnapshots = new Map<string, SystemPromptSnapshot>()
+
+/** Bound on tracked conversations. clearTabState() removes a real tab's entry on close, but
+ *  subagent runs synthesize their own ephemeral tab ids that nothing ever closes, so without a cap
+ *  this map would grow for the life of the process. */
+const MAX_TRACKED_PROMPT_SNAPSHOTS = 200
+
+/** Store a conversation's frozen prompt, evicting wholesale if the map has grown past its cap.
+ *  A full clear (rather than LRU eviction) is deliberate: the cost of a miss is one rebuilt prompt
+ *  on the next step of each affected conversation, so precision here buys nothing worth the
+ *  bookkeeping — and at 200 live conversations the process has bigger problems. */
+export function rememberSystemPromptSnapshot(tabId: string, snapshot: SystemPromptSnapshot): void {
+  if (!systemPromptSnapshots.has(tabId) && systemPromptSnapshots.size >= MAX_TRACKED_PROMPT_SNAPSHOTS) {
+    systemPromptSnapshots.clear()
+  }
+  systemPromptSnapshots.set(tabId, snapshot)
+}
 
 export function emitToAll(event: AgentStreamEvent): void {
   for (const win of BrowserWindow.getAllWindows()) {

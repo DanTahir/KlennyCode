@@ -319,7 +319,7 @@ export async function* streamChatCompletion(opts: {
     // indistinguishable from an upstream miss, which is exactly how one went unnoticed.
     const toolsFp = fingerprintTools(opts.tools)
     console.log(
-      `[cache] request rid=${rid} model=${opts.model} messages=${messages.length} tools=${formatToolsFingerprint(toolsFp)} breakpointsAt=${JSON.stringify(breakpointIdxs)} bpIntended=${plan.intendedIdx} bpActual=${plan.index} bpSkipped=tool:${plan.skippedTool}+unmarkable:${plan.skippedUnmarkable} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint} bp=${formatFingerprints(fingerprintBreakpoints(messages, breakpointIdxs))}`
+      `[cache] request rid=${rid} model=${opts.model} sid=${opts.sessionId ?? 'none'} messages=${messages.length} tools=${formatToolsFingerprint(toolsFp)} breakpointsAt=${JSON.stringify(breakpointIdxs)} bpIntended=${plan.intendedIdx} bpActual=${plan.index} bpSkipped=tool:${plan.skippedTool}+unmarkable:${plan.skippedUnmarkable} includeLastMsgBreakpoint=${opts.includeLastMessageCacheBreakpoint} bp=${formatFingerprints(fingerprintBreakpoints(messages, breakpointIdxs))}`
     )
     // The one case where this request genuinely ships without an advancing breakpoint despite
     // wanting one, i.e. the whole conversation past the system block is about to be re-paid at
@@ -429,6 +429,20 @@ export async function* streamChatCompletion(opts: {
       const toolCalls: Map<number, ToolCall> = new Map()
       let finishReason: string | undefined
       const reasoningDetails: ReasoningDetail[] = []
+      /**
+       * Which upstream endpoint actually served this request, and its generation id.
+       *
+       * Load-bearing for cache diagnosis, not cosmetic: an Anthropic prompt cache lives on the
+       * endpoint that wrote it, so a mid-conversation routing flip (Anthropic -> Bedrock/Vertex)
+       * is a guaranteed total miss. Without this field, that flip and a genuine upstream cold-start
+       * miss look IDENTICAL in the log — both show `cachedTokens=0` with a byte-identical `bp=`
+       * prefix and an unchanged `tools=` array, which is precisely the ambiguity that left the
+       * "first request's write is never read back" behavior unexplained. `sid=` on the request line
+       * is its other half: it confirms the session_id we send (OpenRouter's documented sticky-
+       * routing key) actually accompanied the request.
+       */
+      let servingProvider: string | undefined
+      let genId: string | undefined
 
       /**
        * Diagnostics for the truncated/invalid tool-call-arguments failure mode. Logged at BOTH
@@ -477,6 +491,12 @@ export async function* streamChatCompletion(opts: {
           }
           try {
             const parsed = JSON.parse(data) as {
+              /** OpenRouter-added, present on its SSE chunks: the upstream endpoint serving this
+               *  request (e.g. "Anthropic", "Amazon Bedrock", "Google Vertex"). */
+              provider?: string
+              /** OpenRouter generation id — looked up against /api/v1/generation for authoritative
+               *  per-request cache/provider accounting when the streamed fields aren't enough. */
+              id?: string
               choices?: Array<{
                 delta?: {
                   content?: string
@@ -500,6 +520,12 @@ export async function* streamChatCompletion(opts: {
                 }
               }
             }
+
+            // Captured from whichever chunk carries them (OpenRouter puts these on every chunk,
+            // but don't assume the first one does) so they're available by the time the usage
+            // chunk is logged below.
+            if (parsed.provider) servingProvider = parsed.provider
+            if (parsed.id) genId = parsed.id
 
             const delta = parsed.choices?.[0]?.delta
             if (parsed.choices?.[0]?.finish_reason) finishReason = parsed.choices[0].finish_reason
@@ -539,7 +565,7 @@ export async function* streamChatCompletion(opts: {
             if (parsed.usage) {
               if (opts.supportsExplicitCaching) {
                 console.log(
-                  `[cache] usage rid=${rid} model=${opts.model} promptTokens=${parsed.usage.prompt_tokens ?? 0} cachedTokens=${parsed.usage.prompt_tokens_details?.cached_tokens ?? 0} cacheWriteTokens=${parsed.usage.prompt_tokens_details?.cache_write_tokens ?? 0}`
+                  `[cache] usage rid=${rid} model=${opts.model} promptTokens=${parsed.usage.prompt_tokens ?? 0} cachedTokens=${parsed.usage.prompt_tokens_details?.cached_tokens ?? 0} cacheWriteTokens=${parsed.usage.prompt_tokens_details?.cache_write_tokens ?? 0} provider=${servingProvider ?? 'unknown'} gen=${genId ?? 'unknown'}`
                 )
               }
               yield {

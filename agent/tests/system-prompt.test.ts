@@ -362,3 +362,50 @@ describe('buildSystemPrompt — shell selection', () => {
     expect(prompt).toContain(`run_command executes via ${expectedShell.name}`)
   })
 })
+
+// The system prefix is frozen per conversation (prompt-snapshot.ts) so a write_memory/write_skill
+// call can't change the cached system message mid-conversation. The freshness signal that replaces
+// the rebuild must therefore live in the trailing note — if it ever lands in the prefix instead, it
+// would itself become the churn it exists to avoid.
+describe('buildCurrentTimeNote — frozen-prefix staleness note (cache-safety critical)', () => {
+  const STALE_MARKER = 'is a snapshot taken when this conversation started'
+
+  test('is omitted entirely when the frozen prefix still matches disk', async () => {
+    const { buildCurrentTimeNote } = await import('../src/main/agent/orchestrator/system-prompt')
+    const note = await buildCurrentTimeNote(undefined, undefined, undefined, undefined, false)
+    expect(note).not.toContain(STALE_MARKER)
+    expect(note).toContain('Current date/time:')
+  })
+
+  test('appears when on-disk memory/skills content has drifted from the snapshot', async () => {
+    const { buildCurrentTimeNote } = await import('../src/main/agent/orchestrator/system-prompt')
+    const note = await buildCurrentTimeNote(undefined, undefined, undefined, undefined, true)
+    expect(note).toContain(STALE_MARKER)
+    // Must tell the model how to get current state, or it may conclude a note it just wrote
+    // silently failed because the catalog doesn't list it.
+    expect(note).toContain('read_memory')
+  })
+
+  test('does not displace the batching nudge from the very end of the note', async () => {
+    const { buildCurrentTimeNote } = await import('../src/main/agent/orchestrator/system-prompt')
+    const note = await buildCurrentTimeNote(
+      undefined,
+      { title: 'Some task', items: [{ text: 'step one', done: false }] as never },
+      undefined,
+      'Tool calls actually made so far this turn: read_file',
+      true
+    )
+    expect(note.trimEnd().endsWith('not one per turn.')).toBe(true)
+    const staleIdx = note.indexOf(STALE_MARKER)
+    expect(staleIdx).toBeGreaterThan(note.indexOf('Current live checklist'))
+    expect(staleIdx).toBeLessThan(note.indexOf('first privately list what you need next'))
+  })
+
+  test('never leaks into the CACHED system-prompt prefix', async () => {
+    const { buildSystemPrompt } = await import('../src/main/agent/orchestrator/system-prompt')
+    const prompt = await buildSystemPrompt('agent', undefined, undefined, 'project')
+    expect(prompt).not.toContain(STALE_MARKER)
+    const again = await buildSystemPrompt('agent', undefined, undefined, 'project')
+    expect(again).toBe(prompt)
+  })
+})

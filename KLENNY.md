@@ -15,7 +15,7 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
     `scheduler/` (cron), `openrouter/` (`client.ts` streaming + summarization, `caching.ts`
     breakpoints, `cacheDiag.ts` prefix fingerprints, `images.ts`), `codeindex/` (optional
     semantic search, embeddings + vectra/Pinecone)
-  - `src/main/agent/orchestrator/` — the core loop, split up: `system-prompt.ts`, `loop.ts` (turn
+  - `src/main/agent/orchestrator/` — the core loop, split up: `system-prompt.ts`, `prompt-snapshot.ts` (frozen cached prefix), `loop.ts` (turn
     loop + `dispatchTool()`), `state.ts` (per-tab bookkeeping), `turn-lifecycle.ts` (checkpoints,
     compaction hooks, streaming), `checklist.ts`, `ledger.ts`, `approval-previews.ts`,
     `scheduled-and-discord.ts`
@@ -170,7 +170,9 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
 
 ## Useful entry points when investigating a bug or feature
 
-- System prompt: `orchestrator/system-prompt.ts` → `buildSystemPrompt()`. Per-turn dynamic content
+- System prompt: `orchestrator/system-prompt.ts` → `buildSystemPrompt()`, frozen for the
+  conversation's life by `orchestrator/prompt-snapshot.ts` (`resolveSystemPrompt` /
+  `buildPromptConfigKey`, snapshots in `state.ts`) — see caching invariant 4. Per-turn dynamic content
   (clock, ledger digest, checklist, Assistant memory) must stay in the always-uncached trailing
   note from `buildCurrentTimeNote()`, never the cached prefix — see the caching gotcha.
   `system-prompt.test.ts` asserts both halves (digest present in the trailing note, absent from the
@@ -210,7 +212,7 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
 
 ## Non-obvious gotchas worth knowing before touching these areas
 
-- **Prompt caching has three hard invariants, each established by a live ladder and each previously
+- **Prompt caching has four hard invariants, each established by a live ladder and each previously
   broken in a way that looked like an upstream miss.** `applyCacheControl` (`openrouter/caching.ts`)
   marks exactly two positions — the system message (fixed forever) and an advancing breakpoint (the
   *second*-to-last message, since the true last is the volatile trailing note) — and never anything
@@ -260,6 +262,22 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
      miss must be upstream"). The gate is gone (the tool is always offered; dispatch returns
      `no_active_checklist`). Every remaining gate derives from settings, tab kind or subagent type,
      all fixed for a conversation's life; **never add one driven by per-turn conversation state.**
+  4. **Freeze the system prompt for the conversation's life — never rebuild it from live disk
+     state.** `buildSystemPrompt()` runs on *every* step and reads the auto-memory index, skills
+     catalog and `SOUL.md` off disk, so before the fix any `write_memory`/`write_skill` moved the
+     **system message** — the one fixed breakpoint every other block is keyed on — and wiped the
+     entire conversation's cache. Measured in production beforehand: four mid-session transitions
+     where `#0:system`'s `chars`+`wire` changed while `tools=` stayed identical, each
+     `cachedTokens=0` with full re-writes of **87 303 / 89 070 / 122 275 / 188 848** tokens.
+     `orchestrator/prompt-snapshot.ts` now snapshots the prompt per tab, keyed by
+     `buildPromptConfigKey()` over **deliberate user-driven config only** (mode, shellId, tab kind,
+     subagent identity, Assistant tool availability) — disk content drift never rebuilds it.
+     The freshness signal was *moved, not dropped*: `PROMPT_PREFIX_STALE_NOTE` rides the free,
+     always-uncached trailing note and tells the model to `read_memory` for current state. Live
+     negative control on claude-opus-5 — appending a single 170-char auto-memory line (system
+     16 985 → 17 155 chars, `wire` 510a3f6a → 425a3b2d) took rung 4 from clean read-back to
+     `cached=0` plus a **10 090**-token re-write (shortfall 9 067), with rungs 2/3/5 at shortfall
+     **0** on either side. Putting freshness back into the cached prefix *is* the bug.
 
   **Dead theories — each looked compelling and cost a build; do not re-chase.** (a) "an interior
   `cache_control` marker invalidates the prefix" — refuted by a rung that read its block back
@@ -268,7 +286,23 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   that matched exactly *across* that flip; (c) content drift — the content-only hash was
   byte-identical at every repeated index in every session. Also note a real cold-start effect that
   our placement does **not** control: a session's first few requests can read back 0 with a
-  byte-stable prefix *and* a stable tools array, then every later transition is exact.
+  byte-stable prefix *and* a stable tools array, then every later transition is exact. Production
+  shows this as a precise shape — r1 wrote 47 652, r2 read **0** and re-wrote 47 951 (= 47 652 +
+  299), then r3 onward read back the preceding write exactly, forever; identically in a second
+  conversation (20 143 → miss → re-wrote 20 547 → read 20 547), with r1→r2 seconds apart inside a
+  single turn. Every explanation tried is now **eliminated by measurement or argument — do not
+  re-chase**: TTL expiry (would correlate with *typing pauses*, not a clean always-miss-r1→r2);
+  prefix byte drift (`wire=` identical r1 vs r2 in both conversations); a manual `provider.order`
+  disabling sticky routing (no `providerPreference` is set at all); `session_id` being a fake or
+  unsupported field (it is real and documented, and `client.ts` already sends `sessionId: tab.id`
+  → `body.session_id` correctly — that code is **not** dead); a provider-routing flip; the
+  tool-message shape spanning the transition; and prefix size. The last three were tested on a live
+  opus-5 ladder built to reproduce the production shape (real restricted tool defs, an assistant
+  `tool_call` + `tool` result between rungs, one `session_id`): at **52 445** prompt tokens — larger
+  than production's 48 048 — rung 2 read back rung 1's write **exactly** (51 874, shortfall 0) with
+  `provider=Claude` stable across every rung. The cost is therefore bounded at one extra prefix
+  write per conversation and self-corrects from r3, and there is no code fix to make without a
+  reproduction.
 
   **Verify whole-session, never by eyeballing the tail** (both must be 0, both scoped to one
   session): `grep 'includeLastMsgBreakpoint=true' process.log | grep -c 'breakpointsAt=\[0\] '`
@@ -279,7 +313,15 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   our bug; `defs` = an edited description/schema, legitimately once per build). `fingerprintTools`
   (`cacheDiag.ts`) also `console.warn`s once when it changes mid-conversation. Pinned by
   `tests/tools-cache-stability.test.ts` and `cacheDiag.test.ts`, both with positive controls so
-  they cannot pass vacuously.
+  they cannot pass vacuously. For a suspected cold-start or routing miss, `[cache] usage` now
+  carries `provider=` (the upstream endpoint that actually served the request) and `gen=` (the
+  generation id, for authoritative `/api/v1/generation` lookup), and `[cache] request` carries
+  `sid=` (the sticky-routing key we sent):
+  `grep -o 'provider=[^ ]*' process.log | sort -u` returning more than one value within a session
+  is a routing flip, which is a *guaranteed* total miss because an Anthropic cache lives on the
+  endpoint that wrote it. Without those fields a flip and a genuine upstream cold start are
+  **indistinguishable** in the log — both show `cachedTokens=0` with a byte-identical `bp=` prefix
+  and an unchanged `tools=`, which is exactly what stalled two investigations.
 - **Never merge `thinking` into assistant `content` — it few-shots the model into serial tool
   calling.** Replaying private reasoning as assistant *content* presents it as something the model
   said out loud, so its own history reads as a worked example of "think a paragraph, narrate a
@@ -546,6 +588,12 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   explicit breakpoints and we use only **2** (system + advancing). The compaction summary (index 1)
   is safe *because its position is fixed*, but any new breakpoint must obey the caching invariants:
   fixed positions only, never on a `tool` message.
+- Root-causing the **first-write cold-start miss** — r1's cache write is never read back by r2,
+  costing one extra full prefix write per conversation (self-corrects from r3). Not reproducible on
+  a controlled live ladder even at production scale on the production model with a stable provider,
+  and every hypothesis we had is already eliminated (see the caching gotcha). The next step is
+  deliberately *observational, not speculative*: after the next production occurrence, read the new
+  `provider=`/`gen=`/`sid=` fields to confirm or deny a routing flip **before** touching any code.
 - Compaction-summary manual reset (UX + IPC) — a user-facing "reset conversation summary" button for
   recovery if a summary ever ends up wrong. Not required for the poisoning fix (that's done); purely
   recovery UX. No IPC channel exists yet.

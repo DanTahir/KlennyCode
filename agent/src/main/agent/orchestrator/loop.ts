@@ -129,6 +129,7 @@ import {
   truncateSummary
 } from '../turnControl'
 import { buildSystemPrompt, buildCurrentTimeNote } from './system-prompt'
+import { buildPromptConfigKey, resolveSystemPrompt } from './prompt-snapshot'
 import { previewMutatingTool, checkSpendCap } from './approval-previews'
 import {
   type Emit,
@@ -136,7 +137,9 @@ import {
   type SubagentContext,
   throwIfAborted,
   pendingQuestions,
-  questionWaiters
+  questionWaiters,
+  systemPromptSnapshots,
+  rememberSystemPromptSnapshot
 } from './state'
 
 export async function agentLoop(
@@ -259,24 +262,49 @@ export async function agentLoop(
     `[compaction] step=${stepCount} tokens~${compacted.tokenEstimate} threshold=${Math.round(compacted.threshold)} fired=${compacted.compacted} prevTool=${lastToolCallName(tab.messages) ?? 'none'} unfinishedChecklist=${unfinishedChecklistItems} resumes=${compactionResumes}`
   )
 
-  const systemPrompt = await buildSystemPrompt(
+  const promptKind = tab.kind === 'assistant' ? 'assistant' : 'project'
+  // Mirrors exactly the gating passed to getToolDefinitions() below, so the Assistant-tab
+  // prompt text never names a docx/Gmail/Discord tool the schema doesn't actually include.
+  // (docx has no coding-toggle gate here since it's only relevant for kind === 'assistant',
+  // where docx tools are always on regardless of docxAvailableInCoding — that setting only
+  // gates docx tools on project tabs.)
+  // Hoisted out of the call below so the prompt-snapshot config key is derived from the exact
+  // same values the prompt was built from, instead of a re-derivation that could drift.
+  const assistantToolAvailability = {
+    docx: true,
+    gmailRead: Boolean(settings.hasGmailToken) && settings.automationPermissions['gmail.read'] === 'auto',
+    gmailSend: Boolean(settings.hasGmailToken) && settings.automationPermissions['gmail.send'] === 'auto',
+    discord: Boolean(settings.hasDiscordToken) && settings.automationPermissions['discord.post'] === 'auto',
+    browser: (settings.browserAutomation?.policy ?? 'off') !== 'off'
+  }
+  const freshSystemPrompt = await buildSystemPrompt(
     tab.mode,
     settings.shellId,
     subagentCtx,
-    tab.kind === 'assistant' ? 'assistant' : 'project',
-    // Mirrors exactly the gating passed to getToolDefinitions() below, so the Assistant-tab
-    // prompt text never names a docx/Gmail/Discord tool the schema doesn't actually include.
-    // (docx has no coding-toggle gate here since it's only relevant for kind === 'assistant',
-    // where docx tools are always on regardless of docxAvailableInCoding — that setting only
-    // gates docx tools on project tabs.)
-    {
-      docx: true,
-      gmailRead: Boolean(settings.hasGmailToken) && settings.automationPermissions['gmail.read'] === 'auto',
-      gmailSend: Boolean(settings.hasGmailToken) && settings.automationPermissions['gmail.send'] === 'auto',
-      discord: Boolean(settings.hasDiscordToken) && settings.automationPermissions['discord.post'] === 'auto',
-      browser: (settings.browserAutomation?.policy ?? 'off') !== 'off'
-    }
+    promptKind,
+    assistantToolAvailability
   )
+  // The prompt is built every step (it's cheap — a few file reads) but only ADOPTED on the first
+  // step of a conversation or after a deliberate config change. Any other difference is on-disk
+  // content drift (a memory note, skill, subagent or SOUL.md edit), and honoring it here would
+  // change the system message mid-conversation, killing the fixed system cache breakpoint and
+  // every breakpoint after it — measured live at up to 188 848 re-written tokens from a single
+  // write_memory call. Freshness is instead reported in the uncached trailing note below.
+  // See prompt-snapshot.ts for the full measurement table and the rationale.
+  const promptPrefix = resolveSystemPrompt(
+    systemPromptSnapshots.get(tab.id),
+    buildPromptConfigKey({
+      mode: tab.mode,
+      shellId: settings.shellId,
+      kind: promptKind,
+      subagentType: subagentCtx?.agentType,
+      subagentBody: subagentCtx?.body,
+      assistantTools: assistantToolAvailability
+    }),
+    freshSystemPrompt
+  )
+  rememberSystemPromptSnapshot(tab.id, promptPrefix.snapshot)
+  const systemPrompt = promptPrefix.prompt
   const orMessages = toORMessages(
     messagesForWire(tab.messages, tab.compactedThroughMessageId),
     systemPrompt,
@@ -388,7 +416,11 @@ export async function agentLoop(
       // recomputes its own ledger AFTER streaming so it also sees the calls made by the very
       // message being audited (a pre-call snapshot would flag the first legitimate use of any
       // tool in a turn). The empty assistantMsg pushed just above contributes nothing yet.
-      buildLedgerDigest(buildTurnLedger(tab.messages))
+      buildLedgerDigest(buildTurnLedger(tab.messages)),
+      // The system prefix is frozen for this conversation (see prompt-snapshot.ts), so when the
+      // on-disk memory/skills/soul content has drifted the model is told here — in the free,
+      // never-cached tail — instead of by rebuilding the prefix and re-billing the whole session.
+      promptPrefix.stale
     )
   })) {
     if (signal.aborted) break
