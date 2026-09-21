@@ -70,6 +70,48 @@ export interface ToolCall {
   cache_control?: { type: 'ephemeral' }
 }
 
+/**
+ * Turns a provider-side REFUSAL into a user-visible error, or null when there is nothing to report.
+ *
+ * Found live: a request whose prompt tripped Anthropic's content filter streamed back
+ * `delta.refusal: "This request was blocked as it seems to violate Anthropic's Terms of Service
+ * restrictions on reverse engineering or duplicating model outputs"` with
+ * `finish_reason: content_filter` — and NO usage chunk. We ignored `refusal` entirely, so the
+ * generation reached the orchestrator as no text + no tool calls, i.e. indistinguishable from an
+ * empty generation: `isEmptyGeneration` fired, the turn burned all MAX_TRUNCATION_RETRIES on
+ * requests guaranteed to be refused again (the prompt is what's blocked, so a retry is pure cost),
+ * and the user finally saw "the model repeatedly returned an empty response... usually a
+ * provider-side problem" — which points at the wrong cause and hides the explanation the provider
+ * actually handed us.
+ *
+ * Gated on having produced nothing usable: some providers emit a refusal alongside a partial
+ * answer or tool calls, and discarding real content to show a refusal notice would be a
+ * regression. `content_filter` alone (no text) still reports, since the stop label is the only
+ * signal in that case — but a bare label never fabricates a quoted reason.
+ */
+export function describeProviderRefusal(opts: {
+  refusal: string | undefined
+  finishReason: string | undefined
+  hasText: boolean
+  hasToolCalls: boolean
+}): string | null {
+  if (opts.hasText || opts.hasToolCalls) return null
+  const reason = opts.refusal?.trim()
+  if (reason) {
+    return (
+      `The provider refused this request and returned no content. Reason given: "${reason}" — ` +
+      `retrying will not help, since it is the request itself that was blocked. Rephrase it, or switch model/provider.`
+    )
+  }
+  if (opts.finishReason === 'content_filter') {
+    return (
+      'The provider blocked this request with its content filter and returned no content and no explanation. ' +
+      'Retrying will not help. Rephrase the request, or switch model/provider.'
+    )
+  }
+  return null
+}
+
 export interface ToolDef {
   type: 'function'
   function: {
@@ -428,6 +470,10 @@ export async function* streamChatCompletion(opts: {
       let buffer = ''
       const toolCalls: Map<number, ToolCall> = new Map()
       let finishReason: string | undefined
+      /** Accumulated across deltas like content, and whether any real content arrived at all —
+       *  both consumed by describeProviderRefusal at the two stream exits. */
+      let refusalText: string | undefined
+      let sawText = false
       const reasoningDetails: ReasoningDetail[] = []
       /**
        * Which upstream endpoint actually served this request, and its generation id.
@@ -481,6 +527,11 @@ export async function* streamChatCompletion(opts: {
           const data = trimmed.slice(5).trim()
           if (data === '[DONE]') {
             logStreamEnd(true)
+            const refusal = describeProviderRefusal({ refusal: refusalText, finishReason, hasText: sawText, hasToolCalls: toolCalls.size > 0 })
+            if (refusal) {
+              yield { type: 'error', error: refusal }
+              return
+            }
             if (toolCalls.size) yield { type: 'tool_calls', toolCalls: [...toolCalls.values()] }
             yield {
               type: 'done',
@@ -500,6 +551,10 @@ export async function* streamChatCompletion(opts: {
               choices?: Array<{
                 delta?: {
                   content?: string
+                  /** Set instead of `content` when the provider REFUSED rather than answered —
+                   *  e.g. an upstream content filter. Carries the human-readable reason; see
+                   *  describeProviderRefusal for why dropping it was a real bug. */
+                  refusal?: string
                   reasoning?: string
                   reasoning_details?: ReasoningDetail[]
                   tool_calls?: Array<{
@@ -529,11 +584,16 @@ export async function* streamChatCompletion(opts: {
 
             const delta = parsed.choices?.[0]?.delta
             if (parsed.choices?.[0]?.finish_reason) finishReason = parsed.choices[0].finish_reason
+            // Accumulated, like content: a refusal can arrive split across several deltas.
+            if (delta?.refusal) refusalText = (refusalText ?? '') + delta.refusal
             if (delta?.reasoning) yield { type: 'reasoning', text: delta.reasoning }
             // Accumulated, not yielded per-delta: only the complete, in-order sequence is safe to
             // replay to the provider on a later turn.
             if (delta?.reasoning_details) mergeReasoningDetails(reasoningDetails, delta.reasoning_details)
-            if (delta?.content) yield { type: 'text', text: delta.content }
+            if (delta?.content) {
+              sawText = true
+              yield { type: 'text', text: delta.content }
+            }
 
             if (delta?.tool_calls) {
               for (const tc of delta.tool_calls) {
@@ -587,6 +647,11 @@ export async function* streamChatCompletion(opts: {
 
       // Reached only when the reader hit end-of-body without ever seeing [DONE].
       logStreamEnd(false)
+      const refusal = describeProviderRefusal({ refusal: refusalText, finishReason, hasText: sawText, hasToolCalls: toolCalls.size > 0 })
+      if (refusal) {
+        yield { type: 'error', error: refusal }
+        return
+      }
       if (toolCalls.size) yield { type: 'tool_calls', toolCalls: [...toolCalls.values()] }
       yield {
         type: 'done',

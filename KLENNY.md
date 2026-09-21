@@ -384,6 +384,23 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   or none at all) was accepted as a **finished task** and the turn ended silently mid-work. The
   check now ignores the label entirely, and its retry note is deliberately cause-agnostic — it must
   not assert a token limit the provider never reported.
+- **A provider REFUSAL used to be indistinguishable from an empty generation.** `client.ts`'s SSE
+  delta type carried `content`/`reasoning`/`reasoning_details`/`tool_calls` but **not `refusal`**,
+  and a refused stream carries **no usage chunk** — so a content-filtered request reached the
+  orchestrator as no text + no tool calls, `isEmptyGeneration` fired, and the turn burned all
+  `MAX_TRUNCATION_RETRIES` on requests **guaranteed** to be refused again (the *prompt* is what's
+  blocked, so retrying is pure cost), ending with "the model repeatedly returned an empty
+  response … usually a provider-side problem" — the wrong cause, while the provider's own
+  explanation was discarded. Found live: Anthropic refused a probe's repetitive filler text with
+  `finish_reason: content_filter` + `refusal: "…violate Anthropic's Terms of Service restrictions
+  on reverse engineering or duplicating model outputs"`. `describeProviderRefusal()` (exported from
+  `openrouter/client.ts`, pinned by `tests/provider-refusal.test.ts`) now yields a `'error'` chunk —
+  which `loop.ts` already turns into a visible, turn-ending error — from **both** stream exits
+  (`[DONE]` *and* the end-of-body/no-sentinel path). Three deliberate constraints: it is gated on
+  having produced **nothing usable** (a provider may emit a refusal alongside partial text or tool
+  calls, and dropping real content for a notice would be a regression); a bare `content_filter`
+  label reports but **never fabricates a quoted reason**; and a genuinely empty generation must
+  still fall through to the retry path — that last one is a named negative-control test.
 - **The fabrication guard's ledger must be recomputed AFTER streaming, never before**: it has to
   include the message's *own* tool calls, or the first legitimate use of any tool gets flagged as
   unsupported.
@@ -589,11 +606,21 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   is safe *because its position is fixed*, but any new breakpoint must obey the caching invariants:
   fixed positions only, never on a `tool` message.
 - Root-causing the **first-write cold-start miss** — r1's cache write is never read back by r2,
-  costing one extra full prefix write per conversation (self-corrects from r3). Not reproducible on
-  a controlled live ladder even at production scale on the production model with a stable provider,
-  and every hypothesis we had is already eliminated (see the caching gotcha). The next step is
-  deliberately *observational, not speculative*: after the next production occurrence, read the new
-  `provider=`/`gen=`/`sid=` fields to confirm or deny a routing flip **before** touching any code.
+  costing one extra full prefix write per conversation (self-corrects from r3). **The observational
+  next step has now been taken and it denies the routing-flip hypothesis**: `/api/v1/generation` on
+  both gen ids returned the same `endpoint_id` (`2edf66f3-…`), same `provider_name`,
+  `data_region: global`, `native_tokens_cached: 0` on both — and the r1/r2 request lines are
+  byte-identical (`bp=#0:system … chars=81760 wire=6489eef6`) with the same `tools=` hash and the
+  same `sid=`. A second live round then eliminated five more hypotheses (routing arms interleaved
+  9/9 HIT; the 1→2 marker transition; a 67k block — larger than production's 43 567 — at a 0.6 s
+  gap; the same at a 60 s gap, so it is *not* size-dependent visibility latency; and a faithful
+  replica with the real tool array plus an `on=call` rung-2 marker, HIT with shortfall 0). The one
+  datum that reframes it: `rid=r18` later read `cachedTokens=43567` — *exactly* r1's write — off a
+  byte-identical prefix ~14 minutes on, so **the write was never lost, just invisible to the request
+  7 seconds behind it**. Everything we control is eliminated; there is no client-side fix (skipping
+  r2's advancing breakpoint only defers the cost to r3). Treat as an upstream visibility artifact and
+  **do not re-chase any eliminated row** — see the "Class 2 first-write cache miss — round-2
+  eliminations" memory note for both tables.
 - Compaction-summary manual reset (UX + IPC) — a user-facing "reset conversation summary" button for
   recovery if a summary ever ends up wrong. Not required for the poisoning fix (that's done); purely
   recovery UX. No IPC channel exists yet.
