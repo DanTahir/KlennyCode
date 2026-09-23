@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell, Menu } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { attachEditContextMenu, installApplicationMenu, showTerminalContextMenu } from './menus'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { checkForUpdates, installUpdate, isUpdateSupported } from './updater'
@@ -211,6 +212,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IPC.terminalWrite, async (_e, id: string, data: string) => writeTerminal(id, data))
   ipcMain.handle(IPC.terminalResize, async (_e, id: string, cols: number, rows: number) => resizeTerminal(id, cols, rows))
   ipcMain.handle(IPC.terminalDispose, async (_e, id: string) => disposeTerminal(id))
+  ipcMain.handle(IPC.terminalContextMenu, async (e, selection: unknown) =>
+    showTerminalContextMenu(e.sender, typeof selection === 'string' ? selection : '')
+  )
 
   ipcMain.handle(IPC.tabsList, async () => {
     const tabs = sessionStore.getTabs()
@@ -499,8 +503,15 @@ export function registerIpcHandlers(): void {
   })
 }
 
+/** The app's main window (not a Pawprint window), or null if it has been destroyed. */
+let mainWindowRef: BrowserWindow | null = null
+
+export function getMainWindow(): BrowserWindow | null {
+  return mainWindowRef && !mainWindowRef.isDestroyed() ? mainWindowRef : null
+}
+
 export function createMainWindow(): BrowserWindow {
-  Menu.setApplicationMenu(null)
+  installApplicationMenu()
 
   const win = new BrowserWindow({
     width: 1280,
@@ -522,6 +533,13 @@ export function createMainWindow(): BrowserWindow {
   // Swap in the user's custom icon/brand name (if any) once settings/branding files are
   // readable — the synchronous options above only cover the default, first-paint case.
   void applyBrandingToAllWindows()
+
+  attachEditContextMenu(win.webContents)
+
+  mainWindowRef = win
+  win.on('closed', () => {
+    if (mainWindowRef === win) mainWindowRef = null
+  })
 
   win.on('ready-to-show', () => win.show())
   wireMinimizeToTray(win)

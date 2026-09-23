@@ -143,6 +143,17 @@ mock.module('electron', () => ({
   protocol: {
     registerSchemesAsPrivileged: (_schemes: unknown[]) => {}
   },
+  // Minimal fakes so main/menus.ts (`import { clipboard, Menu } from 'electron'`, pulled in by
+  // ipc.ts and pawprints/windowManager.ts for the app menu + right-click context menus) can
+  // load. Menu template *content* is tested via the pure builders in menuTemplates.ts instead.
+  clipboard: {
+    readText: () => '',
+    writeText: (_text: string) => {}
+  },
+  Menu: {
+    buildFromTemplate: (_template: unknown[]) => ({ popup: (_opts?: unknown) => {} }),
+    setApplicationMenu: (_menu: unknown) => {}
+  },
   session: {
     // Real Electron's `session.fromPartition()` returns the SAME cached Session object for a
     // repeated partition string — this caching is exactly what caused the real "Failed to

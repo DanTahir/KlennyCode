@@ -404,6 +404,41 @@ When `KLENNY.md` says "see the caching gotcha", "see the stall gotchas", "see th
 - **node-pty packaging**: set `npmRebuild: false` + `asarUnpack: ['**/node-pty/**']` in
   electron-builder config; a normal postinstall rebuild fails hard without VS Build Tools even when
   working prebuilt binaries already exist.
+- **node-pty's macOS `spawn-helper` ships without its execute bit**: node-pty 1.1.0's npm tarball
+  has `prebuilds/darwin-*/spawn-helper` at mode 0644 and its postinstall never fixes it, so every
+  `pty.spawn()` on macOS fails with `posix_spawnp failed` (surfaced as a blank terminal panel). This
+  happens with dev `bun install` too, not just packaged builds, and has nothing to do with
+  signing or quarantine. Two layers fix it: `agent/scripts/after-pack.cjs` (electron-builder
+  `afterPack`; chmods 755 and *fails the mac build* if no helper is found) and
+  `main/ptySpawnHelper.ts` (runtime self-heal before the first spawn, no-op on Windows). Don't
+  remove either when bumping node-pty without re-checking the tarball's modes.
+- **minimize-to-tray must not swallow real quits**: `wireMinimizeToTray`'s `close` handler cancels
+  the close unless `isQuitting` is set, and every quit path goes through window `close`. macOS
+  ⌘Q, Dock → Quit, logout and `autoUpdater.quitAndInstall` don't pass through the tray menu, so
+  `index.ts`'s `before-quit` calls `markAppQuitting()` first. Without it they hid the window and
+  silently aborted the quit, leaving a process only Force Quit could end. `app.on('activate')`
+  likewise re-shows the (hidden) `getMainWindow()` rather than testing "no windows exist".
+- **GUI-launched macOS/Linux apps get a bare PATH**: Finder/Dock/launchd start the app with
+  `/usr/bin:/bin:/usr/sbin:/sbin`, so `run_command`, the agent's spawned processes and anything
+  else inheriting `process.env` can't find Homebrew, nvm, Volta, bun or `~/.local/bin` tools.
+  `main/loginShellPath.ts` runs the user's login shell once at startup (`-i -l -c`, output wrapped in
+  markers so rc-file banners can't corrupt it, hard timeout, never rejects) and merges **only PATH**
+  into `process.env` (login entries first, existing ones kept, deduped). It deliberately does not
+  import the rest of the login env: session-only vars would leak into every child. `index.ts`
+  starts the probe before `whenReady` and awaits it before `registerIpcHandlers()`, so the first
+  terminal/`run_command` already sees the merged PATH (about 0.7–1 s measured). Skipped on Windows,
+  where GUI apps inherit the real PATH.
+- **`Menu.setApplicationMenu(null)` kills ⌘C/⌘V/⌘X/⌘A on macOS**: on macOS those shortcuts are
+  dispatched only through the application menu's Edit roles, so with no menu they silently do
+  nothing in text fields. `main/menus.ts` installs a real App/Edit/View/Window menu on darwin only.
+  Windows/Linux keep `null` (no menu bar), because Chromium handles Ctrl+C/V/X/A there natively.
+  Right-click menus are attached to every window's `webContents` (main + Pawprints) on all
+  platforms via `attachEditContextMenu`. The terminal is special: xterm draws its own selection, so
+  the generic `context-menu` event can't see it. The renderer sends the selection over
+  `terminal:contextMenu` and handles Paste through `xterm.paste()`, never a raw PTY write, so
+  bracketed-paste mode is preserved. Template content lives in pure `menuTemplates.ts` (unit-tested);
+  the shared `tests/testElectronMock.ts` must export `Menu`/`clipboard`, or every test that loads
+  `menus.ts` fails at link time with "Export named 'clipboard' not found".
 - **Global workspace singleton**: `getWorkspace()`/`setWorkspace()` is one process-wide value, not
   per-tab — a scheduled task targeting another workspace can transiently affect a live tab's
   workspace-scoped tool resolution if timings collide (accepted limitation, see follow-ups).

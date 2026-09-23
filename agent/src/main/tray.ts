@@ -9,12 +9,22 @@ import { resolveActiveIconPath, loadSquareIcon } from './branding'
 import { DEFAULT_BRAND_NAME } from '@shared/types'
 
 let tray: Tray | null = null
-/** True once the user has explicitly chosen Quit from the tray menu — lets the window's
- *  'close' handler distinguish "minimize to tray" from "actually quit". */
+/** True once the app is genuinely quitting — lets the window's 'close' handler distinguish
+ *  "minimize to tray" from "actually quit". Set by the tray's Quit item *and* by
+ *  markAppQuitting(), which index.ts calls from Electron's 'before-quit' event. That event fires
+ *  for every other quit path (macOS app menu / Cmd+Q, Dock → Quit, OS logout/shutdown,
+ *  autoUpdater.quitAndInstall), and 'before-quit' is emitted *before* windows receive 'close'.
+ *  Without it, with minimizeToTray enabled those paths reached wireMinimizeToTray's handler with
+ *  this still false: the close was cancelled, the window hidden, and app.quit() silently aborted
+ *  — leaving an invisible process that only Force Quit could end. */
 let isQuitting = false
 
 export function isAppQuitting(): boolean {
   return isQuitting
+}
+
+export function markAppQuitting(): void {
+  isQuitting = true
 }
 
 export async function createTray(getMainWindow: () => BrowserWindow | null): Promise<void> {

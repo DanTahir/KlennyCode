@@ -1,6 +1,6 @@
-import { app, BrowserWindow } from 'electron'
+import { app } from 'electron'
 import { existsSync } from 'node:fs'
-import { createMainWindow, registerIpcHandlers, refreshIndexingForWorkspace } from './ipc'
+import { createMainWindow, getMainWindow, registerIpcHandlers, refreshIndexingForWorkspace } from './ipc'
 import { initAutoUpdater } from './updater'
 import { loadSettings } from './settings'
 import { setWorkspace } from './workspace'
@@ -9,7 +9,7 @@ import { approvalManager } from './agent/approval/manager'
 import { stopIndexing } from './agent/codeindex/manager'
 import { disposeAllTerminals } from './terminal'
 import { disposeAllSessions as disposeAllBrowserSessions } from './browser/manager'
-import { createTray, refreshMinimizeToTrayCache, applyAutoStartSetting } from './tray'
+import { createTray, refreshMinimizeToTrayCache, applyAutoStartSetting, markAppQuitting } from './tray'
 import { scheduledTaskManager } from './scheduler/manager'
 import { runScheduledTask } from './agent/orchestrator'
 import { startDiscordClient, stopDiscordClient, setInboundCommandHandler } from './integrations/discord'
@@ -17,6 +17,7 @@ import { runInboundDiscordCommand } from './agent/discordBridge'
 import { registerPawprintSchemePrivileges } from './agent/pawprints/protocol'
 import { reopenAllOnLaunch as reopenAllPawprintsOnLaunch, closeAllPawprintWindows } from './agent/pawprints/manager'
 import { installProcessLogTee, appendProcessLogMarker } from './processLog'
+import { applyLoginShellPath } from './loginShellPath'
 
 // FIRST statement in the main process: everything logged before this point is not captured, and
 // the app's own `[cache]`/diagnostic output is the only evidence for whole classes of bug (see
@@ -28,10 +29,17 @@ appendProcessLogMarker(`App session started (v${app.getVersion()}, pid ${process
 // Must run before app.whenReady() per Electron's custom-scheme privilege requirement.
 registerPawprintSchemePrivileges()
 
+// macOS/Linux GUI launches inherit a bare PATH; start reading the user's login-shell PATH now so
+// it overlaps with Electron's own startup (no-op on Windows; see loginShellPath.ts).
+const loginShellPathReady = applyLoginShellPath()
+
 app.whenReady().then(async () => {
   if (process.platform === 'win32') {
     app.setAppUserModelId('com.dantahir.klenny')
   }
+  // Before anything can spawn a process (IPC handlers, terminal, scheduler, run_command) or cache
+  // PATH-derived results (shells.ts detectShells). Bounded by the probe's own timeout.
+  await loginShellPathReady
   registerIpcHandlers()
 
   const settings = await loadSettings()
@@ -54,7 +62,8 @@ app.whenReady().then(async () => {
   await applyAutoStartSetting(settings.startOnLogin)
 
   createMainWindow()
-  void createTray(() => BrowserWindow.getAllWindows()[0] ?? null)
+  // getMainWindow(), not getAllWindows()[0] — an open Pawprint window can be first in that list.
+  void createTray(() => getMainWindow())
 
   // Personal Assistant Platform (Phase 4): scheduler + Discord gateway run for the lifetime of
   // the app/tray process, independent of any specific chat tab.
@@ -70,8 +79,16 @@ app.whenReady().then(async () => {
   // logged and skipped rather than blocking the rest (see reopenAllOnLaunch's doc comment).
   void reopenAllPawprintsOnLaunch()
 
+  // macOS Dock-icon click. With minimizeToTray on, the red close button only *hides* the main
+  // window, so "no windows exist" is the wrong test — re-show the hidden one instead.
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
+    const main = getMainWindow()
+    if (!main) {
+      createMainWindow()
+      return
+    }
+    main.show()
+    main.focus()
   })
 })
 
@@ -80,6 +97,9 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  // Must be first: windows get 'close' right after this, and the minimize-to-tray handler would
+  // otherwise cancel the close and abort the quit (see tray.ts isQuitting).
+  markAppQuitting()
   void stopIndexing()
   disposeAllTerminals()
   void disposeAllBrowserSessions()

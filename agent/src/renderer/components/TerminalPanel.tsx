@@ -53,6 +53,11 @@ export function TerminalPanel() {
       const { id, shellName: name } = await window.klenny.createTerminal(cols || 80, rows || 24)
       sessionIdRef.current = id
       setShellName(name)
+    } catch (err) {
+      // Without this a failed spawn (e.g. macOS "posix_spawnp failed") left a silent blank pane.
+      const msg = err instanceof Error ? err.message : String(err)
+      termRef.current?.writeln(`\x1b[31mFailed to start terminal: ${msg}\x1b[0m`)
+      setExited(true)
     } finally {
       startingRef.current = false
     }
@@ -93,10 +98,18 @@ export function TerminalPanel() {
         setExited(true)
       }
     })
+    const unsubContext = window.klenny.onTerminalContextAction(({ action, text }) => {
+      // paste() (not writeTerminal) so xterm applies bracketed-paste mode when the shell asked for it.
+      if (action === 'paste' && text) term.paste(text)
+      else if (action === 'selectAll') term.selectAll()
+      else if (action === 'clear') term.clear()
+      term.focus()
+    })
 
     return () => {
       unsubData()
       unsubExit()
+      unsubContext()
       term.dispose()
       termRef.current = null
     }
@@ -151,6 +164,15 @@ export function TerminalPanel() {
   }, [terminalOpen])
 
   useEffect(() => disposeSession, [])
+
+  // xterm draws its own selection (not a DOM selection), so the main process's generic edit menu
+  // can't see it. preventDefault() suppresses that generic menu for this area; this one is shown instead.
+  const onTerminalContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault()
+    const term = termRef.current
+    if (!term) return
+    void window.klenny.showTerminalContextMenu(term.getSelection())
+  }
 
   const onDragStart = (e: React.MouseEvent) => {
     e.preventDefault()
@@ -217,7 +239,7 @@ export function TerminalPanel() {
         </div>
       </div>
       <div className="flex-1 min-h-0 relative">
-        <div ref={containerRef} className="absolute inset-0 p-1" />
+        <div ref={containerRef} className="absolute inset-0 p-1" onContextMenu={onTerminalContextMenu} />
         {!workspace && (
           <div className="absolute inset-0 flex items-center justify-center text-xs text-klenny-muted bg-klenny-panel">
             Open a project folder to use the terminal.

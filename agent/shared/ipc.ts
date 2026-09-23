@@ -74,6 +74,7 @@ export const IPC = {
   terminalWrite: 'terminal:write',
   terminalResize: 'terminal:resize',
   terminalDispose: 'terminal:dispose',
+  terminalContextMenu: 'terminal:contextMenu',
 
   tabsList: 'tabs:list',
   tabCreate: 'tabs:create',
@@ -234,6 +235,12 @@ export interface KlennyApi {
   writeTerminal: (id: string, data: string) => Promise<void>
   resizeTerminal: (id: string, cols: number, rows: number) => Promise<void>
   disposeTerminal: (id: string) => Promise<void>
+  /** Pops the native terminal right-click menu. `selection` is xterm's current selection (what
+   *  Copy copies); the other choices come back via onTerminalContextAction. */
+  showTerminalContextMenu: (selection: string) => Promise<void>
+  onTerminalContextAction: (
+    cb: (event: { action: 'paste' | 'selectAll' | 'clear'; text?: string }) => void
+  ) => () => void
   onTerminalData: (cb: (id: string, data: string) => void) => () => void
   onTerminalExit: (cb: (id: string, exitCode: number) => void) => () => void
 

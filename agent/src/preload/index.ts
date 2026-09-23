@@ -22,6 +22,12 @@ const api: KlennyApi = {
   writeTerminal: (id, data) => ipcRenderer.invoke(IPC.terminalWrite, id, data),
   resizeTerminal: (id, cols, rows) => ipcRenderer.invoke(IPC.terminalResize, id, cols, rows),
   disposeTerminal: (id) => ipcRenderer.invoke(IPC.terminalDispose, id),
+  showTerminalContextMenu: (selection) => ipcRenderer.invoke(IPC.terminalContextMenu, selection),
+  onTerminalContextAction: (cb) => {
+    const listener = (_: unknown, event: { action: 'paste' | 'selectAll' | 'clear'; text?: string }) => cb(event)
+    ipcRenderer.on('terminal:context-action', listener)
+    return () => ipcRenderer.removeListener('terminal:context-action', listener)
+  },
   onTerminalData: (cb) => {
     const listener = (_: unknown, id: string, data: string) => cb(id, data)
     ipcRenderer.on('terminal:data', listener)

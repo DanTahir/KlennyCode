@@ -81,6 +81,7 @@
     "productName": "Klenny Code",
     "executableName": "KlennyCode",
     "npmRebuild": false,
+    "afterPack": "./scripts/after-pack.cjs",
     "directories": {
       "output": "dist",
       "buildResources": "build"

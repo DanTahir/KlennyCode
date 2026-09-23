@@ -11,6 +11,7 @@ import { readSource } from './storage'
 import { PawprintStateWatcher } from './stateWatcher'
 import type { PawprintInstanceRecord } from './types'
 import { emitPawprintsChanged } from './events'
+import { attachEditContextMenu } from '../../menus'
 
 // This app is ESM (`"type": "module"` in package.json), so `__dirname` isn't a global here —
 // it must be derived from this module's own `import.meta.url`, same pattern used in ipc.ts.
@@ -199,6 +200,10 @@ export async function openPawprintWindow(opts: OpenInstanceOptions): Promise<{ i
   })
 
   liveInstances.set(instanceId, { pawprintId: opts.pawprintId, instanceId, window: win, sessionPartition, currentTheme: theme })
+
+  // Same native Cut/Copy/Paste right-click menu as the main window (a Pawprint that handles
+  // contextmenu itself and calls preventDefault() suppresses it).
+  attachEditContextMenu(win.webContents)
 
   // Forward the sandboxed renderer's own console output/crashes/load failures to the main
   // process's console. Without this, a JS error thrown inside the Pawprint's renderer (e.g. a

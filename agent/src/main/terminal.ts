@@ -5,13 +5,19 @@ import type { ShellInfo } from '@shared/types'
 import { resolveShell } from './shells'
 import { appendTerminalLog, appendTerminalLogMarker } from './terminalLog'
 import { sanitizedSpawnEnv } from './shellEnv'
+import { ensureNodePtySpawnHelperExecutable } from './ptySpawnHelper'
 
 /** Extra args used to make a shell start interactively when launched under a PTY (mirrors what a
- *  normal double-click / terminal-app launch of that shell would use). Only posix shells need this
- *  on Windows (Git Bash defaults to non-interactive without it); cmd/powershell/wsl are already
- *  interactive by default when given no command to run. */
+ *  normal double-click / terminal-app launch of that shell would use). On Windows only posix
+ *  shells need this (Git Bash defaults to non-interactive without it); cmd/powershell/wsl are
+ *  already interactive by default when given no command to run. On macOS, Terminal.app and iTerm
+ *  start a *login* shell, and that is where Homebrew/nvm PATH setup usually lives (.zprofile /
+ *  .bash_profile). A Finder-launched app only inherits launchd's bare
+ *  /usr/bin:/bin:/usr/sbin:/sbin, so without -l the panel's shell wouldn't find the user's tools.
+ *  Linux terminal emulators conventionally start non-login shells, so Linux is left unchanged. */
 function interactiveArgs(shell: ShellInfo): string[] {
   if (shell.kind === 'posix' && process.platform === 'win32') return ['--login', '-i']
+  if (shell.kind === 'posix' && process.platform === 'darwin') return ['-l']
   return []
 }
 
@@ -41,6 +47,9 @@ export function setTerminalListeners(onData: DataListener, onExit: ExitListener)
 export function createTerminal(opts: { shellId: string | null | undefined; cwd: string; cols: number; rows: number }): TerminalSession {
   const shell = resolveShell(opts.shellId)
   const id = nanoid()
+  // No-op on Windows; on macOS/Linux restores node-pty's spawn-helper execute bit if missing
+  // (otherwise every spawn fails with "posix_spawnp failed" — see ptySpawnHelper.ts).
+  ensureNodePtySpawnHelperExecutable()
   const proc = pty.spawn(shell.path, interactiveArgs(shell), {
     name: 'xterm-color',
     cols: Math.max(2, opts.cols || 80),
