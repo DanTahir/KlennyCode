@@ -9,6 +9,7 @@ import {
   normalizeEditsArg,
   previewMultiWrite,
   normalizeFilesArg,
+  normalizeReferenceImagesArg,
   type MultiEditOp
 } from '../tools/index'
 import { toLf } from '../tools/eol'
@@ -155,7 +156,18 @@ export async function previewMutatingTool(
     // so any number here would be invented rather than merely approximate.
     const model = typeof args.model === 'string' && args.model ? args.model : undefined
     const prompt = typeof args.prompt === 'string' ? args.prompt : ''
-    const details = [model ? `model: ${model}` : undefined, prompt ? `prompt: ${prompt}` : undefined]
+    // References leave the machine (they are uploaded to the image provider), so the approval card
+    // must list them. An inline data URL is never rendered raw (the tool rejects those anyway),
+    // and very long entries are clipped so a hostile argument can't swamp the dialog.
+    const refArg = normalizeReferenceImagesArg(args.reference_images)
+    const refLine = !refArg.ok
+      ? 'references: <invalid reference_images argument — the call will be rejected>'
+      : refArg.refs.length > 0
+        ? `references (uploaded to the image provider): ${refArg.refs
+            .map((r) => (/^data:/i.test(r) ? '<inline data URL>' : r.length > 200 ? `${r.slice(0, 200)}\u2026` : r))
+            .join(', ')}`
+        : undefined
+    const details = [model ? `model: ${model}` : undefined, prompt ? `prompt: ${prompt}` : undefined, refLine]
       .filter(Boolean)
       .join('\n')
     return { title: `Generate image \u2192 ${path}`, extra: { filePath: path, command: details || undefined } }

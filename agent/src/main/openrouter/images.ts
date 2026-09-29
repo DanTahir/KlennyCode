@@ -27,6 +27,13 @@ export interface GenerateImageOptions {
   quality?: string
   background?: string
   outputFormat?: 'png' | 'jpeg' | 'webp'
+  /**
+   * Reference images for image-to-image generation / editing, each an http(s) URL or a base64
+   * data URL. Sent as OpenRouter's documented `input_references` shape
+   * (`[{ type: 'image_url', image_url: { url } }]`), and omitted from the body entirely when empty,
+   * like every other optional knob.
+   */
+  inputReferences?: string[]
   signal?: AbortSignal
   timeoutMs?: number
 }
@@ -47,6 +54,23 @@ export interface GenerateImageResult {
  * doubling round trips on an endpoint where one request already takes tens of seconds.
  */
 const outputFormatRejectedModels = new Set<string>()
+
+const MAX_ERROR_TEXT_CHARS = 2000
+const DATA_URL_RE = /data:[\w.+-]+\/[\w.+-]+;base64,[A-Za-z0-9+/=]+/g
+
+/**
+ * Bounds a provider error body before it becomes part of a tool result. Requests can now carry
+ * multi-megabyte base64 reference images, and a provider that echoes the request back in its
+ * error would otherwise push that blob into data.detail, and from there into the persisted
+ * session log and every later turn's context. Any data URL is reduced to its `data:<mime>;base64,`
+ * prefix, and the remainder is hard-capped.
+ */
+export function sanitizeProviderErrorText(text: string): string {
+  const redacted = text.replace(DATA_URL_RE, (m) => `${m.slice(0, m.indexOf(',') + 1)}<omitted>`)
+  return redacted.length > MAX_ERROR_TEXT_CHARS
+    ? `${redacted.slice(0, MAX_ERROR_TEXT_CHARS)}\u2026 [truncated]`
+    : redacted
+}
 
 interface ImagesApiResponse {
   created?: number
@@ -92,6 +116,9 @@ export async function generateImage(opts: GenerateImageOptions): Promise<Generat
   if (opts.outputFormat && !outputFormatRejectedModels.has(opts.model)) {
     body.output_format = opts.outputFormat
   }
+  if (opts.inputReferences && opts.inputReferences.length > 0) {
+    body.input_references = opts.inputReferences.map((url) => ({ type: 'image_url', image_url: { url } }))
+  }
 
   const doPost = (payload: Record<string, unknown>): Promise<Response> =>
     fetch(`${BASE}/images`, {
@@ -113,6 +140,11 @@ export async function generateImage(opts: GenerateImageOptions): Promise<Generat
     // reasoning: parameter support here is per-model and not a superset, so a model that rejects
     // output_format rather than ignoring it gets exactly one retry without the field, and is then
     // remembered so later calls skip it up front.
+    //
+    // input_references must NEVER get the same treatment. Dropping output_format still fulfils the
+    // request; dropping the references would silently turn an edit into a fresh text-to-image
+    // generation the user never asked for, and charge them for it. Only output_format is deleted
+    // here, so the retry still carries the references.
     if (!res.ok && res.status === 400 && body.output_format != null) {
       const errText = await res.text().catch(() => '')
       if (/output_format/i.test(errText)) {
@@ -120,13 +152,15 @@ export async function generateImage(opts: GenerateImageOptions): Promise<Generat
         delete body.output_format
         res = await doPost(body)
       } else {
-        throw new Error(`Image generation failed: 400${errText ? ` — ${errText}` : ''}`)
+        throw new Error(`Image generation failed: 400${errText ? ` — ${sanitizeProviderErrorText(errText)}` : ''}`)
       }
     }
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '')
-      throw new Error(`Image generation failed: ${res.status}${errText ? ` — ${errText}` : ''}`)
+      throw new Error(
+        `Image generation failed: ${res.status}${errText ? ` — ${sanitizeProviderErrorText(errText)}` : ''}`
+      )
     }
 
     const json = (await res.json()) as ImagesApiResponse

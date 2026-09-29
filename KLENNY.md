@@ -93,7 +93,17 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   image file on disk. Path/extension/sandbox validated *before* the paid call; the result is
   deliberately **not** added to model context (use `read_image`). Surfaced only once an image model
   is configured (`AppSettings.imageModel != null`, filtered in `definitions.ts`), never in plan
-  mode — planning shouldn't spend money.
+  mode — planning shouldn't spend money. Optional `reference_images` (local paths resolved with
+  `read_image`'s rules, or http(s) URLs) become OpenRouter's `input_references` for
+  image-to-image/editing. Local refs are inlined as data URLs that exist **only** in the outgoing
+  request — never in the tool result, and provider error text is redacted/capped
+  (`sanitizeProviderErrorText`) — because the result persists to the session log. Pre-spend checks:
+  extension + magic-byte sniff, 8 MB/file, 20 MB total, ≤ 16 refs, plus a best-effort catalog check
+  (`referenceSupportProblem`) that refuses only on an **explicit** signal (text-only input
+  modalities, or an `input_references` range excluding the count) — a *missing* descriptor is not
+  "unsupported" (live: `meta/muse-image` has empty `supported_parameters`). The `output_format`
+  400-retry must never drop references. Image-to-image-only models (`requiresInputReferences`) stay
+  hidden from the Settings picker by design.
 - **Codebase semantic search** (`codebase_search`): optional, off-by-default vector index over the
   workspace, incremental via a manifest.
 - **Skill/subagent authoring**: the agent writes and reads its own Cursor-style `SKILL.md` skills

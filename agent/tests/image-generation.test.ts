@@ -14,8 +14,9 @@ import { mkdtemp, rm, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { electronMockState } from './testElectronMock' // must load before workspace.ts (imports electron) loads anywhere
-import { generateImage } from '../src/main/openrouter/images'
-import type { ToolResultPayload } from '@shared/types'
+import { generateImage, sanitizeProviderErrorText } from '../src/main/openrouter/images'
+import type { ImageModelInfo, ToolResultPayload } from '@shared/types'
+import type { GenerateImageToolArgs } from '../src/main/agent/tools/imagegen'
 
 let workspaceDir: string
 
@@ -320,5 +321,258 @@ describe('generateImageTool', () => {
     expect(r.ok).toBe(false)
     expect(r.error).toBe('generation_failed')
     expect(String((r.data as { detail: string }).detail)).toContain('402')
+  })
+})
+
+// ---------- Reference images (image-to-image / editing) ----------
+//
+// Three invariants: (1) the wire shape is OpenRouter's documented
+// `[{ type: 'image_url', image_url: { url } }]`; (2) every local failure, and every explicit
+// catalog refusal, happens BEFORE the paid call; (3) inlined base64 never lands in the tool
+// result, which persists to the session log and is replayed to the model every later turn.
+
+/** Minimal JPEG signature (SOI + APP0 start), enough for the reference MIME sniff. */
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01])
+
+function imageModel(over: Partial<ImageModelInfo> = {}): ImageModelInfo {
+  return {
+    id: 'test/refs',
+    name: 'Test refs',
+    inputModalities: ['text', 'image'],
+    outputModalities: ['image'],
+    supportedParameters: {},
+    supportsStreaming: false,
+    requiresInputReferences: false,
+    pinned: false,
+    ...over
+  }
+}
+
+describe('generateImage \u2014 input_references wire shape', () => {
+  test('sends references in the documented image_url object shape, in order', async () => {
+    mockImages(okImage())
+    await generateImage({
+      apiKey: 'k',
+      model: 'test/plain',
+      prompt: 'p',
+      inputReferences: ['https://example.com/a.png', 'data:image/png;base64,QUFB']
+    })
+    expect(fetchCalls[0].body.input_references).toEqual([
+      { type: 'image_url', image_url: { url: 'https://example.com/a.png' } },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,QUFB' } }
+    ])
+  })
+
+  test('omits input_references entirely when none are given', async () => {
+    mockImages(okImage())
+    await generateImage({ apiKey: 'k', model: 'test/plain', prompt: 'p', inputReferences: [] })
+    expect('input_references' in fetchCalls[0].body).toBe(false)
+  })
+
+  test('the output_format recovery retry drops output_format but KEEPS the references', async () => {
+    // Dropping references on a retry would silently turn an edit into a fresh generation and
+    // charge for it, so only output_format may be removed.
+    let call = 0
+    globalThis.fetch = (async (url: string, req?: RequestInit) => {
+      call++
+      fetchCalls.push({ url: String(url), body: JSON.parse(String(req?.body ?? '{}')) })
+      if (call === 1) {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({}),
+          text: async () => 'unsupported parameter: output_format'
+        } as Response
+      }
+      return { ok: true, status: 200, json: async () => okImage(), text: async () => '' } as Response
+    }) as typeof fetch
+
+    await generateImage({
+      apiKey: 'k',
+      model: 'test/output-format-rejector-with-refs',
+      prompt: 'p',
+      outputFormat: 'png',
+      inputReferences: ['https://example.com/a.png']
+    })
+    expect(fetchCalls).toHaveLength(2)
+    expect(fetchCalls[1].body.output_format).toBeUndefined()
+    expect(fetchCalls[1].body.input_references).toEqual(fetchCalls[0].body.input_references)
+  })
+
+  test('a provider error that echoes an inlined reference is redacted and capped', async () => {
+    const blob = 'A'.repeat(50_000)
+    mockImages({}, { ok: false, status: 422, text: `bad input: {"url":"data:image/png;base64,${blob}"}` })
+    const err = await generateImage({ apiKey: 'k', model: 'test/plain', prompt: 'p' }).catch((e) => e as Error)
+    expect(err).toBeInstanceOf(Error)
+    expect(err.message).toContain('422')
+    expect(err.message).toContain('data:image/png;base64,<omitted>')
+    expect(err.message).not.toContain('AAAAAAAAAA')
+  })
+
+  test('sanitizeProviderErrorText hard-caps long plain text', () => {
+    const out = sanitizeProviderErrorText('x'.repeat(5000))
+    expect(out.length).toBeLessThan(2100)
+    expect(out).toContain('[truncated]')
+    expect(sanitizeProviderErrorText('short')).toBe('short')
+  })
+})
+
+describe('generateImageTool \u2014 reference_images', () => {
+  beforeAll(async () => {
+    await writeFile(join(workspaceDir, 'ref.png'), PNG)
+    // JPEG bytes behind a .png name: must be sent with the SNIFFED mime type.
+    await writeFile(join(workspaceDir, 'ref-mislabeled.png'), JPEG)
+    await writeFile(join(workspaceDir, 'not-an-image.png'), 'plain text, not a PNG')
+  })
+
+  async function runRefs(
+    args: Record<string, unknown>,
+    lookupModel: (id: string) => Promise<ImageModelInfo | undefined> = async () => imageModel()
+  ): Promise<ToolResultPayload> {
+    const { generateImageTool } = await import('../src/main/agent/tools/index')
+    return generateImageTool(args as GenerateImageToolArgs, { apiKey: 'k', model: 'test/refs', lookupModel })
+  }
+
+  test('inlines local files as data URLs (sniffed mime), passes URLs through, and keeps base64 out of the result', async () => {
+    mockImages(okImage())
+    const refs = ['ref-mislabeled.png', 'https://example.com/b.webp']
+    const r = await runRefs({ path: 'out/edit.png', prompt: 'make it blue', reference_images: refs })
+
+    expect(r.ok).toBe(true)
+    const sent = fetchCalls[0].body.input_references as Array<{ type: string; image_url: { url: string } }>
+    expect(sent).toHaveLength(2)
+    expect(sent[0]).toEqual({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${JPEG.toString('base64')}` } })
+    expect(sent[1].image_url.url).toBe('https://example.com/b.webp')
+
+    const data = r.data as Record<string, unknown>
+    expect(data.referenceImages).toEqual(refs)
+    // dataUrl is the OUTPUT thumbnail, which loop.ts strips before persisting; everything else
+    // is persisted and must not carry any reference bytes.
+    const { dataUrl: _thumbnail, ...persisted } = data
+    expect(JSON.stringify(persisted)).not.toContain(JPEG.toString('base64'))
+    expect(JSON.stringify(persisted)).not.toContain('data:image/')
+    expect(r.summary).toContain('2 reference images')
+  })
+
+  test('tolerates a single bare string and a JSON-stringified array', async () => {
+    mockImages(okImage())
+    expect((await runRefs({ path: 's1.png', prompt: 'p', reference_images: 'ref.png' })).ok).toBe(true)
+    expect((await runRefs({ path: 's2.png', prompt: 'p', reference_images: '["ref.png","ref.png"]' })).ok).toBe(true)
+    expect(fetchCalls[0].body.input_references as unknown[]).toHaveLength(1)
+    expect(fetchCalls[1].body.input_references as unknown[]).toHaveLength(2)
+  })
+
+  test('with no references, the catalog is never consulted and the request is unchanged', async () => {
+    let lookups = 0
+    const lookup = async () => {
+      lookups++
+      return imageModel()
+    }
+    mockImages(okImage())
+    expect((await runRefs({ path: 'plain1.png', prompt: 'p' }, lookup)).ok).toBe(true)
+    expect((await runRefs({ path: 'plain2.png', prompt: 'p', reference_images: [] }, lookup)).ok).toBe(true)
+    expect(lookups).toBe(0)
+    expect(fetchCalls).toHaveLength(2)
+    expect('input_references' in fetchCalls[0].body).toBe(false)
+    expect('input_references' in fetchCalls[1].body).toBe(false)
+  })
+
+  test('every local reference problem fails before any API call', async () => {
+    forbidFetch()
+    const cases: Array<[unknown, string]> = [
+      [['missing.png'], 'not_found'],
+      [['anim.gif'], 'unsupported_type'],
+      [['not-an-image.png'], 'unsupported_type'],
+      [['ftp://example.com/a.png'], 'invalid_args'],
+      [[42], 'invalid_args'],
+      [{ path: 'ref.png' }, 'invalid_args'],
+      ['[not json', 'invalid_args'],
+      [Array(17).fill('ref.png'), 'invalid_args']
+    ]
+    for (const [reference_images, error] of cases) {
+      const r = await runRefs({ path: 'never.png', prompt: 'p', reference_images })
+      expect({ reference_images, error: r.error }).toEqual({ reference_images, error })
+    }
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('an inline data URL is refused without echoing its payload anywhere in the result', async () => {
+    forbidFetch()
+    const payload = 'Q'.repeat(4000)
+    const r = await runRefs({ path: 'never.png', prompt: 'p', reference_images: [`data:image/png;base64,${payload}`] })
+    expect(r.error).toBe('invalid_args')
+    expect(JSON.stringify(r)).not.toContain('QQQQQQQQ')
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('enforces the per-file and total size caps before any API call', async () => {
+    const big = Buffer.alloc(8 * 1024 * 1024 + 1)
+    PNG.copy(big, 0)
+    await writeFile(join(workspaceDir, 'huge.png'), big)
+    const seven = Buffer.alloc(7 * 1024 * 1024)
+    PNG.copy(seven, 0)
+    await writeFile(join(workspaceDir, 'seven.png'), seven)
+
+    forbidFetch()
+    expect((await runRefs({ path: 'never.png', prompt: 'p', reference_images: ['huge.png'] })).error).toBe('too_large')
+    // 3 x 7 MB = 21 MB, over the 20 MB aggregate cap even though each file is individually fine.
+    const total = await runRefs({ path: 'never.png', prompt: 'p', reference_images: ['seven.png', 'seven.png', 'seven.png'] })
+    expect(total.error).toBe('too_large')
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('refuses before spending when the catalog explicitly rules the references out', async () => {
+    forbidFetch()
+    const noRefs = imageModel({ supportedParameters: { input_references: { type: 'range', min: 0, max: 0 } } })
+    const textOnly = imageModel({ inputModalities: ['text'] })
+    const maxOne = imageModel({ supportedParameters: { input_references: { type: 'range', min: 0, max: 1 } } })
+
+    const r1 = await runRefs({ path: 'never.png', prompt: 'p', reference_images: ['ref.png'] }, async () => noRefs)
+    const r2 = await runRefs({ path: 'never.png', prompt: 'p', reference_images: ['ref.png'] }, async () => textOnly)
+    const r3 = await runRefs({ path: 'never.png', prompt: 'p', reference_images: ['ref.png', 'ref.png'] }, async () => maxOne)
+    for (const r of [r1, r2, r3]) expect(r.error).toBe('unsupported_references')
+    expect(String((r3.data as { detail: string }).detail)).toContain('at most 1')
+    expect(fetchCalls).toHaveLength(0)
+  })
+
+  test('proceeds when the catalog is silent, unknown or failing (the provider stays the authority)', async () => {
+    mockImages(okImage())
+    const args = { path: 'ok.png', prompt: 'p', reference_images: ['ref.png'] }
+    // meta/muse-image shape, verified live: image input modality but EMPTY supported_parameters.
+    expect((await runRefs(args, async () => imageModel({ supportedParameters: {} }))).ok).toBe(true)
+    expect((await runRefs(args, async () => undefined)).ok).toBe(true)
+    expect(
+      (
+        await runRefs(args, async () => {
+          throw new Error('catalog down')
+        })
+      ).ok
+    ).toBe(true)
+    expect(fetchCalls).toHaveLength(3)
+  })
+})
+
+describe('referenceSupportProblem', () => {
+  test('checks the declared min/max range only when references are actually given', async () => {
+    const { referenceSupportProblem } = await import('../src/main/agent/tools/imagegen')
+    const minTwo = imageModel({ supportedParameters: { input_references: { type: 'range', min: 2, max: 10 } } })
+    expect(referenceSupportProblem(minTwo, 1)).toContain('at least 2')
+    expect(referenceSupportProblem(minTwo, 2)).toBeNull()
+    expect(referenceSupportProblem(minTwo, 0)).toBeNull()
+    expect(referenceSupportProblem(undefined, 5)).toBeNull()
+  })
+})
+
+describe('generate_image approval preview', () => {
+  test('lists references as uploads, masking inline data URLs', async () => {
+    const { previewMutatingTool } = await import('../src/main/agent/orchestrator/approval-previews')
+    const p = await previewMutatingTool('generate_image', {
+      path: 'x.png',
+      prompt: 'p',
+      reference_images: ['a.png', 'data:image/png;base64,QUFBQUFB']
+    })
+    const command = String((p.extra as { command?: string }).command)
+    expect(command).toContain('references (uploaded to the image provider): a.png, <inline data URL>')
+    expect(command).not.toContain('QUFBQUFB')
   })
 })

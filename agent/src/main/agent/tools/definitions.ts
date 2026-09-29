@@ -328,7 +328,7 @@ export function getToolDefinitions(
       function: {
         name: 'generate_image',
         description:
-          'Generate an image from a text prompt using the separately-configured OpenRouter image model (independent of your own chat model) and save it to disk at `path`. This spends real money per call — typically a few cents, and a generation can take up to a minute or two — so call it deliberately, not speculatively. The result is a normal file you can reference from code, CSS, or HTML. A thumbnail is shown to the user, but the image is deliberately NOT added to your context: if you actually need to see what was produced, read it back with read_image.',
+          'Generate an image from a text prompt using the separately-configured OpenRouter image model (independent of your own chat model) and save it to disk at `path`. This spends real money per call — typically a few cents, and a generation can take up to a minute or two — so call it deliberately, not speculatively. The result is a normal file you can reference from code, CSS, or HTML. A thumbnail is shown to the user, but the image is deliberately NOT added to your context: if you actually need to see what was produced, read it back with read_image. To edit an existing image, or to keep a style or subject consistent, pass it in `reference_images` and describe the change in `prompt`.',
         parameters: {
           type: 'object',
           properties: {
@@ -363,6 +363,12 @@ export function getToolDefinitions(
               type: 'string',
               description:
                 "Optional, e.g. 'transparent' or 'opaque'. Transparency only works for .png/.webp output and only on models that support it."
+            },
+            reference_images: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Optional reference images for image-to-image generation or editing. Each entry is a local file path (.png, .jpg/.jpeg or .webp; relative to the workspace or absolute, same rules as read_image) or an http(s) URL. They are uploaded to the image provider. Max 16, each at most 8 MB; the per-model maximum is often lower and is checked before any money is spent.'
             }
           },
           required: ['path', 'prompt']
