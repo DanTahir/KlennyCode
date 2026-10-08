@@ -77,6 +77,8 @@ import {
   readImageTool,
   generateImageTool,
   type GenerateImageToolArgs,
+  generateVideoTool,
+  type GenerateVideoToolArgs,
   parallelWriteTool,
   type WorkerRequest,
   type JobApprovalRequest
@@ -385,7 +387,8 @@ export async function agentLoop(
       discordPostAllowed: settings.automationPermissions['discord.post'] === 'auto',
       discordAvailableInCoding: settings.discordAvailableInCoding,
       browserAutomationAvailable: (settings.browserAutomation?.policy ?? 'off') !== 'off',
-      imageGenerationAvailable: settings.imageModel != null
+      imageGenerationAvailable: settings.imageModel != null,
+      videoGenerationAvailable: settings.videoModel != null
     }
     // NB: nothing per-turn is passed here on purpose. This array is the request's `tools` block,
     // which a provider hashes ahead of the system prompt, so anything conversation-state-derived
@@ -809,6 +812,7 @@ export async function agentLoop(
         settings.docxAvailableInCoding,
         {
           model: settings.imageModel,
+          videoModel: settings.videoModel,
           spendingCapUsd: settings.spendingCapUsd,
           spendingCapPeriod: settings.spendingCapPeriod
         },
@@ -1001,20 +1005,23 @@ function lastToolCallName(messages: ChatMessage[]): string | undefined {
 }
 
 /**
- * The slice of AppSettings that generate_image's dispatch case needs. Threaded explicitly rather
- * than re-read from disk inside dispatchTool, both to match how shellId/browserAutomation/
- * docxAvailableInCoding already travel and so every tool in one turn sees one consistent snapshot.
+ * The slice of AppSettings that the paid media tools' dispatch cases (generate_image,
+ * generate_video) need. Threaded explicitly rather than re-read from disk inside dispatchTool,
+ * both to match how shellId/browserAutomation/docxAvailableInCoding already travel and so every
+ * tool in one turn sees one consistent snapshot.
  */
-interface ImageGenDispatch {
+interface MediaGenDispatch {
   /** AppSettings.imageModel — null when the user hasn't picked one (the tool is hidden then). */
   model: string | null
+  /** AppSettings.videoModel — same semantics, for generate_video. */
+  videoModel: string | null
   spendingCapUsd: number | null
   spendingCapPeriod: 'session' | 'daily'
 }
 
 /**
  * The slice of AppSettings parallel_write's dispatch case needs. Kept separate from
- * ImageGenDispatch — which is specifically the *image model* slice — even though both happen to
+ * MediaGenDispatch — which is specifically the *media model* slice — even though both happen to
  * carry the spend cap, so neither tool's dispatch has to know about the other's settings. Both are
  * filled from the same loadSettings() snapshot at the single executeTool call site, so every tool
  * in one turn still sees one consistent view.
@@ -1022,6 +1029,30 @@ interface ImageGenDispatch {
 interface ParallelWriteDispatch {
   spendingCapUsd: number | null
   spendingCapPeriod: 'session' | 'daily'
+}
+
+/**
+ * Attributes a paid media generation's spend exactly like a chat turn's, so the spend cap, the tab
+ * total and the Cost Report all account for it. Reads costUsd off the payload before the caller
+ * strips other keys (dataUrl/imageUiOnly) off the same object. Neither /images nor /videos has a
+ * prompt cache, so nothing is cached and the counterfactual cost is just the real cost.
+ */
+function recordMediaSpend(tab: TabSession, model: string, result: ToolResultPayload): void {
+  const data = (result.data ?? {}) as Record<string, unknown>
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
+  const cost = num(data.costUsd)
+  if (cost <= 0) return
+  tab.totalCostUsd += cost
+  trackDailySpend(cost)
+  recordUsage(getWorkspace(), model, {
+    costUsd: cost,
+    promptTokens: num(data.promptTokens),
+    completionTokens: num(data.completionTokens),
+    cachedTokens: 0,
+    cacheWriteTokens: 0,
+    costWithoutCacheUsd: cost,
+    cacheSavingsUsd: 0
+  })
 }
 
 async function executeTool(
@@ -1039,7 +1070,7 @@ async function executeTool(
   shellId?: string | null,
   browserAutomation?: BrowserAutomationSettings,
   docxAvailableInCoding?: boolean,
-  imageGen?: ImageGenDispatch,
+  mediaGen?: MediaGenDispatch,
   parallelWrite?: ParallelWriteDispatch
 ): Promise<{ payload: ToolResultPayload; status: ToolCallBlock['status'] }> {
   let args: Record<string, unknown> = {}
@@ -1171,7 +1202,7 @@ async function executeTool(
   // yet — there is nothing to diff or show a human until its workers have generated something — so
   // it requests approval from inside the tool instead, once per job, through the injected
   // approve() callback. Listing it here would queue a second, contentless approval card per call.
-  if (['write_file', 'edit_file', 'multi_edit', 'multi_write', 'delete_file', 'write_docx', 'edit_docx', 'generate_image', 'run_command'].includes(name)) {
+  if (['write_file', 'edit_file', 'multi_edit', 'multi_write', 'delete_file', 'write_docx', 'edit_docx', 'generate_image', 'generate_video', 'run_command'].includes(name)) {
     // 'manual': everything needs review. 'command': only run_command needs review — file edits
     // are auto-applied like 'auto' mode. 'auto': nothing needs review.
     const needsApproval = approvalMode === 'manual' || (approvalMode === 'command' && name === 'run_command')
@@ -1267,7 +1298,7 @@ async function executeTool(
       browserAutomation,
       onToolProgress,
       fileRoot,
-      imageGen,
+      mediaGen,
       parallelWrite,
       // parallel_write queues its own approval cards from inside the tool, so unlike every other
       // tool it needs this call's id to attach them to.
@@ -1299,8 +1330,8 @@ async function dispatchTool(
   /** Sandbox root for file tools — see the matching parameter on executeTool/
    *  previewMutatingTool above. undefined means "use the open project workspace". */
   fileRoot?: string,
-  /** Only generate_image uses this; see ImageGenDispatch. */
-  imageGen?: ImageGenDispatch,
+  /** Only generate_image and generate_video use this; see MediaGenDispatch. */
+  mediaGen?: MediaGenDispatch,
   /** Only parallel_write uses this; see ParallelWriteDispatch. */
   parallelWrite?: ParallelWriteDispatch,
   /** Only parallel_write uses this — it builds its own per-job PendingActions and needs the
@@ -1499,7 +1530,7 @@ async function dispatchTool(
       // itself also rejects a missing model, but check here first so a call that can't run at all
       // never reaches the spend-cap check (or looks like it was blocked on spend).
       const requestedModel = typeof args.model === 'string' ? args.model.trim() : ''
-      const imageModel = requestedModel || imageGen?.model
+      const imageModel = requestedModel || mediaGen?.model
       if (!imageModel) {
         return {
           ok: false,
@@ -1513,7 +1544,7 @@ async function dispatchTool(
       // before the next check ever happens. It throws 'Spending cap exceeded' (after emitting
       // spend_blocked), which executeTool's try/catch converts into a normal failed tool result
       // instead of tearing down the turn.
-      checkSpendCap(tab, imageGen?.spendingCapUsd ?? null, imageGen?.spendingCapPeriod ?? 'session')
+      checkSpendCap(tab, mediaGen?.spendingCapUsd ?? null, mediaGen?.spendingCapPeriod ?? 'session')
       const imageResult = await generateImageTool(args as GenerateImageToolArgs, {
         apiKey,
         model: imageModel,
@@ -1521,29 +1552,32 @@ async function dispatchTool(
         signal,
         onProgress: onToolProgress
       })
-      // Attribute the spend exactly like a chat turn's, so the daily cap checked above, the tab
-      // total, and the Cost Report all account for it. Note this reads costUsd off the payload
-      // before returning, since the caller strips other keys (dataUrl/imageUiOnly) off this same
-      // object afterwards.
-      const imageData = (imageResult.data ?? {}) as Record<string, unknown>
-      const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
-      const imageCost = num(imageData.costUsd)
-      if (imageCost > 0) {
-        tab.totalCostUsd += imageCost
-        trackDailySpend(imageCost)
-        recordUsage(getWorkspace(), imageModel, {
-          costUsd: imageCost,
-          promptTokens: num(imageData.promptTokens),
-          completionTokens: num(imageData.completionTokens),
-          // The /images endpoint has no prompt cache, so there is nothing cached, nothing
-          // written to a cache, and no saving: the counterfactual cost is just the real cost.
-          cachedTokens: 0,
-          cacheWriteTokens: 0,
-          costWithoutCacheUsd: imageCost,
-          cacheSavingsUsd: 0
-        })
-      }
+      recordMediaSpend(tab, imageModel, imageResult)
       return imageResult
+    }
+    case 'generate_video': {
+      // Mirrors generate_image: per-call override, not_configured before the spend check, and a
+      // spend-cap check per call (a video costs far more than an image, so this matters more).
+      const requestedVideoModel = typeof args.model === 'string' ? args.model.trim() : ''
+      const videoModel = requestedVideoModel || mediaGen?.videoModel
+      if (!videoModel) {
+        return {
+          ok: false,
+          summary: 'No video model is configured',
+          error: 'not_configured',
+          data: { detail: 'Pick a video model in Settings \u2192 Models \u2192 Video generation, then retry.' }
+        }
+      }
+      checkSpendCap(tab, mediaGen?.spendingCapUsd ?? null, mediaGen?.spendingCapPeriod ?? 'session')
+      const videoResult = await generateVideoTool(args as GenerateVideoToolArgs, {
+        apiKey,
+        model: videoModel,
+        root: fileRoot,
+        signal,
+        onProgress: onToolProgress
+      })
+      recordMediaSpend(tab, videoModel, videoResult)
+      return videoResult
     }
     case 'write_docx':
       return writeDocxTool(args as any, fileRoot)
@@ -1918,6 +1952,8 @@ function describeToolActivity(toolName: string, args: Record<string, unknown>): 
       return `Deleting ${str(args.path) ?? 'file'}`
     case 'generate_image':
       return str(args.path) ? `Generating image ${str(args.path)}` : 'Generating an image'
+    case 'generate_video':
+      return str(args.path) ? `Generating video ${str(args.path)}` : 'Generating a video'
     case 'read_docx':
       return `Reading ${str(args.path) ?? 'docx file'}`
     case 'write_docx':

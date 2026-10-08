@@ -220,6 +220,18 @@ describe('buildSessionWritePaths', () => {
     expect(paths).toContain('assets/hero.png')
   })
 
+  test('records a generate_video destination as a real write artifact', () => {
+    // Same C3 reasoning as generate_image: a truthful "I generated media/intro.mp4" must not be
+    // hard-flagged as a fabricated file.
+    const messages: ChatMessage[] = [
+      userMsg('u1', 'make me an intro clip'),
+      assistantWithCalls('a1', 'generating', [
+        toolCall('tc1', 'generate_video', { path: 'media/intro.mp4', prompt: 'a corgi' })
+      ])
+    ]
+    expect(buildSessionWritePaths(messages).map((p) => p.path)).toContain('media/intro.mp4')
+  })
+
   test('ignores delete_file (deleting a file is not a claim that it exists)', () => {
     const messages: ChatMessage[] = [
       userMsg('u1', 'go'),

@@ -225,6 +225,48 @@ describe('generate_image gating (hidden until an image model is configured)', ()
   })
 })
 
+describe('generate_video gating (hidden until a video model is configured)', () => {
+  const names = (mode: 'agent' | 'plan', isAssistant: boolean, available?: boolean): string[] =>
+    getToolDefinitions(mode, undefined, false, !isAssistant, isAssistant, {
+      ...(available === undefined ? {} : { videoGenerationAvailable: available })
+    }).map((t) => t.function.name)
+
+  test('hidden by default and when explicitly unavailable', () => {
+    expect(getToolDefinitions('agent').map((t) => t.function.name)).not.toContain('generate_video')
+    expect(names('agent', false, false)).not.toContain('generate_video')
+  })
+
+  test('appears on project and Assistant tabs once a video model is configured', () => {
+    expect(names('agent', false, true)).toContain('generate_video')
+    expect(names('agent', true, true)).toContain('generate_video')
+  })
+
+  test('never offered in plan mode', () => {
+    expect(names('plan', false, true)).not.toContain('generate_video')
+  })
+
+  test('independent of the image gate', () => {
+    const tools = getToolDefinitions('agent', undefined, false, true, false, {
+      imageGenerationAvailable: true,
+      videoGenerationAvailable: false
+    }).map((t) => t.function.name)
+    expect(tools).toContain('generate_image')
+    expect(tools).not.toContain('generate_video')
+  })
+
+  test('its schema requires path and prompt and exposes both image-input modes', () => {
+    const def = getToolDefinitions('agent', undefined, false, true, false, {
+      videoGenerationAvailable: true
+    }).find((t) => t.function.name === 'generate_video')
+    expect(def).toBeDefined()
+    const params = def!.function.parameters as { required: string[]; properties: Record<string, unknown> }
+    expect(params.required).toEqual(['path', 'prompt'])
+    for (const key of ['first_frame', 'last_frame', 'reference_images', 'duration', 'resolution', 'aspect_ratio']) {
+      expect(params.properties[key]).toBeDefined()
+    }
+  })
+})
+
 describe('docx/Gmail/Discord tool gating (default-closed, per-option opt-in)', () => {
   test('docx tools are hidden on a project-kind tab by default (docxAvailableInCoding defaults to false/absent)', () => {
     const tools = getToolDefinitions('agent').map((t) => t.function.name)

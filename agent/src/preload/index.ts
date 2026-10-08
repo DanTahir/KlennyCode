@@ -16,6 +16,7 @@ const api: KlennyApi = {
 
   listModels: (force) => ipcRenderer.invoke(IPC.modelsList, force),
   listImageModels: (force) => ipcRenderer.invoke(IPC.imageModelsList, force),
+  listVideoModels: (force) => ipcRenderer.invoke(IPC.videoModelsList, force),
   listShells: () => ipcRenderer.invoke(IPC.shellsList),
 
   createTerminal: (cols, rows) => ipcRenderer.invoke(IPC.terminalCreate, cols, rows),

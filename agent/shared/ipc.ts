@@ -6,6 +6,7 @@ import type {
   AssistantMemoryPool,
   CostReport,
   ImageModelInfo,
+  VideoModelInfo,
   IndexStatus,
   MemoryCompactionResult,
   ModelInfo,
@@ -68,6 +69,7 @@ export const IPC = {
 
   modelsList: 'models:list',
   imageModelsList: 'imageModels:list',
+  videoModelsList: 'videoModels:list',
   shellsList: 'shells:list',
 
   terminalCreate: 'terminal:create',
@@ -229,6 +231,9 @@ export interface KlennyApi {
    *  `supported_parameters` as an object of capability descriptors and price per-image rather
    *  than per-token, so they can't be represented as ModelInfo. Returns [] with no API key. */
   listImageModels: (forceRefresh?: boolean) => Promise<ImageModelInfo[]>
+  /** Video-generation models from OpenRouter's `/videos/models` endpoint — yet another separate
+   *  catalog shape (see VideoModelInfo). Returns [] with no API key. */
+  listVideoModels: (forceRefresh?: boolean) => Promise<VideoModelInfo[]>
   listShells: () => Promise<ShellInfo[]>
 
   createTerminal: (cols: number, rows: number) => Promise<{ id: string; shellName: string }>

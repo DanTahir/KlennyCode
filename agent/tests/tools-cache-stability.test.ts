@@ -27,7 +27,8 @@ const FULL_GATING = {
   discordPostAllowed: true,
   discordAvailableInCoding: true,
   browserAutomationAvailable: true,
-  imageGenerationAvailable: true
+  imageGenerationAvailable: true,
+  videoGenerationAvailable: true
 }
 
 const names = (defs: ReturnType<typeof getToolDefinitions>): string[] => defs.map((t) => t.function.name)
@@ -76,5 +77,9 @@ describe('tools-array stability across a conversation (prompt-cache invariant)',
     const withoutImage = names(getToolDefinitions('agent', undefined, false, true, false, { imageGenerationAvailable: false }))
     expect(withImage).toContain('generate_image')
     expect(withoutImage).not.toContain('generate_image')
+    const withVideo = names(getToolDefinitions('agent', undefined, false, true, false, { videoGenerationAvailable: true }))
+    const withoutVideo = names(getToolDefinitions('agent', undefined, false, true, false, { videoGenerationAvailable: false }))
+    expect(withVideo).toContain('generate_video')
+    expect(withoutVideo).not.toContain('generate_video')
   })
 })

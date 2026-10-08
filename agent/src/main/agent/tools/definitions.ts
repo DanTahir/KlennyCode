@@ -39,6 +39,9 @@ export interface ToolGatingOptions {
    *  alike; plan mode never includes generate_image in planAllowed at all (planning shouldn't
    *  spend money), so this gate is a no-op there. */
   imageGenerationAvailable?: boolean
+  /** AppSettings.videoModel != null — generate_video's exact analogue of
+   *  imageGenerationAvailable: hidden until the user picks a video model, never in plan mode. */
+  videoGenerationAvailable?: boolean
 }
 
 export function getToolDefinitions(
@@ -369,6 +372,75 @@ export function getToolDefinitions(
               items: { type: 'string' },
               description:
                 'Optional reference images for image-to-image generation or editing. Each entry is a local file path (.png, .jpg/.jpeg or .webp; relative to the workspace or absolute, same rules as read_image) or an http(s) URL. They are uploaded to the image provider. Max 16, each at most 8 MB; the per-model maximum is often lower and is checked before any money is spent.'
+            }
+          },
+          required: ['path', 'prompt']
+        }
+      }
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'generate_video',
+        description:
+          "Generate a short video clip from a text prompt using the separately-configured OpenRouter video model (independent of your own chat model) and save it to disk at `path` (.mp4). This is EXPENSIVE and SLOW: billed per second of output video (roughly $0.03–$0.50+ per second depending on model and resolution) and a generation usually takes 1–10 minutes while the job is polled — so call it deliberately, once, with a carefully written prompt; never speculatively, and never blindly retry a failure whose result says it may have been billed. The video is NOT added to your context. Image inputs come in two mutually exclusive modes: `first_frame`/`last_frame` (image-to-video: the clip starts/ends on exactly that image) or `reference_images` (reference-to-video: subject/style guidance, not exact frames). Omit duration/resolution/aspect_ratio/size to use the model's defaults; values the model's catalog says it doesn't support are refused before any money is spent.",
+        parameters: {
+          type: 'object',
+          properties: {
+            path: {
+              type: 'string',
+              description:
+                'Destination file path, relative to the workspace (or an absolute path inside it). Must end in .mp4. Missing parent directories are created automatically.'
+            },
+            prompt: {
+              type: 'string',
+              description:
+                'What to generate. Describe subject, action/motion, camera movement, setting, lighting and style; for image inputs, describe what should happen starting from (or leading to) the image.'
+            },
+            model: {
+              type: 'string',
+              description:
+                "Optional OpenRouter video-model id, overriding the user's configured default for this one call. Omit unless you have a specific reason."
+            },
+            duration: {
+              type: 'integer',
+              description: 'Optional clip length in seconds, e.g. 4, 6 or 8. Supported values vary by model; cost scales with it.'
+            },
+            resolution: {
+              type: 'string',
+              description: "Optional, e.g. '480p', '720p', '1080p'. Higher resolutions usually cost more per second."
+            },
+            aspect_ratio: {
+              type: 'string',
+              description: "Optional, e.g. '16:9', '9:16', '1:1'."
+            },
+            size: {
+              type: 'string',
+              description: "Optional exact pixel size, e.g. '1280x720', for models that take one instead of resolution/aspect_ratio."
+            },
+            generate_audio: {
+              type: 'boolean',
+              description: 'Optional: whether to generate an audio track, on models that support it. Often costs more.'
+            },
+            seed: {
+              type: 'integer',
+              description: 'Optional seed for reproducibility, on models that support it.'
+            },
+            first_frame: {
+              type: 'string',
+              description:
+                'Optional image the video must START on (image-to-video). A local file path (.png, .jpg/.jpeg or .webp; same rules as read_image) or an http(s) URL; uploaded to the video provider. Cannot be combined with reference_images.'
+            },
+            last_frame: {
+              type: 'string',
+              description:
+                'Optional image the video must END on, alone or together with first_frame. Same formats as first_frame; only some models support it. Cannot be combined with reference_images.'
+            },
+            reference_images: {
+              type: 'array',
+              items: { type: 'string' },
+              description:
+                'Optional reference images guiding subject/style/content (reference-to-video) without fixing exact frames. Each entry is a local file path or an http(s) URL; uploaded to the video provider. Max 16, each at most 8 MB, 20 MB total. Cannot be combined with first_frame/last_frame.'
             }
           },
           required: ['path', 'prompt']
@@ -1086,6 +1158,7 @@ export function getToolDefinitions(
     'delete_file',
     'read_image',
     'generate_image',
+    'generate_video',
     'read_docx',
     'write_docx',
     'edit_docx',
@@ -1177,6 +1250,10 @@ export function getToolDefinitions(
   // tool that can only error is worse than no tool at all. See imageGenerationAvailable.
   if (!gating.imageGenerationAvailable) {
     defs = defs.filter((t) => t.function.name !== 'generate_image')
+  }
+  // generate_video: same activation model as generate_image — see videoGenerationAvailable.
+  if (!gating.videoGenerationAvailable) {
+    defs = defs.filter((t) => t.function.name !== 'generate_video')
   }
 
   // update_checklist is deliberately NOT gated on whether a checklist currently exists, and that

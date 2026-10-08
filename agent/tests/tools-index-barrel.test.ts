@@ -22,6 +22,12 @@ describe('tools/index.ts barrel completeness', () => {
     expect(typeof mod.generateImageTool).toBe('function')
   })
 
+  test('re-exports the video tool (generate_video)', async () => {
+    const mod = await import('../src/main/agent/tools/index')
+    expect(typeof mod.generateVideoTool).toBe('function')
+    expect(typeof mod.videoParameterProblems).toBe('function')
+  })
+
   test('re-exports every search function', async () => {
     const mod = await import('../src/main/agent/tools/index')
     expect(typeof mod.grepTool).toBe('function')

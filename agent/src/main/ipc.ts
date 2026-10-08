@@ -10,6 +10,7 @@ import { pickDocumentsDirectory } from './documentsDir'
 import { sessionStore } from './session/store'
 import { fetchModels } from './openrouter/client'
 import { fetchImageModels } from './openrouter/images'
+import { fetchVideoModels } from './openrouter/videos'
 import { runUserTurn, approvePlan, stopGeneration, resolveQuestion, continueTurn, clearTabState } from './agent/orchestrator'
 import { approvalManager } from './agent/approval/manager'
 import { listSkills, readSkill, writeSkill } from './agent/skills/manager'
@@ -199,6 +200,11 @@ export function registerIpcHandlers(): void {
     const key = await getApiKey()
     if (!key) return []
     return fetchImageModels(key, force)
+  })
+  ipcMain.handle(IPC.videoModelsList, async (_e, force?: boolean) => {
+    const key = await getApiKey()
+    if (!key) return []
+    return fetchVideoModels(key, force)
   })
   ipcMain.handle(IPC.shellsList, async () => detectShells())
 

@@ -36,6 +36,8 @@ export { readImageTool } from './image'
 
 export { generateImageTool, normalizeReferenceImagesArg, type GenerateImageToolArgs } from './imagegen'
 
+export { generateVideoTool, videoParameterProblems, type GenerateVideoToolArgs } from './videogen'
+
 export { webSearchTool, fetchUrlTool } from './web'
 
 export { runCommandTool, killBackgroundProcess, runProcess } from './shell'

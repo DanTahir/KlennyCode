@@ -310,6 +310,7 @@ export type ToolName =
   | 'edit_docx'
   | 'read_image'
   | 'generate_image'
+  | 'generate_video'
   | 'grep'
   | 'glob'
   | 'run_command'
@@ -420,6 +421,7 @@ export const ASSISTANT_TOOLS: ToolName[] = [
   'edit_docx',
   'read_image',
   'generate_image',
+  'generate_video',
   'grep',
   'glob',
   'create_checklist',
@@ -486,6 +488,7 @@ export const MUTATING_TOOLS: ToolName[] = [
   'write_docx',
   'edit_docx',
   'generate_image',
+  'generate_video',
   'run_command',
   'write_memory',
   'write_skill',
@@ -520,6 +523,7 @@ export type PendingActionKind =
   | 'write_docx'
   | 'edit_docx'
   | 'generate_image'
+  | 'generate_video'
   | 'run_command'
   | 'browser_act'
   | 'create_pawprint'
@@ -744,6 +748,10 @@ export interface AppSettings {
   /** OpenRouter model id used by the generate_image tool, independent of the tab's chat model;
    *  null (the default) hides the tool entirely until the user picks one */
   imageModel: string | null
+  /** OpenRouter model id used by the generate_video tool, independent of the tab's chat model;
+   *  null (the default) hides the tool entirely until the user picks one — same activation
+   *  model as imageModel. */
+  videoModel: string | null
   /** master on/off switch for the semantic codebase search index — off by default (opt-in, since it spends OpenRouter credits on embeddings and runs a background file watcher) */
   codebaseIndexEnabled: boolean
   /** OpenRouter model id used to embed code chunks/queries; null until the user enables the feature and picks one */
@@ -1130,6 +1138,45 @@ export const DEFAULT_EMBEDDINGS_MODEL = 'qwen/qwen3-embedding-8b'
  *  (openai/gpt-image-1, google/gemini-2.5-flash-image, bytedance-seed/seedream-4.5) no longer
  *  resolve on the live endpoint — re-list before swapping in a "documented" id. */
 export const DEFAULT_IMAGE_MODEL = 'openai/gpt-image-2.5-flare'
+
+/** Recommended (★) model for the generate_video tool. Verified live against
+ *  GET /api/v1/videos/models at implementation time: plain text-to-video, first+last frame
+ *  image-to-video, 4/6/8 s durations, and the cheapest Veo tier ($0.03–0.08 per output second),
+ *  which matters for an agent tool where every call is billed by the second of video. */
+export const DEFAULT_VIDEO_MODEL = 'google/veo-3.1-lite'
+
+/**
+ * A video-generation model as listed by GET /api/v1/videos/models.
+ *
+ * A third, separate catalog shape (neither ModelInfo nor ImageModelInfo): capabilities are flat
+ * nullable arrays (`supported_durations`, `supported_resolutions`, …) rather than image models'
+ * descriptor object, and pricing is a free-form map of per-second / per-token SKUs. A `null` list
+ * means the catalog is silent about that knob — NOT that the knob is unsupported — so pre-spend
+ * validation only ever refuses against a non-empty list.
+ */
+export interface VideoModelInfo {
+  id: string
+  name: string
+  description?: string
+  supportedDurations: number[] | null
+  supportedResolutions: string[] | null
+  supportedAspectRatios: string[] | null
+  supportedSizes: string[] | null
+  /** Which `frame_images[].frame_type` values the model takes: 'first_frame' / 'last_frame'. */
+  supportedFrameImages: string[] | null
+  /** Raw catalog values; their semantics are undocumented, so nothing validates against them. */
+  generateAudio: boolean | null
+  seed: boolean | null
+  /** Free-form SKU → USD-string map, shown for information only. */
+  pricingSkus: Record<string, string>
+  allowedPassthroughParameters: string[]
+  /** Heuristic: no durations AND no frame-image support — true for every edit/upscale/avatar
+   *  model in the live catalog (flux-video-edit, flux-video-upscale, runway/aleph-2,
+   *  heygen/avatar-iv), which need a source video or audio that generate_video cannot supply.
+   *  The Settings picker hides these, like it hides image-to-image-only image models. */
+  requiresSourceMedia: boolean
+  pinned: boolean
+}
 
 /**
  * An image-generation model as listed by GET /api/v1/images/models.

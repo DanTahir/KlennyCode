@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { useAppStore } from '../store/useAppStore'
-import { BRAND_NAME_MAX_LENGTH, DEFAULT_BRAND_NAME, DEFAULT_EMBEDDINGS_MODEL, DEFAULT_IMAGE_MODEL } from '@shared/types'
+import { BRAND_NAME_MAX_LENGTH, DEFAULT_BRAND_NAME, DEFAULT_EMBEDDINGS_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '@shared/types'
 import type { ScheduledTask } from '@shared/types'
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -17,11 +17,13 @@ export function SettingsPanel() {
     settings,
     models,
     imageModels,
+    videoModels,
     shells,
     indexStatus,
     setSettings,
     setModels,
     setImageModels,
+    setVideoModels,
     setShells,
     setIndexStatus,
     settingsFocusSection,
@@ -91,6 +93,7 @@ export function SettingsPanel() {
   useEffect(() => {
     void window.klenny.listModels(true).then(setModels)
     void window.klenny.listImageModels(true).then(setImageModels)
+    void window.klenny.listVideoModels(true).then(setVideoModels)
     void window.klenny.listShells().then(setShells)
     void window.klenny.getIndexStatus().then(setIndexStatus)
     void window.klenny.getDiscordStatus().then(setDiscordStatus)
@@ -155,6 +158,9 @@ export function SettingsPanel() {
   // Image-to-image-only models can't serve a plain text-to-image prompt at all, so offering them
   // here would just sell the user a guaranteed provider-side failure (see requiresInputReferences).
   const textToImageModels = imageModels.filter((m) => !m.requiresInputReferences)
+  // Same reasoning for video: edit/upscale/avatar models need a source video or audio track that
+  // generate_video cannot supply (see requiresSourceMedia).
+  const textToVideoModels = videoModels.filter((m) => !m.requiresSourceMedia)
 
   const patch = async (p: Partial<typeof settings>) => {
     const next = await window.klenny.setSettings(p)
@@ -314,6 +320,27 @@ export function SettingsPanel() {
               into your project as real files. This is a separate model from your chat model above and is billed per
               image. The thumbnail shown in chat is never re-sent to the model on later turns, so it costs nothing to
               keep around. ★ recommended — the speed/cost tier of the gpt-image-2.5 family.
+            </p>
+
+            <label className="block text-sm">Video generation model</label>
+            <select
+              className="w-full px-3 py-2 bg-klenny-bg border border-klenny-border rounded"
+              value={settings.videoModel ?? ''}
+              onChange={(e) => void patch({ videoModel: e.target.value || null })}
+            >
+              <option value="">Disabled — hide the video generation tool</option>
+              {textToVideoModels.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.id === DEFAULT_VIDEO_MODEL ? '★ ' : ''}
+                  {m.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-klenny-muted">
+              Picking a model here enables the agent's <code>generate_video</code> tool, which writes short .mp4 clips
+              into your project, optionally starting/ending on an image or guided by reference images. Video is billed
+              per second of output and is far more expensive than images — typically a few cents to over a dollar per
+              clip — and each generation takes minutes. ★ recommended — Veo 3.1 Lite, the cheapest Veo tier.
             </p>
 
             <button

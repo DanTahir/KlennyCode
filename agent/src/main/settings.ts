@@ -27,6 +27,7 @@ const DEFAULTS: AppSettings = {
   lastWorkspace: null,
   shellId: null,
   imageModel: null,
+  videoModel: null,
   codebaseIndexEnabled: false,
   embeddingsModel: null,
   vectorStoreBackend: 'local',

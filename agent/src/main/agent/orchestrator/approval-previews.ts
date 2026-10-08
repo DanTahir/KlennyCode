@@ -172,6 +172,32 @@ export async function previewMutatingTool(
       .join('\n')
     return { title: `Generate image \u2192 ${path}`, extra: { filePath: path, command: details || undefined } }
   }
+  if (name === 'generate_video') {
+    // Same constraints as generate_image above: MUST stay above the delete fallthrough, and there
+    // is nothing to diff. Video is billed per second of output, so the knobs that drive cost are
+    // listed explicitly (an omitted one means "model default"), and every image that will be
+    // uploaded is named, frames and references alike.
+    const clip = (r: string): string =>
+      /^data:/i.test(r) ? '<inline data URL>' : r.length > 200 ? `${r.slice(0, 200)}\u2026` : r
+    const model = typeof args.model === 'string' && args.model ? args.model : undefined
+    const prompt = typeof args.prompt === 'string' ? args.prompt : ''
+    const knobs = (['duration', 'resolution', 'aspect_ratio', 'size', 'generate_audio', 'seed'] as const)
+      .filter((k) => args[k] != null && args[k] !== '')
+      .map((k) => `${k}: ${clip(String(args[k]))}`)
+    const frames = (['first_frame', 'last_frame'] as const)
+      .filter((k) => typeof args[k] === 'string' && args[k])
+      .map((k) => `${k.replace('_', ' ')} (uploaded to the video provider): ${clip(String(args[k]))}`)
+    const refArg = normalizeReferenceImagesArg(args.reference_images)
+    const refLine = !refArg.ok
+      ? 'references: <invalid reference_images argument \u2014 the call will be rejected>'
+      : refArg.refs.length > 0
+        ? `references (uploaded to the video provider): ${refArg.refs.map(clip).join(', ')}`
+        : undefined
+    const details = [model ? `model: ${model}` : undefined, prompt ? `prompt: ${prompt}` : undefined, ...knobs, ...frames, refLine]
+      .filter(Boolean)
+      .join('\n')
+    return { title: `Generate video \u2192 ${path}`, extra: { filePath: path, command: details || undefined } }
+  }
   try {
     const prev = await readTextForDiff(resolveWorkspacePath(path, root))
     if (!prev.exists) return { title: `Delete ${path}`, extra: { filePath: path } }

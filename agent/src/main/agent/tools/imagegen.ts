@@ -161,8 +161,11 @@ const errMessage = (e: unknown): string => (e instanceof Error ? e.message : Str
  * (resolveWorkspacePath: absolute paths reach anywhere readable, relative ones resolve against
  * `root`), because sending a reference is a READ of that file, not a mutation. The file is
  * inlined as a data URL that lives only in the outgoing request.
+ *
+ * Exported for generate_video (tools/videogen.ts), whose frame images and reference images go
+ * through exactly these rules and caps.
  */
-async function resolveReference(ref: string, root: string | undefined): Promise<ReferenceResolution> {
+export async function resolveReferenceImage(ref: string, root: string | undefined): Promise<ReferenceResolution> {
   if (/^https?:\/\//i.test(ref)) return { ok: true, url: ref, bytes: 0 }
   if (/^data:/i.test(ref)) {
     return referenceFailure(
@@ -367,7 +370,7 @@ export async function generateImageTool(
   const inputReferences: string[] = []
   let totalReferenceBytes = 0
   for (const ref of refs) {
-    const resolved = await resolveReference(ref, opts.root)
+    const resolved = await resolveReferenceImage(ref, opts.root)
     if (!resolved.ok) return resolved.payload
     totalReferenceBytes += resolved.bytes
     if (totalReferenceBytes > MAX_TOTAL_REFERENCE_BYTES) {

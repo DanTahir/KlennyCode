@@ -104,6 +104,24 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   "unsupported" (live: `meta/muse-image` has empty `supported_parameters`). The `output_format`
   400-retry must never drop references. Image-to-image-only models (`requiresInputReferences`) stay
   hidden from the Settings picker by design.
+- **Video generation** (`generate_video` → `tools/videogen.ts` → `openrouter/videos.ts`): the
+  same activation model as images (`AppSettings.videoModel != null` → `videoGenerationAvailable`,
+  never in plan mode; default ★ `google/veo-3.1-lite`, the cheapest Veo tier). OpenRouter's video
+  API is **async**: `POST /videos` → poll `GET /videos/{id}` (5 s backing off to 15 s, 20-minute
+  deadline, ~5 consecutive transient failures tolerated, 401/403/404 fatal) → download
+  `/videos/{id}/content`. Server-supplied `polling_url`/`unsigned_urls` are followed **only** if
+  they are `https://openrouter.ai` (`isTrustedUrl`), since those calls carry the bearer key.
+  `VideoGenerationError.submitted` distinguishes "rejected, nothing spent" from "job accepted, may
+  be billed" — surfaced as `mayHaveBeenBilled` + `jobId` so the model doesn't blindly re-spend.
+  Image inputs reuse `imagegen.ts`'s exported `resolveReferenceImage` and caps: `first_frame`/
+  `last_frame` → `frame_images`, `reference_images` → `input_references`; combining the two is
+  **refused**, because OpenRouter silently drops refs when frames are present. Pre-spend catalog
+  check (`videoParameterProblems`) refuses duration/resolution/aspect_ratio/size/frame type only
+  against a **non-empty** catalog list (null = silent, not unsupported — live `heygen/avatar-iv`
+  takes a photo yet lists `supported_frame_images: null`). `.mp4` only; no data URL in the result.
+  Edit/upscale/avatar models (`requiresSourceMedia`) are hidden from the Settings picker. Spend is
+  recorded through the shared `recordMediaSpend()` in `loop.ts`, with images and video sharing
+  the `MediaGenDispatch` settings slice.
 - **Codebase semantic search** (`codebase_search`): optional, off-by-default vector index over the
   workspace, incremental via a manifest.
 - **Skill/subagent authoring**: the agent writes and reads its own Cursor-style `SKILL.md` skills
