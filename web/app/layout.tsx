@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { Inter, Sora } from 'next/font/google';
 import './globals.css';
 import Effects from '@/components/Effects';
+import { INTRO_FLAG_SCRIPT } from '@/lib/intro';
 
 /*
  * next/font/google self-hosts these at build time, so they are emitted into
@@ -72,11 +73,18 @@ export const metadata: Metadata = {
  */
 const JS_FLAG = 'document.documentElement.classList.add("js");';
 
+/*
+ * Also decided before first paint: whether the home-page intro video plays
+ * (adds `intro` to <html>; see lib/intro.ts). Doing it here means the page is
+ * never briefly visible before the overlay covers it.
+ */
+const HEAD_SCRIPT = JS_FLAG + INTRO_FLAG_SCRIPT;
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${inter.variable} ${display.variable}`}>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: JS_FLAG }} />
+        <script dangerouslySetInnerHTML={{ __html: HEAD_SCRIPT }} />
       </head>
       <body className="bg-corgi-ink font-sans text-corgi-cream antialiased">
         {children}

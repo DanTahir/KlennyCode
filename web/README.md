@@ -13,8 +13,10 @@ app/globals.css       CSS custom props, reveal states, keyframes, reduced-motion
 components/sections/  Nav, Hero, ModelMarquee, PrimaryScreenshot, Stats, HowItWorks,
                       FeatureGrid, PawprintsSpotlight, ScreenshotPair, DownloadCta, Footer
 components/           Effects.tsx ('use client' effect mount), ScreenshotFrame.tsx,
-                      Feature.tsx (size-variant feature card), DownloadButtons.tsx
+                      Feature.tsx (size-variant feature card), DownloadButtons.tsx,
+                      IntroVideo.tsx (full-screen intro clip on first load)
 lib/effects/          9 dependency-free effect modules + shared.ts + index.ts registry
+lib/intro.ts          intro video contract: <html> class lifecycle, sources, head script
 ```
 
 `app/page.tsx` must stay a **server** component so `getLatestRelease()` resolves at build time
@@ -44,6 +46,28 @@ card — keep the `width`/`height` in `layout.tsx` metadata in sync with the rea
 `pawprints-art.png`, `memory-art.png`, `scheduler-art.png`. Film grain is an inline SVG
 `feTurbulence` data URI in `globals.css`, not a bitmap — `stitchTiles="stitch"` makes it seamless
 for free.
+
+## Intro video
+
+The home page opens on a full-screen clip (`public/intro/`) that plays once, then crossfades into
+the page. The lifecycle is three classes on `<html>` (documented in `lib/intro.ts`): `intro` is
+added by the inline head script before first paint (home page only, never under
+`prefers-reduced-motion` or Save-Data), `intro-live` once `IntroVideo` hydrates, and `intro-out`
+during the 1.2s crossfade. `Effects.tsx` defers mounting until the crossfade starts, so the hero's
+entrance animations play as the page appears rather than hidden underneath.
+
+- **Every failure shows the page**: autoplay refused (e.g. iOS Low Power Mode), a media error, no
+  playback within 5s, a 4s mid-clip stall, or a 20s hard cap all end the intro early. A CSS-only
+  failsafe fades the overlay out at 14s if the JS bundle never hydrates. Visitors can also press
+  **Skip intro** or Escape.
+- **Encodes**: `klenny-intro-1080.mp4` (desktop) and `klenny-intro-720.mp4` (phones, picked by
+  `INTRO_SMALL_MEDIA`), both H.264 with `+faststart` and no audio track, plus
+  `klenny-intro-poster.jpg`, which shows until playback starts. They are trimmed from the Veo
+  source `generated/corgi-typescript-rain.mp4` at 0.75s, because its first ~0.7s has black
+  pillarbox bars from Veo padding a portrait first frame.
+- **Framing**: landscape screens get `object-fit: cover`. Portrait screens get a full-width,
+  uncropped 16:9 band with feathered edges over a matching brown, because even a 4:3 crop clipped
+  the corgi's tail on the opening frame.
 
 Product screenshots (`KlennyScreenshot1/2/3.png`, `KlennyCodePawprints.png`) all go through
 `components/ScreenshotFrame.tsx`. **Every one of them already contains a real Windows titlebar**,
