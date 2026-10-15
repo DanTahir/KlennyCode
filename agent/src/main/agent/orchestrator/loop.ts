@@ -1055,6 +1055,20 @@ function recordMediaSpend(tab: TabSession, model: string, result: ToolResultPayl
   })
 }
 
+/**
+ * The single rule for whether a mutating tool call must wait on a human under a given approval
+ * mode. 'manual': everything needs review. 'command': only run_command needs review — file edits
+ * are auto-applied like 'auto' mode. 'auto': nothing needs review.
+ *
+ * Shared by executeTool's generic mutating-tool gate and parallel_write's per-job approve()
+ * callback (which runs from inside dispatchTool, after its workers have generated content), so
+ * the two can never disagree about what a tab's mode means. ALWAYS_BLOCKED_TOOLS are deliberately
+ * outside this rule — they ignore approval mode entirely.
+ */
+export function mutationNeedsApproval(approvalMode: ApprovalMode, toolName: string): boolean {
+  return approvalMode === 'manual' || (approvalMode === 'command' && toolName === 'run_command')
+}
+
 async function executeTool(
   tc: ToolCall,
   tab: TabSession,
@@ -1200,12 +1214,11 @@ async function executeTool(
 
   // parallel_write is deliberately ABSENT from this list. At this point its content does not exist
   // yet — there is nothing to diff or show a human until its workers have generated something — so
-  // it requests approval from inside the tool instead, once per job, through the injected
-  // approve() callback. Listing it here would queue a second, contentless approval card per call.
+  // it applies the same mutationNeedsApproval() rule from inside the tool instead, once per job,
+  // through the injected approve() callback (see dispatchTool). Listing it here would queue a
+  // second, contentless approval card per call.
   if (['write_file', 'edit_file', 'multi_edit', 'multi_write', 'delete_file', 'write_docx', 'edit_docx', 'generate_image', 'generate_video', 'run_command'].includes(name)) {
-    // 'manual': everything needs review. 'command': only run_command needs review — file edits
-    // are auto-applied like 'auto' mode. 'auto': nothing needs review.
-    const needsApproval = approvalMode === 'manual' || (approvalMode === 'command' && name === 'run_command')
+    const needsApproval = mutationNeedsApproval(approvalMode, name)
     if (needsApproval) {
       const kind = name as PendingActionKind
       const preview = await previewMutatingTool(name, args, fileRoot)
@@ -1301,8 +1314,10 @@ async function executeTool(
       mediaGen,
       parallelWrite,
       // parallel_write queues its own approval cards from inside the tool, so unlike every other
-      // tool it needs this call's id to attach them to.
-      tc.id
+      // tool it needs this call's id to attach them to, and the tab's effective approval mode to
+      // decide whether a card is needed at all.
+      tc.id,
+      approvalMode
     )
     return { payload, status: payload.ok ? 'success' : 'error' }
   } catch (e) {
@@ -1336,7 +1351,11 @@ async function dispatchTool(
   parallelWrite?: ParallelWriteDispatch,
   /** Only parallel_write uses this — it builds its own per-job PendingActions and needs the
    *  owning tool call's id to hang them off. */
-  toolCallId?: string
+  toolCallId?: string,
+  /** Only parallel_write uses this — the tab's effective approval mode, fed through
+   *  mutationNeedsApproval() per job. Defaults to 'manual' so a caller that forgets to pass it
+   *  fails closed (shows cards) rather than silently auto-applying. */
+  approvalMode: ApprovalMode = 'manual'
 ): Promise<ToolResultPayload> {
   switch (name) {
     case 'read_file':
@@ -1452,6 +1471,31 @@ async function dispatchTool(
       let primedPrefixTokens = 0
       let didPrime = false
 
+      // When the tab's mode auto-applies file writes ('auto', or 'command'), jobs skip their cards
+      // exactly like write_file/multi_write do — and, like them, get a rollback checkpoint first.
+      // One checkpoint per parallel_write call (not per job): it is taken lazily by whichever job
+      // reaches Phase 6 first, before ANY job applies, and every other job awaits the same promise.
+      const jobsNeedApproval = mutationNeedsApproval(approvalMode, 'parallel_write')
+      let checkpointOnce: Promise<void> | null = null
+      const ensureCheckpoint = (): Promise<void> => {
+        if (!checkpointOnce) {
+          const ws = getWorkspace()
+          checkpointOnce = ws
+            ? approvalManager.createCheckpoint(ws).then(
+                () => undefined,
+                (e) => {
+                  // Same failure surface as executeTool's checkpoint for the other write tools,
+                  // except it must not reject every job's approve(): log and let the writes go.
+                  console.log(
+                    `[parallel_write] checkpoint before auto-apply failed: ${e instanceof Error ? e.message : String(e)}`
+                  )
+                }
+              )
+            : Promise.resolve()
+        }
+        return checkpointOnce
+      }
+
       return parallelWriteTool(args, {
         root: fileRoot,
         signal,
@@ -1502,6 +1546,10 @@ async function dispatchTool(
           }
         },
         approve: async (req: JobApprovalRequest) => {
+          if (!jobsNeedApproval) {
+            await ensureCheckpoint()
+            return 'approve'
+          }
           const fileCount = req.paths.length
           const title = `${req.kind === 'edit' ? 'Edit' : 'Write'} ${fileCount} file${fileCount === 1 ? '' : 's'} — ${req.label}`
           // N actions deliberately share one toolCallId, exactly as N concurrent write_file calls

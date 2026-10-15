@@ -94,7 +94,8 @@ export interface JobApprovalRequest {
 export interface ParallelWriteDeps {
   /** Runs one worker generation. Injected so this module never imports the OpenRouter client. */
   generate: (req: WorkerRequest) => Promise<WorkerResult>
-  /** Queues one approval card for one job and resolves with the human's decision. */
+  /** Decides one job: queues an approval card and resolves with the human's decision, or — when
+   *  the tab's approval mode auto-applies file writes — resolves 'approve' immediately. */
   approve: (req: JobApprovalRequest) => Promise<'approve' | 'reject'>
   /** Optional cache-priming hook, gated by shouldPrimeCache() in openrouter/caching.ts. Resolves
    *  true if it actually sent a priming request, so effectiveness can be judged afterwards. */

@@ -214,9 +214,11 @@ completions on that tab's own model, so the bodies are generated simultaneously.
 The main model emits only a small *spec* per job. Bulk content — existing file bodies for edit
 jobs, plus any shared context files — is read from disk by Klenny Code and referred to by path,
 so it never passes through the model's output budget; that also removes the main cause of
-truncated tool-call arguments on large batches. Each job gets its own approval card with its own
+truncated tool-call arguments on large batches. It follows the tab's approval mode exactly like
+`write_file`/`multi_write`: in **manual** mode each job gets its own approval card with its own
 diff once its content exists, and the tool call can't resolve (so the agent can't move on) until
-every job has been approved or rejected.
+every job has been approved or rejected; in **auto** and **command** modes jobs apply as soon as
+they're generated, after a single rollback checkpoint per call.
 
 Dependent, coordinated changes still belong in `multi_edit`/`multi_write` — `parallel_write` jobs
 are independent by contract, and two jobs naming the same file is a hard error raised before any
