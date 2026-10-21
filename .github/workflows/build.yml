@@ -71,6 +71,13 @@ jobs:
       # macOS: Developer ID signing + notarization. The Apple secrets are only exposed to the mac
       # job on purpose: electron-builder also reads CSC_LINK on Windows and would try to
       # Authenticode-sign the .exe with the Apple certificate.
+      #
+      # We import the certificate into our own keychain instead of handing electron-builder
+      # CSC_LINK: electron-builder < 26.18.0 passes the .p12 password to
+      # `security set-key-partition-list -k` (which wants the keychain's password), and macOS 26
+      # runners reject that with "SecKeychainUnlock: The user name or passphrase you entered is not
+      # correct" (electron-builder#10066). With no CSC_LINK set, electron-builder auto-discovers the
+      # "Developer ID Application" identity from the keychain search list.
       - name: Prepare Apple signing (mac)
         if: matrix.platform == 'mac'
         shell: bash
@@ -88,19 +95,52 @@ jobs:
             if [ -z "${!v}" ]; then echo "::error::Missing repository secret $v"; missing=1; fi
           done
           [ "$missing" -eq 0 ] || exit 1
-          mkdir -p "$RUNNER_TEMP/apple"
-          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/apple/AuthKey.p8"
-          chmod 600 "$RUNNER_TEMP/apple/AuthKey.p8"
-          echo "APPLE_API_KEY=$RUNNER_TEMP/apple/AuthKey.p8" >> "$GITHUB_ENV"
+          set -euo pipefail
+          dir="$RUNNER_TEMP/apple"
+          mkdir -p "$dir"
+          chmod 700 "$dir"
+
+          # Notarization API key (electron-builder reads APPLE_API_KEY as a file path).
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$dir/AuthKey.p8"
+          chmod 600 "$dir/AuthKey.p8"
+          echo "APPLE_API_KEY=$dir/AuthKey.p8" >> "$GITHUB_ENV"
+
+          # Signing keychain with a password we control.
+          keychain="$dir/signing.keychain-db"
+          keychain_pw="$(openssl rand -base64 32)"
+          printf '%s' "$MAC_CSC_LINK" | base64 --decode > "$dir/cert.p12"
+          security create-keychain -p "$keychain_pw" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_pw" "$keychain"
+          # Developer ID G2 intermediate, so the identity validates even if the .p12 was exported
+          # without its chain (runner images normally have it already; this is insurance).
+          if curl -fsSL https://www.apple.com/certificateauthority/DeveloperIDG2CA.cer -o "$dir/DeveloperIDG2CA.cer"; then
+            security import "$dir/DeveloperIDG2CA.cer" -k "$keychain" || true
+          else
+            echo "::warning::Could not download DeveloperIDG2CA.cer; relying on the runner's copy"
+          fi
+          security import "$dir/cert.p12" -k "$keychain" -P "$MAC_CSC_KEY_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productbuild
+          rm -f "$dir/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_pw" "$keychain" >/dev/null
+          # Prepend to the user search list so codesign / electron-builder can find the identity.
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | xargs)
+          echo "MAC_SIGNING_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
+          security find-identity -v -p codesigning "$keychain"
+          if ! security find-identity -v -p codesigning "$keychain" | grep -q 'Developer ID Application'; then
+            echo "::error::No valid 'Developer ID Application' identity in MAC_CSC_LINK (wrong certificate type, or exported without its private key?)"
+            exit 1
+          fi
 
       - name: Package, sign, notarize and publish (mac)
         if: matrix.platform == 'mac'
         working-directory: agent
-        run: npx electron-builder --mac --publish always
+        # forceCodeSigning: fail instead of silently publishing an unsigned mac build if the
+        # identity is somehow not found. Passed on the CLI so it only applies to this mac step.
+        run: npx electron-builder --mac --publish always -c.forceCodeSigning=true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
 
@@ -119,10 +159,12 @@ jobs:
             xcrun stapler validate "$app"
           done
 
-      - name: Remove Apple API key (mac)
+      - name: Remove Apple signing material (mac)
         if: always() && matrix.platform == 'mac'
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/apple"
+        run: |
+          if [ -n "${MAC_SIGNING_KEYCHAIN:-}" ]; then security delete-keychain "$MAC_SIGNING_KEYCHAIN" || true; fi
+          rm -rf "$RUNNER_TEMP/apple"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

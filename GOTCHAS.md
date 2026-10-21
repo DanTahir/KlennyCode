@@ -411,7 +411,17 @@ When `KLENNY.md` says "see the caching gotcha", "see the stall gotchas", "see th
   fails the job on any empty secret, and a post-build step runs `codesign --verify`,
   `spctl --assess` and `stapler validate`. The Apple secrets (`MAC_CSC_LINK`, etc.) are deliberately
   exposed **only** to the mac job: electron-builder also reads `CSC_LINK` on Windows and would try
-  to Authenticode-sign the `.exe` with the Apple certificate.
+  to Authenticode-sign the `.exe` with the Apple certificate. The mac build step also passes
+  `-c.forceCodeSigning=true` on the CLI (not in `package.json`, which would break unsigned Windows).
+- **Don't give electron-builder < 26.18.0 `CSC_LINK` on macOS 26 runners**: its `importCerts()`
+  passes the `.p12` password to `security set-key-partition-list -k`, which expects the temp
+  keychain's own (random) password. Newer macOS validates it and the build dies with
+  `SecKeychainUnlock: The user name or passphrase you entered is not correct` (electron-builder
+  #10066; fixed in 26.18.0, *not* in the 26.15.3 `latest` tag). So `build.yml` builds its own
+  keychain with a known password, imports the `.p12` (+ Developer ID G2 intermediate), sets the
+  partition list correctly, and leaves `CSC_LINK` unset — with no `CSC_LINK`, `codeSigningInfo`
+  is null and electron-builder auto-discovers the identity from the keychain search list. After
+  upgrading to >= 26.18.0 the manual import could go back to plain `CSC_LINK`.
 - **node-pty's macOS `spawn-helper` ships without its execute bit**: node-pty 1.1.0's npm tarball
   has `prebuilds/darwin-*/spawn-helper` at mode 0644 and its postinstall never fixes it, so every
   `pty.spawn()` on macOS fails with `posix_spawnp failed` (surfaced as a blank terminal panel). This
