@@ -404,12 +404,28 @@ hours thereafter, download new versions in the background, and prompt to restart
 **portable** exe cannot auto-update (electron-builder only supports auto-update for the NSIS installer target on
 Windows) — grab new portable builds manually from Releases.
 
-### macOS: "app is damaged and can't be opened"
+### macOS signing and notarization
 
-Klenny Code isn't signed with a paid Apple Developer certificate, so macOS Gatekeeper blocks the downloaded
+macOS builds are signed with a Developer ID Application certificate and notarized by Apple in CI
+(`.github/workflows/build.yml`), so they open normally and can auto-update. The mac job needs these repository
+secrets (Settings → Secrets and variables → Actions) and fails loudly if any is missing:
+
+| Secret | Value |
+|---|---|
+| `MAC_CSC_LINK` | base64 of the exported Developer ID Application `.p12` |
+| `MAC_CSC_KEY_PASSWORD` | the `.p12` export password |
+| `APPLE_API_KEY_P8` | full text of the App Store Connect API key `.p8` |
+| `APPLE_API_KEY_ID` | that key's Key ID |
+| `APPLE_API_ISSUER` | the App Store Connect Issuer ID |
+
+Hardened-runtime entitlements live in `agent/build/entitlements.mac.plist`.
+
+### macOS: "app is damaged and can't be opened" (older unsigned builds)
+
+Builds published before signing was enabled weren't signed, so macOS Gatekeeper blocks the downloaded
 `.dmg`/`.app` and reports it as damaged. This isn't actual corruption — it's Gatekeeper refusing to run an
-unsigned app. Clear the quarantine flag from Terminal to fix it (the installed app bundle is `KlennyCode.app`
-— no space — even though it displays as "Klenny Code"):
+unsigned app. Prefer installing a current signed release; otherwise clear the quarantine flag from Terminal
+(the installed app bundle is `KlennyCode.app` — no space — even though it displays as "Klenny Code"):
 
 ```bash
 xattr -cr /Applications/KlennyCode.app

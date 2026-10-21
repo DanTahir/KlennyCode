@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened-runtime entitlements for the macOS Developer ID build (package.json build.mac
+  `entitlements` / `entitlementsInherit`). Required for notarization.
+  - allow-jit / allow-unsigned-executable-memory: V8 in Electron's main + helper processes.
+  - disable-library-validation: native modules unpacked from asar (node-pty, esbuild, ripgrep).
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

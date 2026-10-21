@@ -173,7 +173,8 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
 - **History, Cost Report, per-tab approval modes, auto-update**: closed tabs (project 💻 and
   Assistant 🐾) are archived and reopenable; a Cost Report tracks spend by model over time; each tab
   can override the global approval mode (manual/command/auto); auto-update works on Windows (NSIS)
-  and Linux (AppImage) only — see follow-ups for Mac and `.deb`.
+  and Linux (AppImage); macOS builds are now Developer ID–signed and notarized in CI (which mac
+  auto-update needs) but signed-to-signed updates aren't confirmed yet — see follow-ups for Mac and `.deb`.
 
 ## Conventions
 

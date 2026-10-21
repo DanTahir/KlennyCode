@@ -404,6 +404,14 @@ When `KLENNY.md` says "see the caching gotcha", "see the stall gotchas", "see th
 - **node-pty packaging**: set `npmRebuild: false` + `asarUnpack: ['**/node-pty/**']` in
   electron-builder config; a normal postinstall rebuild fails hard without VS Build Tools even when
   working prebuilt binaries already exist.
+- **electron-builder silently ships unsigned/un-notarized mac builds when credentials are
+  missing**: with `mac.notarize: true`, electron-builder 25.1.8's `getNotarizeOptions()` returns
+  `undefined` and logs only a warning if none of the `APPLE_*` env var sets is present, and signing
+  is likewise skipped when no identity is found. So `build.yml`'s "Prepare Apple signing (mac)" step
+  fails the job on any empty secret, and a post-build step runs `codesign --verify`,
+  `spctl --assess` and `stapler validate`. The Apple secrets (`MAC_CSC_LINK`, etc.) are deliberately
+  exposed **only** to the mac job: electron-builder also reads `CSC_LINK` on Windows and would try
+  to Authenticode-sign the `.exe` with the Apple certificate.
 - **node-pty's macOS `spawn-helper` ships without its execute bit**: node-pty 1.1.0's npm tarball
   has `prebuilds/darwin-*/spawn-helper` at mode 0644 and its postinstall never fixes it, so every
   `pty.spawn()` on macOS fails with `posix_spawnp failed` (surfaced as a blank terminal panel). This
@@ -468,7 +476,11 @@ When `KLENNY.md` says "see the caching gotcha", "see the stall gotchas", "see th
 - Compaction-summary manual reset (UX + IPC) — a user-facing "reset conversation summary" button for
   recovery if a summary ever ends up wrong. Not required for the poisoning fix (that's done); purely
   recovery UX. No IPC channel exists yet.
-- Mac auto-update (needs code-signing/notarization in CI); Linux `.deb` has no update path by design.
+- Mac auto-update: Developer ID signing + notarization is now wired into CI (`build.yml`,
+  `agent/build/entitlements.mac.plist`), which is what Squirrel.Mac requires. Still to confirm on a
+  real release: an update from one signed build to the next applies. Installs of the earlier
+  unsigned builds will likely need one manual reinstall. Builds are arm64-only (`macos-latest`);
+  Intel/universal is not built. Linux `.deb` has no update path by design.
 - Per-tab workspace tracking (currently a single global singleton).
 - MCP-style tool integration scaling — researched (OpenClaw/OpenCode patterns), not built.
 - Confirming OpenRouter's *upstream* translation of consecutive `role: 'tool'` messages. Anthropic

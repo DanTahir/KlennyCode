@@ -61,11 +61,68 @@ jobs:
         run: npm run build
 
       - name: Package and publish (${{ matrix.platform }})
+        if: matrix.platform != 'mac'
         working-directory: agent
         run: npx electron-builder --${{ matrix.platform }} --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      # macOS: Developer ID signing + notarization. The Apple secrets are only exposed to the mac
+      # job on purpose: electron-builder also reads CSC_LINK on Windows and would try to
+      # Authenticode-sign the .exe with the Apple certificate.
+      - name: Prepare Apple signing (mac)
+        if: matrix.platform == 'mac'
+        shell: bash
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        # electron-builder silently skips signing/notarization when credentials are absent, so a
+        # missing secret must fail here instead of quietly shipping an unsigned build.
+        run: |
+          missing=0
+          for v in MAC_CSC_LINK MAC_CSC_KEY_PASSWORD APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
+            if [ -z "${!v}" ]; then echo "::error::Missing repository secret $v"; missing=1; fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+          mkdir -p "$RUNNER_TEMP/apple"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/apple/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/apple/AuthKey.p8"
+          echo "APPLE_API_KEY=$RUNNER_TEMP/apple/AuthKey.p8" >> "$GITHUB_ENV"
+
+      - name: Package, sign, notarize and publish (mac)
+        if: matrix.platform == 'mac'
+        working-directory: agent
+        run: npx electron-builder --mac --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+
+      - name: Verify signature and notarization (mac)
+        if: matrix.platform == 'mac'
+        working-directory: agent
+        shell: bash
+        run: |
+          shopt -s nullglob
+          apps=(dist/mac*/*.app)
+          [ ${#apps[@]} -gt 0 ] || { echo "::error::No .app found under dist/mac*"; exit 1; }
+          for app in "${apps[@]}"; do
+            echo "Checking $app"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            spctl --assess --type execute --verbose=4 "$app"
+            xcrun stapler validate "$app"
+          done
+
+      - name: Remove Apple API key (mac)
+        if: always() && matrix.platform == 'mac'
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/apple"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
