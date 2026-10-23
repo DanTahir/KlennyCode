@@ -20,6 +20,18 @@ import type {
   UpdateStatusEvent
 } from '@shared/types'
 import { dropWritingPlaceholders } from '@shared/toolWriting'
+import type { ModelWaitingInfo } from '@shared/types'
+
+type ModelWaitingByTab = Record<string, { messageId: string; info: ModelWaitingInfo }>
+
+/** Drops a tab's "waiting on the model" status. Returns {} (no state change) when there is none,
+ *  so the hot per-token text_delta path doesn't allocate a new record on every delta. */
+function clearModelWaiting(modelWaiting: ModelWaitingByTab, tabId: string): { modelWaiting?: ModelWaitingByTab } {
+  if (!modelWaiting[tabId]) return {}
+  const next = { ...modelWaiting }
+  delete next[tabId]
+  return { modelWaiting: next }
+}
 
 /** A plan opened as a tab in the main tab bar (client-side only — plans themselves live on disk). */
 export interface OpenPlanTab {
@@ -76,6 +88,11 @@ interface AppState {
    *  so without this the app looks frozen. Cleared by `compaction_end`, with `turn_end`/`error`
    *  as backstops. */
   compactingTabIds: Set<string>
+  /** Per tab: the in-flight model request has gone quiet (see ModelWaitingInfo). Drives the
+   *  "Waiting on the model" indicator, so a provider stall looks different from a working stream.
+   *  Set by `model_waiting`, cleared by its null form and, as backstops, by text/thinking output,
+   *  message_start/message_end, error and turn_end. */
+  modelWaiting: ModelWaitingByTab
   tabErrors: Record<string, string>
   /** Tabs whose turn stopped early (checkpoint step count reached, or the hard safety ceiling
    *  was hit) and are waiting for the user to click Continue. Cleared as soon as a new
@@ -141,6 +158,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setTerminalHeight: (terminalHeight) => set({ terminalHeight: Math.max(120, Math.min(720, terminalHeight)) }),
   streamingTabIds: new Set(),
   compactingTabIds: new Set(),
+  modelWaiting: {},
   tabErrors: {},
   pausedTabs: {},
   updateStatus: null,
@@ -227,7 +245,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         streaming.add(e.tabId)
         const pausedTabs = { ...state.pausedTabs }
         delete pausedTabs[e.tabId]
-        set({ tabs, streamingTabIds: streaming, pausedTabs })
+        set({ tabs, streamingTabIds: streaming, pausedTabs, ...clearModelWaiting(state.modelWaiting, e.tabId) })
         break
       }
       case 'text_delta':
@@ -249,7 +267,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           })
           return { ...t, messages }
         })
-        set({ tabs })
+        set({ tabs, ...clearModelWaiting(state.modelWaiting, e.tabId) })
         break
       }
       // The model is still streaming this call's arguments. Upserts a placeholder block so a long
@@ -380,7 +398,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           // standing; drop it rather than leave a card pulsing "writing…" forever.
           return { ...t, messages: dropWritingPlaceholders(messages) }
         })
-        set({ tabs })
+        set({ tabs, ...clearModelWaiting(state.modelWaiting, e.tabId) })
         break
       }
       // The guard flags the message rather than removing it — the user still needs to see exactly
@@ -402,7 +420,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         )
         const compacting = new Set(state.compactingTabIds)
         compacting.delete(e.tabId)
-        set({ tabs, compactingTabIds: compacting, tabErrors: { ...state.tabErrors, [e.tabId]: e.message } })
+        set({
+          tabs,
+          compactingTabIds: compacting,
+          tabErrors: { ...state.tabErrors, [e.tabId]: e.message },
+          ...clearModelWaiting(state.modelWaiting, e.tabId)
+        })
         break
       }
       case 'turn_end': {
@@ -417,7 +440,12 @@ export const useAppStore = create<AppState>((set, get) => ({
         // the compaction bracket closing cleanly, and a stuck spinner is worse than none.
         const compacting = new Set(state.compactingTabIds)
         compacting.delete(e.tabId)
-        set({ tabs, streamingTabIds: streaming, compactingTabIds: compacting })
+        set({
+          tabs,
+          streamingTabIds: streaming,
+          compactingTabIds: compacting,
+          ...clearModelWaiting(state.modelWaiting, e.tabId)
+        })
         break
       }
       case 'turn_paused': {
@@ -460,6 +488,17 @@ export const useAppStore = create<AppState>((set, get) => ({
         const compacting = new Set(state.compactingTabIds)
         compacting.delete(e.tabId)
         set({ compactingTabIds: compacting })
+        break
+      }
+      case 'model_waiting': {
+        // Subagent runs forward their events too but aren't in `tabs`; tracking them would only
+        // leak entries that no turn_end ever clears.
+        if (!state.tabs.some((t) => t.id === e.tabId)) break
+        if (e.waiting) {
+          set({ modelWaiting: { ...state.modelWaiting, [e.tabId]: { messageId: e.messageId, info: e.waiting } } })
+        } else {
+          set(clearModelWaiting(state.modelWaiting, e.tabId))
+        }
         break
       }
       case 'compaction': {

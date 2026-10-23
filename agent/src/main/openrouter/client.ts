@@ -1,4 +1,4 @@
-import type { ModelInfo, ProviderPreference } from '@shared/types'
+import type { ModelInfo, ModelWaitingInfo, ProviderPreference } from '@shared/types'
 import { CURATED_MODEL_IDS } from '@shared/types'
 import { applyCacheControl, isExplicitCacheFamily, planAdvancingBreakpoint } from './caching'
 import {
@@ -130,7 +130,7 @@ export interface UsageChunk {
 }
 
 export interface StreamChunk {
-  type: 'text' | 'reasoning' | 'tool_calls' | 'tool_call_delta' | 'usage' | 'done' | 'error'
+  type: 'text' | 'reasoning' | 'tool_calls' | 'tool_call_delta' | 'usage' | 'done' | 'error' | 'waiting'
   text?: string
   toolCalls?: ToolCall[]
   /** One raw tool-call fragment, relayed as it arrives so callers can show live progress while a
@@ -159,6 +159,20 @@ export interface StreamChunk {
    *  mid tool-call-arguments JSON); orchestrator.ts uses this to detect/recover from truncation
    *  instead of treating a cut-off response as a normal completed turn. */
   finishReason?: string
+  /** 'waiting' chunks only: the request has produced no real output for a while (see
+   *  StreamWatchdog). `null` clears a previously reported status once output resumes. Purely a UI
+   *  signal; consumers that don't render progress ignore it. */
+  waiting?: ModelWaitingInfo | null
+  /** Set on an 'error' chunk caused by the stall watchdog, the per-request deadline or a dropped
+   *  connection. `partialOutput: true` means text/reasoning/tool-call fragments from this attempt
+   *  were already yielded, so the client could NOT retry transparently (a fresh attempt would be
+   *  appended after the partial one); the orchestrator retries it with a nudge instead. */
+  interrupted?: StreamInterruption
+}
+
+export interface StreamInterruption {
+  reason: 'stall' | 'deadline' | 'network'
+  partialOutput: boolean
 }
 
 /** Fields that arrive as incremental text fragments and must be concatenated rather than replaced
@@ -304,6 +318,184 @@ export async function fetchModels(apiKey: string, force = false, signal?: AbortS
   return modelsCache
 }
 
+/**
+ * Stall-watchdog limits for one streamChatCompletion attempt.
+ *
+ * Why these exist: the stream used to have no timeout at all, only the caller's abort signal, so
+ * a request that hung inside `fetch()` or `reader.read()` left the turn "running" forever (2.5 h
+ * in one real session) with nothing in the log. Node's own body timeout can't catch that, because
+ * OpenRouter keeps an idle generation's connection alive with SSE comment lines
+ * (`: OPENROUTER PROCESSING`). That is why only `data:` lines carrying real deltas count as
+ * progress here, and keep-alive comments deliberately don't.
+ */
+export interface StreamTimeouts {
+  /** max silence before the first real delta (covers provider queueing + slow time-to-first-token) */
+  firstTokenMs: number
+  /** max silence between real deltas once output has started */
+  idleMs: number
+  /** hard per-attempt ceiling, even while output keeps trickling in */
+  totalMs: number
+  /** how often a pending await wakes to re-check the limits and refresh the waiting status */
+  tickMs: number
+  /** silence after which 'waiting' chunks start being emitted */
+  waitingAfterMs: number
+  /** base of the exponential backoff between attempts (base * 2^attempt) */
+  retryBackoffMs: number
+}
+
+export const DEFAULT_STREAM_TIMEOUTS: StreamTimeouts = {
+  firstTokenMs: 6 * 60_000,
+  idleMs: 3 * 60_000,
+  totalMs: 45 * 60_000,
+  tickMs: 5_000,
+  waitingAfterMs: 15_000,
+  retryBackoffMs: 500
+}
+
+/** One shared budget across transient HTTP errors, network errors and pre-output stalls. */
+export const MAX_STREAM_ATTEMPTS = 4
+
+class StreamStallError extends Error {
+  constructor(
+    readonly reason: 'stall' | 'deadline',
+    readonly phase: ModelWaitingInfo['phase'],
+    readonly silentMs: number,
+    message: string
+  ) {
+    super(message)
+    this.name = 'StreamStallError'
+  }
+}
+
+function fmtMs(ms: number): string {
+  return ms >= 60_000 ? `${(ms / 60_000).toFixed(1)} min` : `${Math.round(ms / 1000)} s`
+}
+
+/** Per-attempt progress bookkeeping behind the stall watchdog and the 'waiting' chunks. */
+class StreamWatchdog {
+  readonly startedAt: number
+  lastProgressAt: number
+  firstTokenAt: number | undefined
+  /** keep-alive comment lines received this attempt */
+  keepAlives = 0
+  /** keep-alive comment lines received since the last real delta */
+  keepAlivesSinceProgress = 0
+  /** consumer-visible output (text, reasoning, a tool-call fragment) was yielded this attempt,
+   *  so it can no longer be retried transparently */
+  yieldedOutput = false
+  /** a non-null 'waiting' chunk is outstanding and must be cleared once output resumes */
+  waitingShown = false
+  private lastWaitingAt = 0
+
+  constructor(
+    private readonly t: StreamTimeouts,
+    readonly attempt: number,
+    readonly retryReason: ModelWaitingInfo['retryReason'],
+    now = Date.now()
+  ) {
+    this.startedAt = now
+    this.lastProgressAt = now
+  }
+
+  elapsed(now = Date.now()): number {
+    return now - this.startedAt
+  }
+
+  noteKeepAlive(): void {
+    this.keepAlives++
+    this.keepAlivesSinceProgress++
+  }
+
+  /** Records a real delta. Returns true when it was this attempt's first. */
+  noteProgress(now = Date.now()): boolean {
+    this.lastProgressAt = now
+    this.keepAlivesSinceProgress = 0
+    if (this.firstTokenAt !== undefined) return false
+    this.firstTokenAt = now
+    return true
+  }
+
+  private phase(): ModelWaitingInfo['phase'] {
+    return this.firstTokenAt === undefined ? 'first-token' : 'idle'
+  }
+
+  /** The stall verdict, or undefined while within limits. */
+  check(now = Date.now()): StreamStallError | undefined {
+    const silent = now - this.lastProgressAt
+    const phase = this.phase()
+    if (now - this.startedAt >= this.t.totalMs) {
+      return new StreamStallError('deadline', phase, silent, `request exceeded the ${fmtMs(this.t.totalMs)} per-request deadline`)
+    }
+    if (silent < (phase === 'first-token' ? this.t.firstTokenMs : this.t.idleMs)) return undefined
+    return new StreamStallError(
+      'stall',
+      phase,
+      silent,
+      `${phase === 'first-token' ? 'no output' : 'output stopped'} for ${fmtMs(silent)} (${this.keepAlivesSinceProgress} keep-alive comments received meanwhile)`
+    )
+  }
+
+  info(now = Date.now()): ModelWaitingInfo {
+    const phase = this.phase()
+    return {
+      silentMs: now - this.lastProgressAt,
+      phase,
+      keepAlives: this.keepAlivesSinceProgress,
+      stallAfterMs: phase === 'first-token' ? this.t.firstTokenMs : this.t.idleMs,
+      attempt: this.attempt,
+      maxAttempts: MAX_STREAM_ATTEMPTS,
+      ...(this.retryReason ? { retryReason: this.retryReason } : {})
+    }
+  }
+
+  /** A 'waiting' chunk to surface now, or undefined: only after waitingAfterMs of silence, and
+   *  throttled to one per tickMs. */
+  waitingChunk(now = Date.now()): StreamChunk | undefined {
+    if (now - this.lastProgressAt < this.t.waitingAfterMs) return undefined
+    if (this.waitingShown && now - this.lastWaitingAt < this.t.tickMs) return undefined
+    this.waitingShown = true
+    this.lastWaitingAt = now
+    return { type: 'waiting', waiting: this.info(now) }
+  }
+}
+
+const TICK = Symbol('tick')
+
+/**
+ * Awaits `p`, waking every `tickMs` to enforce the watchdog and surface waiting status, so no
+ * await inside an attempt can block forever. On a stall it aborts the attempt, which makes the
+ * abandoned `p` reject (pre-claimed below so that isn't an unhandled rejection), and throws.
+ */
+async function* guardedAwait<T>(
+  p: Promise<T>,
+  watch: StreamWatchdog,
+  attemptAc: AbortController,
+  tickMs: number
+): AsyncGenerator<StreamChunk, T, unknown> {
+  p.catch(() => undefined)
+  while (true) {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tick = new Promise<typeof TICK>((resolve) => {
+      timer = setTimeout(() => resolve(TICK), tickMs)
+    })
+    let won: T | typeof TICK
+    try {
+      won = await Promise.race([p, tick])
+    } finally {
+      clearTimeout(timer)
+    }
+    if (won !== TICK) return won as T
+    const now = Date.now()
+    const stall = watch.check(now)
+    if (stall) {
+      attemptAc.abort()
+      throw stall
+    }
+    const waiting = watch.waitingChunk(now)
+    if (waiting) yield waiting
+  }
+}
+
 export async function* streamChatCompletion(opts: {
   apiKey: string
   model: string
@@ -330,6 +522,8 @@ export async function* streamChatCompletion(opts: {
    *  folded into the system prompt or merged ahead of the cache_control marker: see
    *  applyCacheControl's doc comment for why that silently defeats caching entirely. */
   currentTimeNote?: string
+  /** Overrides for the stall watchdog (tests use tiny values); see DEFAULT_STREAM_TIMEOUTS. */
+  timeouts?: Partial<StreamTimeouts>
 }): AsyncGenerator<StreamChunk> {
   const messages = applyCacheControl(
     opts.messages,
@@ -412,25 +606,52 @@ export async function* streamChatCompletion(opts: {
   // At most one reasoning-stripped retry, so a rejection can't loop. Starts already-stripped when
   // this model is a known rejector, so we neither send nor retry.
   let strippedReasoning = knownReasoningRejector
+  const timeouts: StreamTimeouts = { ...DEFAULT_STREAM_TIMEOUTS, ...opts.timeouts }
+  /** Why the previous attempt was abandoned, carried into the next attempt's waiting status so
+   *  the UI says "retrying after a stall" instead of silently restarting its clock. */
+  let retryReason: ModelWaitingInfo['retryReason']
   let attempt = 0
-  while (attempt < 4) {
+  while (attempt < MAX_STREAM_ATTEMPTS) {
     attempt++
+    if (opts.signal?.aborted) return
+    // Per-attempt controller: the caller's signal still cancels everything, but the watchdog can
+    // also kill just THIS attempt and retry, which the caller's own signal must never be used for.
+    const attemptAc = new AbortController()
+    const onCallerAbort = (): void => attemptAc.abort()
+    opts.signal?.addEventListener('abort', onCallerAbort, { once: true })
+    const watch = new StreamWatchdog(timeouts, attempt, retryReason)
     try {
-      const res = await fetch(`${BASE}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${opts.apiKey}`,
-          'Content-Type': 'application/json',
-          'HTTP-Referer': 'https://github.com/DanTahir/KlennyCode',
-          'X-Title': 'Klenny Code'
-        },
-        body: JSON.stringify(body),
-        signal: opts.signal
-      })
+      console.log(
+        `[stream] start rid=${rid} model=${opts.model} attempt=${attempt}/${MAX_STREAM_ATTEMPTS} messages=${messages.length}` +
+          (retryReason ? ` retryAfter=${retryReason}` : '')
+      )
+      // A retry follows a long silence, so show it immediately rather than after waitingAfterMs.
+      if (retryReason) {
+        watch.waitingShown = true
+        yield { type: 'waiting', waiting: watch.info() }
+      }
+      const res = yield* guardedAwait(
+        fetch(`${BASE}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${opts.apiKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://github.com/DanTahir/KlennyCode',
+            'X-Title': 'Klenny Code'
+          },
+          body: JSON.stringify(body),
+          signal: attemptAc.signal
+        }),
+        watch,
+        attemptAc,
+        timeouts.tickMs
+      )
+      console.log(`[stream] headers rid=${rid} status=${res.status} after=${watch.elapsed()}ms`)
 
       if (res.status === 429 || res.status >= 500) {
-        if (attempt < 4) {
-          await abortableSleep(500 * 2 ** attempt, opts.signal)
+        if (attempt < MAX_STREAM_ATTEMPTS) {
+          retryReason = 'http'
+          await abortableSleep(timeouts.retryBackoffMs * 2 ** attempt, opts.signal)
           continue
         }
         yield { type: 'error', error: `OpenRouter error ${res.status}` }
@@ -438,7 +659,7 @@ export async function* streamChatCompletion(opts: {
       }
 
       if (!res.ok) {
-        const errText = await res.text()
+        const errText = yield* guardedAwait(res.text(), watch, attemptAc, timeouts.tickMs)
         // A provider may reject replayed reasoning blocks (e.g. a signature bound to a prefix that
         // has since changed). Retry once without them rather than failing the turn outright.
         if (
@@ -504,7 +725,8 @@ export async function* streamChatCompletion(opts: {
           .map((tc) => `${tc.function.name || '?'}:${tc.function.arguments.length}`)
           .join(', ')
         console.log(
-          `[stream] end model=${opts.model} sawDone=${sawDoneSentinel} finishReason=${finishReason ?? 'none'} ` +
+          `[stream] end rid=${rid} model=${opts.model} attempt=${attempt} sawDone=${sawDoneSentinel} finishReason=${finishReason ?? 'none'} ` +
+            `elapsed=${watch.elapsed()}ms firstToken=${watch.firstTokenAt !== undefined ? `${watch.firstTokenAt - watch.startedAt}ms` : 'never'} keepAlives=${watch.keepAlives} ` +
             `maxTokens=${opts.maxTokens ?? 'provider-default'} toolCalls=${toolCalls.size}` +
             (argChars ? ` argChars=[${argChars}]` : '')
         )
@@ -515,7 +737,7 @@ export async function* streamChatCompletion(opts: {
           await reader.cancel().catch(() => {})
           return
         }
-        const { done, value } = await reader.read()
+        const { done, value } = yield* guardedAwait(reader.read(), watch, attemptAc, timeouts.tickMs)
         if (done) break
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
@@ -523,6 +745,13 @@ export async function* streamChatCompletion(opts: {
 
         for (const line of lines) {
           const trimmed = line.trim()
+          // SSE comment, e.g. OpenRouter's `: OPENROUTER PROCESSING` keep-alive. Counted for the
+          // log and the waiting UI but deliberately NOT progress: it is exactly what kept a stuck
+          // generation's socket open for hours.
+          if (trimmed.startsWith(':')) {
+            watch.noteKeepAlive()
+            continue
+          }
           if (!trimmed.startsWith('data:')) continue
           const data = trimmed.slice(5).trim()
           if (data === '[DONE]') {
@@ -583,15 +812,39 @@ export async function* streamChatCompletion(opts: {
             if (parsed.id) genId = parsed.id
 
             const delta = parsed.choices?.[0]?.delta
+            // Anything a real generation emits counts as progress. A chunk with an empty delta
+            // (e.g. the role-only opener) and no finish/usage does not.
+            if (
+              delta?.content ||
+              delta?.reasoning ||
+              delta?.refusal ||
+              delta?.reasoning_details?.length ||
+              delta?.tool_calls?.length ||
+              parsed.usage ||
+              parsed.choices?.[0]?.finish_reason
+            ) {
+              const now = Date.now()
+              if (watch.noteProgress(now)) {
+                console.log(`[stream] first-token rid=${rid} after=${watch.elapsed(now)}ms keepAlives=${watch.keepAlives}`)
+              }
+              if (watch.waitingShown) {
+                watch.waitingShown = false
+                yield { type: 'waiting', waiting: null }
+              }
+            }
             if (parsed.choices?.[0]?.finish_reason) finishReason = parsed.choices[0].finish_reason
             // Accumulated, like content: a refusal can arrive split across several deltas.
             if (delta?.refusal) refusalText = (refusalText ?? '') + delta.refusal
-            if (delta?.reasoning) yield { type: 'reasoning', text: delta.reasoning }
+            if (delta?.reasoning) {
+              watch.yieldedOutput = true
+              yield { type: 'reasoning', text: delta.reasoning }
+            }
             // Accumulated, not yielded per-delta: only the complete, in-order sequence is safe to
             // replay to the provider on a later turn.
             if (delta?.reasoning_details) mergeReasoningDetails(reasoningDetails, delta.reasoning_details)
             if (delta?.content) {
               sawText = true
+              watch.yieldedOutput = true
               yield { type: 'text', text: delta.content }
             }
 
@@ -610,6 +863,7 @@ export async function* streamChatCompletion(opts: {
                 // of) the accumulated 'tool_calls' chunk at end of stream: a model emitting a large
                 // payload otherwise produces zero observable output for many seconds, which is
                 // indistinguishable from a hung app.
+                watch.yieldedOutput = true
                 yield {
                   type: 'tool_call_delta',
                   toolCallDelta: {
@@ -643,6 +897,16 @@ export async function* streamChatCompletion(opts: {
             // skip malformed SSE chunks
           }
         }
+        // Re-checked after every chunk, not only on ticks: keep-alives arriving more often than
+        // tickMs win every race in guardedAwait, so its tick-side check alone would never fire.
+        const now = Date.now()
+        const stall = watch.check(now)
+        if (stall) {
+          attemptAc.abort()
+          throw stall
+        }
+        const waiting = watch.waitingChunk(now)
+        if (waiting) yield waiting
       }
 
       // Reached only when the reader hit end-of-body without ever seeing [DONE].
@@ -661,12 +925,47 @@ export async function* streamChatCompletion(opts: {
       return
     } catch (e) {
       if (opts.signal?.aborted) return
-      if (attempt < 4) {
-        await abortableSleep(500 * 2 ** attempt, opts.signal)
+      const stall = e instanceof StreamStallError ? e : undefined
+      const reason: StreamInterruption['reason'] = stall?.reason ?? 'network'
+      const detail = stall ? stall.message : e instanceof Error ? e.message : String(e)
+      console.warn(
+        `[stream] ${stall ? 'stall' : 'error'} rid=${rid} model=${opts.model} attempt=${attempt}/${MAX_STREAM_ATTEMPTS} reason=${reason}` +
+          (stall ? ` phase=${stall.phase} silentMs=${stall.silentMs}` : '') +
+          ` elapsed=${watch.elapsed()}ms firstToken=${watch.firstTokenAt !== undefined ? `${watch.firstTokenAt - watch.startedAt}ms` : 'never'}` +
+          ` keepAlives=${watch.keepAlives} partialOutput=${watch.yieldedOutput} err=${JSON.stringify(detail.slice(0, 300))}`
+      )
+      if (watch.yieldedOutput) {
+        // Can't retry here: the consumer already holds part of this generation, and a fresh
+        // attempt would be appended after it. The orchestrator re-issues it with a nudge instead.
+        yield {
+          type: 'error',
+          error: `The response stream from ${opts.model} broke off mid-generation: ${detail}`,
+          interrupted: { reason, partialOutput: true }
+        }
+        return
+      }
+      if (attempt < MAX_STREAM_ATTEMPTS) {
+        retryReason = reason
+        try {
+          await abortableSleep(timeouts.retryBackoffMs * 2 ** attempt, opts.signal)
+        } catch {
+          return
+        }
         continue
       }
-      yield { type: 'error', error: e instanceof Error ? e.message : String(e) }
+      yield {
+        type: 'error',
+        error: stall
+          ? `No response from ${opts.model}: ${attempt} consecutive attempts produced no output (last: ${detail}). The provider appears to be stuck; try again or switch models.`
+          : detail,
+        interrupted: { reason, partialOutput: false }
+      }
       return
+    } finally {
+      opts.signal?.removeEventListener('abort', onCallerAbort)
+      // Releases the connection on every exit path, including a consumer that stops iterating
+      // early (generator return()), which used to leave the response body open.
+      attemptAc.abort()
     }
   }
 }

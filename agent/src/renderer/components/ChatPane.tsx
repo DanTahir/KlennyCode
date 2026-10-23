@@ -10,6 +10,7 @@ import { ModeToggle } from './ModeToggle'
 import { ApprovalModeSelect } from './ApprovalModeSelect'
 import { AttachMenu } from './AttachMenu'
 import { PendingAttachmentRow } from './PendingAttachmentRow'
+import { describeModelWaiting, modelWaitingDetail } from '@shared/modelWaiting'
 
 // Mirrors MAX_DOCUMENT_FILE_BYTES in agent/documents/extract.ts — checked client-side too so an
 // oversized file is rejected instantly instead of only after a wasted base64-encode + IPC round trip.
@@ -27,7 +28,8 @@ export function ChatPane() {
     workspace,
     settings,
     tabErrors,
-    pausedTabs
+    pausedTabs,
+    modelWaiting
   } = useAppStore()
   const tab = getActiveTab(tabs, activeTabId)
   const [text, setText] = useState('')
@@ -38,6 +40,7 @@ export function ChatPane() {
   const docFileRef = useRef<HTMLInputElement>(null)
   const isStreaming = tab ? streamingTabIds.has(tab.id) : false
   const isCompacting = tab ? compactingTabIds.has(tab.id) : false
+  const waiting = tab && isStreaming && !isCompacting ? modelWaiting[tab.id] : undefined
   const paused = tab ? pausedTabs[tab.id] : undefined
 
   const canSend = Boolean(workspace && settings?.hasApiKey)
@@ -168,6 +171,21 @@ export function ChatPane() {
               <span className="text-klenny-text animate-pulse">Compacting context…</span>{' '}
               summarizing earlier messages so the conversation keeps fitting in the model's context window. This
               takes a few seconds.
+            </span>
+          </div>
+        )}
+        {waiting && (
+          <div
+            className="flex items-center gap-2.5 text-xs text-klenny-muted border border-amber-400/30 bg-amber-400/5 rounded px-3 py-2"
+            role="status"
+          >
+            <span
+              className="inline-block w-3.5 h-3.5 shrink-0 rounded-full border-2 border-amber-400 border-t-transparent animate-spin"
+              aria-hidden="true"
+            />
+            <span>
+              <span className="text-klenny-text animate-pulse">{describeModelWaiting(waiting.info)}</span>{' '}
+              {modelWaitingDetail(waiting.info)}
             </span>
           </div>
         )}

@@ -190,10 +190,22 @@ export function describeToolArgsFailure(toolName: string, raw: string): string {
  * the retry actually likely to succeed rather than just costing three more round-trips.
  */
 export function buildToolArgsRetryNudge(
-  kind: 'truncated' | 'invalid' | 'empty',
+  kind: 'truncated' | 'invalid' | 'empty' | 'interrupted',
   toolNames: string[] = []
 ): string {
   const header = 'Automatic retry notice (written by the harness, not by the user):'
+  if (kind === 'interrupted') {
+    // The stall watchdog / a dropped connection cut the stream after it had started producing
+    // output. Any tool calls in it were never received (they're only assembled at stream end),
+    // so saying "nothing ran" is accurate, not a guess.
+    return [
+      header,
+      '',
+      'Your previous response was cut off partway through: the provider stream stalled (no new output for several minutes) or the connection dropped mid-generation. Any text it produced before the cut is shown above, but none of its tool calls were received or executed, and that attempt has been discarded.',
+      '',
+      'Continue from where it was cut off and re-issue the tool calls you intended. Do not repeat text you already wrote.'
+    ].join('\n')
+  }
   if (kind === 'empty') {
     // Cause-agnostic on purpose: this fires for any content-free generation, and the provider's
     // finish_reason does not reliably distinguish "hit the output limit" from "stream ended with

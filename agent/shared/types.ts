@@ -240,7 +240,7 @@ export interface ChatMessage {
    *                            still had unfinished items (see turnControl.ts
    *                            shouldResumeAfterAuditCorrection / buildAuditResumeNudge).
    */
-  noteKind?: 'fabrication' | 'truncation' | 'compaction_resume' | 'audit_resume'
+  noteKind?: 'fabrication' | 'truncation' | 'stream_retry' | 'compaction_resume' | 'audit_resume'
 }
 
 /** One fabrication-guard finding. `code` is the stable check id (C1/C2a/C3/…) so findings can be
@@ -1034,6 +1034,26 @@ export interface ShellInfo {
   kind: ShellKind
 }
 
+/**
+ * Live "the model hasn't produced anything for a while" status for one in-flight model request
+ * (main -> renderer via the `model_waiting` event). Built by openrouter/client.ts's StreamWatchdog.
+ */
+export interface ModelWaitingInfo {
+  /** ms since the last real output delta, or since the request was sent if there was none yet */
+  silentMs: number
+  /** 'first-token': nothing generated yet this attempt; 'idle': output started, then stopped */
+  phase: 'first-token' | 'idle'
+  /** SSE keep-alive comments received during this silence: the connection is alive even though
+   *  the generation is not progressing */
+  keepAlives: number
+  /** silence at which the watchdog abandons this attempt and retries it */
+  stallAfterMs: number
+  attempt: number
+  maxAttempts: number
+  /** set when this attempt is a retry: why the previous attempt was abandoned */
+  retryReason?: 'stall' | 'deadline' | 'network' | 'http'
+}
+
 // ---------- Streaming events (main -> renderer) ----------
 
 export type AgentStreamEvent =
@@ -1096,6 +1116,10 @@ export type AgentStreamEvent =
    *  output for many seconds, which reads as a frozen app. */
   | { type: 'compaction_start'; tabId: string }
   | { type: 'compaction_end'; tabId: string }
+  /** The in-flight model request has been silent for a while (`waiting`), or output resumed
+   *  (`null`). Purely a UI signal, so a stuck provider looks different from a working one; the
+   *  stall watchdog in openrouter/client.ts acts on its own whether or not anything renders it. */
+  | { type: 'model_waiting'; tabId: string; messageId: string; waiting: ModelWaitingInfo | null }
   | { type: 'compaction'; tabId: string; compactedThroughMessageId: string; summary: string }
   | { type: 'spend_update'; tabId: string; totalCostUsd: number; totalSavingsUsd: number; capUsd: number | null }
   | { type: 'spend_blocked'; tabId: string }

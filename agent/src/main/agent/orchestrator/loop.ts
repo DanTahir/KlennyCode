@@ -30,6 +30,7 @@ import type {
 } from '@shared/types'
 import { DEFAULT_BROWSER_AUTOMATION, CODING_ONLY_TOOLS, DOCX_TOOLS, ALWAYS_BLOCKED_TOOLS } from '@shared/types'
 import { shouldEmitWriting, sniffWritingTarget } from '@shared/toolWriting'
+import { describeModelWaiting } from '@shared/modelWaiting'
 import { loadSettings } from '../../settings'
 import { resolveDocumentsDirectory } from '../../documentsDir'
 import { globalKlennyDir, userDataDir } from '../../dataDir'
@@ -40,6 +41,7 @@ import {
   fetchModels,
   type ToolCall,
   type ReasoningDetail,
+  type StreamInterruption,
   // Aliased: loop.ts's own `ChatMessage` is the app-level message type from @shared/types, while
   // this is the OpenRouter wire shape that streamChatCompletion actually takes.
   type ChatMessage as ORChatMessage
@@ -338,6 +340,9 @@ export async function agentLoop(
   let textBuf = ''
   let thinkingBuf = ''
   let finishReason: string | undefined
+  /** Set when the stream stalled or dropped AFTER yielding partial output (see
+   *  StreamChunk.interrupted); routed into the nudge-and-reissue retry below. */
+  let interruptedMidStream: StreamInterruption | undefined
   // Provider-structured reasoning for this turn, captured so it can be replayed on later turns to
   // preserve reasoning continuity across tool calls (see ChatMessage.reasoningDetails).
   let streamedReasoningDetails: ReasoningDetail[] | undefined
@@ -498,7 +503,20 @@ export async function agentLoop(
         capUsd: settings.spendingCapUsd
       })
     }
+    if (chunk.type === 'waiting') {
+      emit({ type: 'model_waiting', tabId: tab.id, messageId: assistantId, waiting: chunk.waiting ?? null })
+    }
     if (chunk.type === 'error') {
+      // A stalled/dropped attempt that had already streamed part of its output: the client can't
+      // retry it itself without duplicating what was shown, so it is re-issued below via the same
+      // nudge-and-retry path as a truncated generation instead of failing the whole turn.
+      if (chunk.interrupted?.partialOutput) {
+        interruptedMidStream = chunk.interrupted
+        console.warn(
+          `[stream] tab=${tab.id} model=${tab.model} interrupted mid-generation (${chunk.interrupted.reason}); re-issuing with a nudge`
+        )
+        break
+      }
       emit({ type: 'error', tabId: tab.id, message: chunk.error ?? 'Unknown error' })
       return 'error'
     }
@@ -627,7 +645,7 @@ export async function agentLoop(
   // the "the job kept stopping" stall: no text, no tool call, no error, nothing to click.
   const argsFailure = classifyToolCallJsonFailure(finishReason, anyArgsUnparsable)
   const emptyGeneration = isEmptyGeneration(toolCalls.length > 0, Boolean(textBuf))
-  if (emptyGeneration || argsFailure !== 'none') {
+  if (interruptedMidStream || emptyGeneration || argsFailure !== 'none') {
     emit({ type: 'message_end', tabId: tab.id, messageId: assistantId, usage: assistantMsg.usage })
     await sessionStore.updateTab(tab)
     if (signal.aborted) return 'aborted'
@@ -639,8 +657,9 @@ export async function agentLoop(
         // Worded per arm: blaming the output token limit for an empty generation would assert a
         // cause the provider never reported. Either way this is now a VISIBLE failure rather than
         // a silent 'natural' end of turn, which is the actual user-facing bug being fixed.
-        message:
-          argsFailure !== 'none'
+        message: interruptedMidStream
+          ? "The model's response stream repeatedly stalled or broke off mid-generation, and retrying did not recover. That is a provider-side problem: try again, or switch to a different model."
+          : argsFailure !== 'none'
             ? 'The model repeatedly cut its response off at the output token limit and retrying did not recover. Try again, or switch to a model with a larger output limit.'
             : 'The model repeatedly returned an empty response — no text and no tool calls — and retrying did not recover. That is usually a provider-side problem: try again, or switch to a different model.'
       })
@@ -663,7 +682,10 @@ export async function agentLoop(
     // tool_call blocks at this point (those are only pushed further down). Worst case on the wire
     // is a half-finished sentence immediately followed by the nudge that explains it.
     tab.messages.push(
-      buildToolArgsRetryNudgeMessage(argsFailure === 'none' ? 'empty' : argsFailure, unparsableToolNames)
+      buildToolArgsRetryNudgeMessage(
+        interruptedMidStream ? 'interrupted' : argsFailure === 'none' ? 'empty' : argsFailure,
+        unparsableToolNames
+      )
     )
     await sessionStore.updateTab(tab)
     return agentLoop(tab, apiKey, subagentModel, emit, signal, subagentDepth, subagentCtx, stepCount, truncationRetries + 1, auditCorrections, compactionResumes, auditResumes)
@@ -947,7 +969,7 @@ export async function agentLoop(
  * for real user input. `noteKind` only selects the renderer's header text.
  */
 function buildToolArgsRetryNudgeMessage(
-  kind: 'truncated' | 'invalid' | 'empty',
+  kind: 'truncated' | 'invalid' | 'empty' | 'interrupted',
   toolNames: string[]
 ): ChatMessage {
   return {
@@ -956,7 +978,7 @@ function buildToolArgsRetryNudgeMessage(
     blocks: [{ type: 'text', text: buildToolArgsRetryNudge(kind, toolNames) }],
     createdAt: Date.now(),
     isAuditNote: true,
-    noteKind: 'truncation'
+    noteKind: kind === 'interrupted' ? 'stream_retry' : 'truncation'
   }
 }
 
@@ -2138,6 +2160,8 @@ export async function runSubagent(
   // remainder of that step, which is almost all a user ever sees. Once we've shown real activity,
   // only a new tool_call_start is allowed to replace it — the label just sticks until then.
   let sawToolActivity = false
+  /** The label to restore once a "Waiting on the model" status clears. */
+  let labelBeforeWaiting: string | undefined
   const capture = (e: AgentStreamEvent) => {
     events.push(e)
     emit(e)
@@ -2157,6 +2181,19 @@ export async function runSubagent(
     if (e.type === 'tool_call_start') {
       activity = describeToolActivity(e.block.toolName, e.block.args)
       sawToolActivity = true
+      labelBeforeWaiting = undefined
+    } else if (e.type === 'model_waiting' && e.tabId === subTab.id) {
+      if (e.waiting) {
+        if (labelBeforeWaiting === undefined) labelBeforeWaiting = run.activity ?? 'Thinking...'
+        activity = describeModelWaiting(e.waiting)
+      } else if (labelBeforeWaiting !== undefined) {
+        activity = labelBeforeWaiting
+        labelBeforeWaiting = undefined
+      }
+    } else if (e.type === 'message_start' && labelBeforeWaiting !== undefined) {
+      // A stalled request can end without a clearing event (it errored, or was re-issued).
+      activity = sawToolActivity ? labelBeforeWaiting : 'Thinking...'
+      labelBeforeWaiting = undefined
     } else if (!sawToolActivity && (e.type === 'message_start' || e.type === 'thinking_delta')) {
       activity = 'Thinking...'
     }

@@ -193,6 +193,37 @@ When `KLENNY.md` says "see the caching gotcha", "see the stall gotchas", "see th
   or none at all) was accepted as a **finished task** and the turn ended silently mid-work. The
   check now ignores the label entirely, and its retry note is deliberately cause-agnostic — it must
   not assert a token limit the provider never reported.
+- **The model stream used to have no timeout, and OpenRouter keep-alives make the OS-level one
+  useless.** Two real sessions (KlennyBrain: 2.5 h; FinanceBrain: 12.5 min) sat on the running
+  corgi after a successful tool batch: an empty assistant message, no token ever arrived, nothing
+  in the log, and only the user typing (which aborts the turn) ended it. `streamChatCompletion` had
+  only the caller's abort signal, and an idle generation's socket is kept alive by SSE comment lines
+  (`: OPENROUTER PROCESSING`), so neither undici's body timeout nor anything else ever fired. The
+  `StreamWatchdog` in `client.ts` now counts **only `data:` lines carrying a real delta** (content,
+  reasoning, reasoning_details, tool_calls, refusal, usage, finish_reason) as progress, never
+  keep-alives, and enforces `DEFAULT_STREAM_TIMEOUTS`: 6 min to the first delta, 3 min between
+  deltas, 45 min per attempt. Three non-obvious parts:
+  - Every await in an attempt (`fetch`, the error `res.text()`, each `reader.read()`) goes through
+    `guardedAwait`, which races it against a 5 s tick. The limits are **also re-checked after every
+    chunk**, because keep-alives arriving faster than the tick win every race and the tick-side
+    check would never run (pinned by the "faster than the watchdog tick" test).
+  - Each attempt gets its **own `AbortController`** linked to the caller's signal. The watchdog
+    aborts only that attempt; aborting the caller's signal would look like the user pressing Stop.
+  - **Retry depends on whether output was already yielded.** If nothing reached the consumer yet,
+    the client retries transparently inside the shared `MAX_STREAM_ATTEMPTS = 4` budget, then
+    fails *visibly*. Once text, reasoning or a tool-call fragment has been yielded, a client-side
+    retry would append a second generation after the partial one. So it yields an `error` chunk
+    with `interrupted.partialOutput: true` instead, and `loop.ts` routes that into the same
+    nudge-and-reissue branch as truncation (`buildToolArgsRetryNudge('interrupted')`, `noteKind:
+    'stream_retry'`, `MAX_TRUNCATION_RETRIES`). Tool calls are only assembled at stream end, so
+    the nudge's "none of its tool calls ran" is a fact, not a guess.
+
+  `[stream] start/headers/first-token/stall|error/end` lines (with `rid=`, attempt, elapsed,
+  `firstToken=`, `keepAlives=`) are the forensic trail: a `start` with no `first-token` is this
+  bug. The `'waiting'` chunk → `model_waiting` event → `useAppStore.modelWaiting` → ChatPane
+  "Waiting on the model" status is purely UI; the watchdog acts whether or not it renders. Other
+  `streamChatCompletion` callers (compaction's `runUtilityPrompt`, assistant memory, `parallel_write`
+  workers) ignore `'waiting'` chunks but still get the watchdog. Tests: `stream-watchdog.test.ts`.
 - **A provider REFUSAL used to be indistinguishable from an empty generation.** `client.ts`'s SSE
   delta type carried `content`/`reasoning`/`reasoning_details`/`tool_calls` but **not `refusal`**,
   and a refused stream carries **no usage chunk** — so a content-filtered request reached the
