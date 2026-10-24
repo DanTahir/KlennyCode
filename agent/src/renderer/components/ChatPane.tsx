@@ -1,6 +1,4 @@
-import { useState, useRef } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { useState, useRef, useMemo, useEffect } from 'react'
 import type { PendingDocument } from '@shared/types'
 import { useAppStore, getActiveTab } from '../store/useAppStore'
 import { MessageBubble } from './MessageBubble'
@@ -17,31 +15,68 @@ import { describeModelWaiting, modelWaitingDetail } from '@shared/modelWaiting'
 const MAX_DOCUMENT_FILE_BYTES = 8 * 1024 * 1024
 const DOCUMENT_ACCEPT = '.md,.txt,.docx'
 
+/** Windowed history: rendering thousands of messages at once makes every update (and the initial
+ *  tab switch) expensive, so only the most recent messages are mounted until the user asks. */
+const INITIAL_RENDER_COUNT = 60
+const RENDER_STEP = 60
+
+/** Lets the browser skip layout/paint for off-screen messages in a long transcript. */
+const OFFSCREEN_SKIP_STYLE: React.CSSProperties = { contentVisibility: 'auto', containIntrinsicSize: 'auto 160px' }
+
 export function ChatPane() {
-  const {
-    tabs,
-    activeTabId,
-    pendingActions,
-    pendingQuestions,
-    streamingTabIds,
-    compactingTabIds,
-    workspace,
-    settings,
-    tabErrors,
-    pausedTabs,
-    modelWaiting
-  } = useAppStore()
-  const tab = getActiveTab(tabs, activeTabId)
+  // One selector per field, each returning an existing reference or a primitive, so a streamed
+  // token only re-renders this pane when something it actually shows has changed.
+  const tab = useAppStore((s) => getActiveTab(s.tabs, s.activeTabId))
+  const tabId = tab?.id ?? null
+  const isStreaming = useAppStore((s) => (tabId ? s.streamingTabIds.has(tabId) : false))
+  const isCompacting = useAppStore((s) => (tabId ? s.compactingTabIds.has(tabId) : false))
+  const pendingActions = useAppStore((s) => s.pendingActions)
+  const pendingQuestions = useAppStore((s) => s.pendingQuestions)
+  const workspace = useAppStore((s) => s.workspace)
+  const settings = useAppStore((s) => s.settings)
+  const tabError = useAppStore((s) => (tabId ? s.tabErrors[tabId] : undefined))
+  const paused = useAppStore((s) => (tabId ? s.pausedTabs[tabId] : undefined))
+  const tabWaiting = useAppStore((s) => (tabId ? s.modelWaiting[tabId] : undefined))
+  const [renderCount, setRenderCount] = useState(INITIAL_RENDER_COUNT)
   const [text, setText] = useState('')
   const [images, setImages] = useState<string[]>([])
   const [documents, setDocuments] = useState<PendingDocument[]>([])
   const [documentError, setDocumentError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const docFileRef = useRef<HTMLInputElement>(null)
-  const isStreaming = tab ? streamingTabIds.has(tab.id) : false
-  const isCompacting = tab ? compactingTabIds.has(tab.id) : false
-  const waiting = tab && isStreaming && !isCompacting ? modelWaiting[tab.id] : undefined
-  const paused = tab ? pausedTabs[tab.id] : undefined
+  const waiting = isStreaming && !isCompacting ? tabWaiting : undefined
+
+  // A different tab starts with a fresh window rather than inheriting the previous tab's depth.
+  useEffect(() => {
+    setRenderCount(INITIAL_RENDER_COUNT)
+  }, [tabId])
+
+  const tabPendingActions = useMemo(
+    () => (tabId ? pendingActions.filter((a) => a.tabId === tabId) : []),
+    [pendingActions, tabId]
+  )
+  const tabQuestions = useMemo(
+    () => (tabId ? pendingQuestions.filter((q) => q.tabId === tabId) : []),
+    [pendingQuestions, tabId]
+  )
+
+  const messages = tab?.messages
+  const compactedThroughMessageId = tab?.compactedThroughMessageId
+  const visibleMessages = useMemo(() => (messages ?? []).filter((m) => m.role !== 'tool'), [messages])
+
+  // compactedThroughMessageId marks the cutoff in the FULL message list (which includes tool
+  // messages), so it may point at a message that's filtered out of visibleMessages above. Resolve
+  // it to the last visible message at or before that cutoff so the banner lands in the right spot
+  // instead of silently never matching.
+  const compactionBoundaryMessageId = useMemo(() => {
+    if (!messages || !compactedThroughMessageId) return undefined
+    const cutoffIdx = messages.findIndex((m) => m.id === compactedThroughMessageId)
+    if (cutoffIdx < 0) return undefined
+    for (let i = cutoffIdx; i >= 0; i--) {
+      if (messages[i].role !== 'tool') return messages[i].id
+    }
+    return undefined
+  }, [messages, compactedThroughMessageId])
 
   const canSend = Boolean(workspace && settings?.hasApiKey)
   const blockReason = !settings?.hasApiKey
@@ -52,27 +87,8 @@ export function ChatPane() {
 
   if (!tab) return null
 
-  const tabPendingActions = pendingActions.filter((a) => a.tabId === tab.id)
-  const tabQuestions = pendingQuestions.filter((q) => q.tabId === tab.id)
-  const tabError = tabErrors[tab.id]
-  const visibleMessages = tab.messages.filter((m) => m.role !== 'tool')
-
-  // compactedThroughMessageId marks the cutoff in the FULL message list (which includes tool
-  // messages), so it may point at a message that's filtered out of visibleMessages above. Resolve
-  // it to the last visible message at or before that cutoff so the banner lands in the right spot
-  // instead of silently never matching.
-  let compactionBoundaryMessageId: string | undefined
-  if (tab.compactedThroughMessageId) {
-    const cutoffIdx = tab.messages.findIndex((m) => m.id === tab.compactedThroughMessageId)
-    if (cutoffIdx >= 0) {
-      for (let i = cutoffIdx; i >= 0; i--) {
-        if (tab.messages[i].role !== 'tool') {
-          compactionBoundaryMessageId = tab.messages[i].id
-          break
-        }
-      }
-    }
-  }
+  const hiddenCount = Math.max(0, visibleMessages.length - renderCount)
+  const renderedMessages = hiddenCount > 0 ? visibleMessages.slice(hiddenCount) : visibleMessages
 
   const send = () => {
     if (!canSend) return
@@ -150,8 +166,19 @@ export function ChatPane() {
             {tabError}
           </div>
         )}
-        {visibleMessages.map((m) => (
-          <div key={m.id}>
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            className="text-xs text-klenny-muted hover:text-klenny-accent underline-offset-2 hover:underline"
+            onClick={() => setRenderCount((c) => c + RENDER_STEP)}
+          >
+            Show {Math.min(RENDER_STEP, hiddenCount)} earlier messages
+          </button>
+        )}
+        {renderedMessages.map((m, i) => (
+          // The last two messages are the live/streaming ones; skipping their layout would cause
+          // visible size jumps as the placeholder intrinsic size is swapped for the real one.
+          <div key={m.id} style={i < renderedMessages.length - 2 ? OFFSCREEN_SKIP_STYLE : undefined}>
             <MessageBubble message={m} />
             {compactionBoundaryMessageId === m.id && (
               <div className="text-xs text-klenny-muted border border-klenny-border rounded px-2 py-1 mt-4">

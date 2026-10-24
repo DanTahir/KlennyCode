@@ -1,4 +1,5 @@
 import type { AppSettings, TabApprovalMode } from '@shared/types'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 /** Per-tab approval-mode dropdown shown next to Send/Stop. 'default' follows whatever
@@ -20,7 +21,7 @@ export function ApprovalModeSelect({
   globalMode: AppSettings['approvalMode']
   hideCommand?: boolean
 }) {
-  const { setTabs } = useAppStore()
+  const { setTabs } = useAppStore(useShallow((s) => ({ setTabs: s.setTabs })))
   const value: TabApprovalMode = mode ?? 'default'
 
   const labelForDefault =

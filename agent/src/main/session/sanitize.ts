@@ -22,6 +22,10 @@
  * byte-exact because it feeds `toORMessages()` — clamping it in place would silently rewrite
  * tool-call arguments the model already sent, and change what the model sees on later turns.
  * Only the on-disk artifact is bounded.
+ *
+ * `serializeTabForPersist` is the hot-path variant used by the session store: it applies the
+ * same two rules but returns the final compact JSON directly, so the common (under-budget) case
+ * costs a single JSON.stringify instead of a measuring stringify plus a writing one.
  */
 import type { ArchivedTabSession, ContentBlock, ChatMessage, TabSession, ToolResultPayload } from '@shared/types'
 
@@ -106,9 +110,11 @@ function jsonLength(v: unknown): number {
 
 /** Second pass: if clamping strings wasn't enough (e.g. thousands of individually-legal 64K
  *  diffs accumulated over a very long session), drop `result.data` from the oldest tool calls
- *  until the tab fits. Keeps `ok`/`summary`/`error` so the transcript still reads correctly. */
-function enforceTabBudget<T extends TabSession | ArchivedTabSession>(tab: T, stats: SanitizeStats): T {
-  let size = jsonLength(tab)
+ *  until the tab fits. Keeps `ok`/`summary`/`error` so the transcript still reads correctly.
+ *  `precomputedSize`, when given, must equal jsonLength(tab); it lets a caller that already
+ *  stringified the tab skip a second full measuring pass. */
+function enforceTabBudget<T extends TabSession | ArchivedTabSession>(tab: T, stats: SanitizeStats, precomputedSize?: number): T {
+  let size = precomputedSize ?? jsonLength(tab)
   if (size <= MAX_PERSISTED_TAB_CHARS) return tab
 
   const messages = tab.messages.map((m) => ({ ...m, blocks: [...m.blocks] }))
@@ -142,6 +148,19 @@ export function sanitizeTabForPersist<T extends TabSession | ArchivedTabSession>
   const messages = Array.isArray(tab.messages) ? tab.messages.map((m) => sanitizeMessage(m, stats)) : []
   const copy = { ...tab, messages } as T
   return { tab: enforceTabBudget(copy, stats), stats }
+}
+
+/** Returns the compact JSON of the size-bounded copy of `tab` — byte-identical to
+ *  JSON.stringify(sanitizeTabForPersist(tab).tab). Stringifies once in the common case; only an
+ *  over-budget tab pays for the result-stripping pass and a second stringify. Never mutates the
+ *  input. */
+export function serializeTabForPersist<T extends TabSession | ArchivedTabSession>(tab: T): { json: string; stats: SanitizeStats } {
+  const stats = emptyStats()
+  const messages = Array.isArray(tab.messages) ? tab.messages.map((m) => sanitizeMessage(m, stats)) : []
+  const copy = { ...tab, messages } as T
+  const json = JSON.stringify(copy)
+  if (json.length <= MAX_PERSISTED_TAB_CHARS) return { json, stats }
+  return { json: JSON.stringify(enforceTabBudget(copy, stats, json.length)), stats }
 }
 
 export function sanitizeTabsForPersist<T extends TabSession | ArchivedTabSession>(tabs: T[]): { tabs: T[]; stats: SanitizeStats } {

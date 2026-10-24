@@ -14,7 +14,12 @@ export default defineConfig({
     build: {
       rollupOptions: {
         input: {
-          index: resolve(__dirname, 'src/main/index.ts')
+          index: resolve(__dirname, 'src/main/index.ts'),
+          // Worker-thread entry for the local code index (SQLite + sqlite-vec). Loaded by
+          // codeindex/manager.ts as join(__dirname, 'codeindexWorker.js'), so the output file
+          // name must match. Only worker.ts imports sqliteStore/sqliteDriver (main imports them
+          // type-only), which keeps rollup from emitting a chunk shared between the two entries.
+          codeindexWorker: resolve(__dirname, 'src/main/agent/codeindex/worker.ts')
         }
       }
     }

@@ -1,12 +1,23 @@
 import { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 import type { PlanArtifact } from '@shared/types'
 
 /** Full-page view of a single plan, rendered as its own tab in the main tab bar. */
 export function PlanTabView({ slug }: { slug: string }) {
-  const { plans, upsertPlan, openPlanTabs, tabs, activeTabId, setActiveTab, closePlanTab } = useAppStore()
+  const { plans, upsertPlan, openPlanTabs, tabs, activeTabId, setActiveTab, closePlanTab } = useAppStore(
+    useShallow((s) => ({
+      plans: s.plans,
+      upsertPlan: s.upsertPlan,
+      openPlanTabs: s.openPlanTabs,
+      tabs: s.tabs,
+      activeTabId: s.activeTabId,
+      setActiveTab: s.setActiveTab,
+      closePlanTab: s.closePlanTab
+    }))
+  )
   const [loading, setLoading] = useState(false)
   const [approving, setApproving] = useState(false)
 

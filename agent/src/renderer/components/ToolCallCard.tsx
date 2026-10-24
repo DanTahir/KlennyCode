@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 import type { ToolCallBlock } from '@shared/types'
 import { formatArgSize } from '@shared/toolWriting'
 
@@ -27,7 +27,9 @@ function formatToolError(block: ToolCallBlock): string {
   return parts.join('\n\n') || (block.result?.error ?? '')
 }
 
-export function ToolCallCard({ block }: { block: ToolCallBlock }) {
+/** Memoized: the store keeps unchanged block objects by reference, so cards for finished calls
+ *  skip re-rendering while a sibling call or text block streams. */
+export const ToolCallCard = memo(function ToolCallCard({ block }: { block: ToolCallBlock }) {
   const [open, setOpen] = useState(false)
   const isWriting = block.status === 'writing'
   // A 'writing' card is a live placeholder: its arguments are still streaming in, so there is
@@ -80,4 +82,4 @@ export function ToolCallCard({ block }: { block: ToolCallBlock }) {
       )}
     </div>
   )
-}
+})

@@ -1,10 +1,23 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 import { useCodeTabActions } from '../hooks/useCodeTabActions'
 import { useAssistantTabActions } from '../hooks/useAssistantTabActions'
 
 export function TabBar() {
   const { tabs, activeTabId, setTabs, setActiveTab, plans, openPlanTabs, activePlanSlug, closePlanTab, openPlanTab } =
-    useAppStore()
+    useAppStore(
+      useShallow((s) => ({
+        tabs: s.tabs,
+        activeTabId: s.activeTabId,
+        setTabs: s.setTabs,
+        setActiveTab: s.setActiveTab,
+        plans: s.plans,
+        openPlanTabs: s.openPlanTabs,
+        activePlanSlug: s.activePlanSlug,
+        closePlanTab: s.closePlanTab,
+        openPlanTab: s.openPlanTab
+      }))
+    )
   const { openCodeTab } = useCodeTabActions()
   const { openAssistantTab } = useAssistantTabActions()
 

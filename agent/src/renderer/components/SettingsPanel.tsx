@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 import { BRAND_NAME_MAX_LENGTH, DEFAULT_BRAND_NAME, DEFAULT_EMBEDDINGS_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL } from '@shared/types'
 import type { ScheduledTask } from '@shared/types'
@@ -32,7 +33,28 @@ export function SettingsPanel() {
     setCustomIconUrl,
     customRunningGifUrl,
     setCustomRunningGifUrl
-  } = useAppStore()
+  } = useAppStore(
+    useShallow((s) => ({
+      settings: s.settings,
+      models: s.models,
+      imageModels: s.imageModels,
+      videoModels: s.videoModels,
+      shells: s.shells,
+      indexStatus: s.indexStatus,
+      setSettings: s.setSettings,
+      setModels: s.setModels,
+      setImageModels: s.setImageModels,
+      setVideoModels: s.setVideoModels,
+      setShells: s.setShells,
+      setIndexStatus: s.setIndexStatus,
+      settingsFocusSection: s.settingsFocusSection,
+      setSettingsFocusSection: s.setSettingsFocusSection,
+      customIconUrl: s.customIconUrl,
+      setCustomIconUrl: s.setCustomIconUrl,
+      customRunningGifUrl: s.customRunningGifUrl,
+      setCustomRunningGifUrl: s.setCustomRunningGifUrl
+    }))
+  )
   const [brandNameInput, setBrandNameInput] = useState('')
   const [iconError, setIconError] = useState<string | null>(null)
   const [gifError, setGifError] = useState<string | null>(null)

@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { readFile, writeFile, mkdir, rename } from 'node:fs/promises'
 import { dirname } from 'node:path'
 
 /**
@@ -7,10 +7,10 @@ import { dirname } from 'node:path'
  * chunk boundaries shift. Also records which embeddings model built the index, since vectors
  * from different models live in incompatible vector spaces (see manager.ts's rebuild-on-mismatch).
  *
- * Vectra's local index has its own skip-if-unchanged upsert optimization internally, but that
- * only helps within a single upsert call — it doesn't tell us which *old* chunk ids to delete
- * when a file shrinks (fewer chunks than before). This manifest is what makes that safe for
- * both backends (local and Pinecone), since Pinecone has no such built-in tracking at all.
+ * The manager keeps ONE in-memory manifest per indexing session and every index operation runs
+ * on a serial queue, so there is a single writer. (Previously each watcher event loaded and saved
+ * its own copy concurrently, and lost updates left vectors in the store that the manifest no
+ * longer knew about.)
  */
 export interface IndexManifest {
   embeddingsModel: string | null
@@ -18,21 +18,37 @@ export interface IndexManifest {
   files: Record<string, Array<{ id: string; hash: string }>>
 }
 
-const EMPTY_MANIFEST: IndexManifest = { embeddingsModel: null, files: {} }
+function emptyManifest(): IndexManifest {
+  // A fresh object each time: a shared `files` default would be mutated across sessions.
+  return { embeddingsModel: null, files: {} }
+}
 
 export async function loadManifest(path: string): Promise<IndexManifest> {
   try {
     const raw = await readFile(path, 'utf8')
     const parsed = JSON.parse(raw) as Partial<IndexManifest>
-    return { ...EMPTY_MANIFEST, ...parsed }
+    return {
+      embeddingsModel: typeof parsed.embeddingsModel === 'string' ? parsed.embeddingsModel : null,
+      files: parsed.files && typeof parsed.files === 'object' ? parsed.files : {}
+    }
   } catch {
-    return { ...EMPTY_MANIFEST }
+    return emptyManifest()
   }
 }
 
+/** Atomic (temp file + rename), so a crash mid-write can't leave a truncated manifest. */
 export async function saveManifest(path: string, manifest: IndexManifest): Promise<void> {
   await mkdir(dirname(path), { recursive: true })
-  await writeFile(path, JSON.stringify(manifest, null, 2), 'utf8')
+  const tmp = `${path}.tmp`
+  await writeFile(tmp, JSON.stringify(manifest), 'utf8')
+  await rename(tmp, path)
+}
+
+/** Total chunk entries recorded in the manifest. Matches the store's count once reconciled. */
+export function manifestChunkCount(manifest: IndexManifest): number {
+  let n = 0
+  for (const entries of Object.values(manifest.files)) n += entries.length
+  return n
 }
 
 /**

@@ -1,3 +1,5 @@
+import { memo, useMemo } from 'react'
+
 /** Hard cap on rendered diff lines. One <div> per line means an unbounded diff is an unbounded
  *  DOM: the 33k-line binary diff behind the 61 MB-session-log incident locked up the renderer.
  *  makeDiff now clamps at the source, but sessions saved *before* that fix still hold huge
@@ -14,10 +16,14 @@ function lineClass(line: string): string {
   return ''
 }
 
-export function DiffViewer({ diff }: { diff: string }) {
-  const all = diff.split('\n')
-  const lines = all.slice(0, MAX_RENDERED_LINES)
-  const omitted = all.length - lines.length
+/** Memoized, and the split cached on `diff`, so a large diff isn't re-split on every parent
+ *  render while the surrounding message keeps streaming. */
+export const DiffViewer = memo(function DiffViewer({ diff }: { diff: string }) {
+  const { lines, omitted } = useMemo(() => {
+    const all = diff.split('\n')
+    const shown = all.slice(0, MAX_RENDERED_LINES)
+    return { lines: shown, omitted: all.length - shown.length }
+  }, [diff])
   return (
     <pre className="text-xs font-mono border border-klenny-border rounded overflow-auto max-h-64">
       {lines.map((line, i) => (
@@ -30,4 +36,4 @@ export function DiffViewer({ diff }: { diff: string }) {
       )}
     </pre>
   )
-}
+})

@@ -6,7 +6,8 @@ import { loadSettings } from './settings'
 import { setWorkspace } from './workspace'
 import { sessionStore } from './session/store'
 import { approvalManager } from './agent/approval/manager'
-import { stopIndexing } from './agent/codeindex/manager'
+import { stopIndexing, cleanupLegacyVectraIndexes } from './agent/codeindex/manager'
+import { startEventLoopStallMonitor } from './perfMonitor'
 import { disposeAllTerminals } from './terminal'
 import { disposeAllSessions as disposeAllBrowserSessions } from './browser/manager'
 import { createTray, refreshMinimizeToTrayCache, applyAutoStartSetting, markAppQuitting } from './tray'
@@ -25,6 +26,8 @@ import { applyLoginShellPath } from './loginShellPath'
 // since they don't log.
 installProcessLogTee()
 appendProcessLogMarker(`App session started (v${app.getVersion()}, pid ${process.pid}) — ${new Date().toLocaleString()}`)
+// Logs `[perf] main event loop blocked` lines, so a UI freeze leaves evidence in read_app_log.
+startEventLoopStallMonitor()
 
 // Must run before app.whenReady() per Electron's custom-scheme privilege requirement.
 registerPawprintSchemePrivileges()
@@ -75,6 +78,10 @@ app.whenReady().then(async () => {
 
   initAutoUpdater()
 
+  // The removed Vectra backend left one index.json per indexed project (hundreds of MB each);
+  // nothing reads them anymore. Best-effort, off the startup critical path.
+  void cleanupLegacyVectraIndexes()
+
   // Restore any Pawprint windows flagged openOnLaunch:true — failures for one instance are
   // logged and skipped rather than blocking the rest (see reopenAllOnLaunch's doc comment).
   void reopenAllPawprintsOnLaunch()
@@ -100,6 +107,9 @@ app.on('before-quit', () => {
   // Must be first: windows get 'close' right after this, and the minimize-to-tray handler would
   // otherwise cancel the close and abort the quit (see tray.ts isQuitting).
   markAppQuitting()
+  // Session writes are debounced (session/store.ts); write anything pending synchronously, since
+  // async work started here is not guaranteed to finish before the process exits.
+  sessionStore.flushSync()
   void stopIndexing()
   disposeAllTerminals()
   void disposeAllBrowserSessions()

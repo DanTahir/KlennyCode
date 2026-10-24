@@ -33,6 +33,94 @@ function clearModelWaiting(modelWaiting: ModelWaitingByTab, tabId: string): { mo
   return { modelWaiting: next }
 }
 
+/** Replaces a single message in a single tab, leaving every other tab and message object
+ *  untouched so memoized components for unchanged messages skip re-rendering. Searches from the
+ *  end because the message being streamed into is almost always the last one. Returns the
+ *  ORIGINAL `tabs` reference when nothing changed, so callers can skip set() entirely. */
+function updateMessage(
+  tabs: TabSession[],
+  tabId: string,
+  messageId: string,
+  fn: (m: ChatMessage) => ChatMessage
+): TabSession[] {
+  const tabIdx = tabs.findIndex((t) => t.id === tabId)
+  if (tabIdx < 0) return tabs
+  const tab = tabs[tabIdx]
+  let msgIdx = -1
+  for (let i = tab.messages.length - 1; i >= 0; i--) {
+    if (tab.messages[i].id === messageId) {
+      msgIdx = i
+      break
+    }
+  }
+  if (msgIdx < 0) return tabs
+  const prev = tab.messages[msgIdx]
+  const next = fn(prev)
+  if (next === prev) return tabs
+  const messages = tab.messages.slice()
+  messages[msgIdx] = next
+  const out = tabs.slice()
+  out[tabIdx] = { ...tab, messages }
+  return out
+}
+
+type DeltaKind = 'text' | 'thinking'
+
+interface BufferedDelta {
+  tabId: string
+  messageId: string
+  kind: DeltaKind
+  text: string
+}
+
+/** Pending text/thinking deltas, coalesced per (tab, message, kind). Streaming at many tokens/sec
+ *  used to trigger one store update — and one React render pass — per token; batching them into
+ *  a single update every DELTA_FLUSH_MS keeps the renderer responsive. Map preserves insertion
+ *  order, so blocks are created in the same order the deltas first arrived. */
+const deltaBuffer = new Map<string, BufferedDelta>()
+let deltaFlushTimer: ReturnType<typeof setTimeout> | null = null
+/** setTimeout rather than requestAnimationFrame so buffered text still lands while the window is
+ *  hidden/minimized (rAF is paused there, which would stall the transcript until refocus). */
+const DELTA_FLUSH_MS = 32
+
+/** Appends to the first block of the given type, or pushes a new one — same semantics as the
+ *  original per-delta path. */
+function appendTextBlock(m: ChatMessage, kind: DeltaKind, text: string): ChatMessage {
+  const blocks = [...m.blocks]
+  const idx = blocks.findIndex((b) => b.type === kind)
+  if (idx >= 0) {
+    const b = blocks[idx] as { type: DeltaKind; text: string }
+    blocks[idx] = { type: kind, text: b.text + text }
+  } else {
+    blocks.push({ type: kind, text } as ContentBlock)
+  }
+  return { ...m, blocks }
+}
+
+/** Applies every buffered delta in ONE set() call. Also called synchronously before any other
+ *  stream event so that event ordering (e.g. text followed by tool_call_start) is preserved. */
+function flushDeltaBuffer(get: () => AppState, setPartial: (p: Partial<AppState>) => void): void {
+  if (deltaFlushTimer !== null) {
+    clearTimeout(deltaFlushTimer)
+    deltaFlushTimer = null
+  }
+  if (deltaBuffer.size === 0) return
+  const entries = [...deltaBuffer.values()]
+  deltaBuffer.clear()
+  const state = get()
+  let tabs = state.tabs
+  let modelWaiting = state.modelWaiting
+  for (const d of entries) {
+    tabs = updateMessage(tabs, d.tabId, d.messageId, (m) => appendTextBlock(m, d.kind, d.text))
+    const cleared = clearModelWaiting(modelWaiting, d.tabId)
+    if (cleared.modelWaiting) modelWaiting = cleared.modelWaiting
+  }
+  const patch: Partial<AppState> = {}
+  if (tabs !== state.tabs) patch.tabs = tabs
+  if (modelWaiting !== state.modelWaiting) patch.modelWaiting = modelWaiting
+  if (patch.tabs || patch.modelWaiting) setPartial(patch)
+}
+
 /** A plan opened as a tab in the main tab bar (client-side only — plans themselves live on disk). */
 export interface OpenPlanTab {
   slug: string
@@ -226,6 +314,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       )
     })),
   applyStreamEvent: (e) => {
+    const setPartial = (p: Partial<AppState>) => set(p)
+    if (e.type === 'text_delta' || e.type === 'thinking_delta') {
+      const kind: DeltaKind = e.type === 'text_delta' ? 'text' : 'thinking'
+      const key = `${e.tabId}\u0000${e.messageId}\u0000${kind}`
+      const existing = deltaBuffer.get(key)
+      if (existing) existing.text += e.delta
+      else deltaBuffer.set(key, { tabId: e.tabId, messageId: e.messageId, kind, text: e.delta })
+      if (deltaFlushTimer === null) {
+        deltaFlushTimer = setTimeout(() => flushDeltaBuffer(get, setPartial), DELTA_FLUSH_MS)
+      }
+      return
+    }
+    // Any non-delta event must observe all text that streamed before it.
+    flushDeltaBuffer(get, setPartial)
     const state = get()
     switch (e.type) {
       case 'user_message': {
@@ -248,111 +350,69 @@ export const useAppStore = create<AppState>((set, get) => ({
         set({ tabs, streamingTabIds: streaming, pausedTabs, ...clearModelWaiting(state.modelWaiting, e.tabId) })
         break
       }
-      case 'text_delta':
-      case 'thinking_delta': {
-        const tabs = state.tabs.map((t) => {
-          if (t.id !== e.tabId) return t
-          const messages = t.messages.map((m) => {
-            if (m.id !== e.messageId) return m
-            const blocks = [...m.blocks]
-            const type = e.type === 'text_delta' ? 'text' : 'thinking'
-            const idx = blocks.findIndex((b) => b.type === type)
-            if (idx >= 0) {
-              const b = blocks[idx] as { type: 'text' | 'thinking'; text: string }
-              blocks[idx] = { type, text: b.text + e.delta }
-            } else {
-              blocks.push({ type, text: e.delta } as ContentBlock)
-            }
-            return { ...m, blocks }
-          })
-          return { ...t, messages }
-        })
-        set({ tabs, ...clearModelWaiting(state.modelWaiting, e.tabId) })
-        break
-      }
       // The model is still streaming this call's arguments. Upserts a placeholder block so a long
       // write_file/multi_write payload shows live progress instead of looking like a frozen app;
       // `tool_call_start` below swaps it for the real block once the arguments are complete.
       case 'tool_call_writing': {
-        const tabs = state.tabs.map((t) => {
-          if (t.id !== e.tabId) return t
-          const messages = t.messages.map((m) => {
-            if (m.id !== e.messageId) return m
-            const idx = m.blocks.findIndex((b) => b.type === 'tool_call' && b.id === e.toolCallId)
-            const placeholder: ToolCallBlock = {
-              type: 'tool_call',
-              id: e.toolCallId,
-              toolName: e.toolName || 'tool call',
-              args: {},
-              status: 'writing',
-              writingChars: e.charsSoFar,
-              writingLabel: e.label
-            }
-            if (idx < 0) return { ...m, blocks: [...m.blocks, placeholder] }
-            // Never let a late/reordered writing event regress a call that already has real
-            // arguments or has started executing.
-            if ((m.blocks[idx] as ToolCallBlock).status !== 'writing') return m
-            const blocks = [...m.blocks]
-            blocks[idx] = placeholder
-            return { ...m, blocks }
-          })
-          return { ...t, messages }
+        const tabs = updateMessage(state.tabs, e.tabId, e.messageId, (m) => {
+          const idx = m.blocks.findIndex((b) => b.type === 'tool_call' && b.id === e.toolCallId)
+          const placeholder: ToolCallBlock = {
+            type: 'tool_call',
+            id: e.toolCallId,
+            toolName: e.toolName || 'tool call',
+            args: {},
+            status: 'writing',
+            writingChars: e.charsSoFar,
+            writingLabel: e.label
+          }
+          if (idx < 0) return { ...m, blocks: [...m.blocks, placeholder] }
+          // Never let a late/reordered writing event regress a call that already has real
+          // arguments or has started executing.
+          if ((m.blocks[idx] as ToolCallBlock).status !== 'writing') return m
+          const blocks = [...m.blocks]
+          blocks[idx] = placeholder
+          return { ...m, blocks }
         })
-        set({ tabs })
+        if (tabs !== state.tabs) set({ tabs })
         break
       }
       // Arguments finished: replace the placeholder with the same id IN PLACE, so the card keeps
       // its position in the transcript rather than disappearing and reappearing at the bottom.
       case 'tool_call_start': {
-        const tabs = state.tabs.map((t) => {
-          if (t.id !== e.tabId) return t
-          const messages = t.messages.map((m) => {
-            if (m.id !== e.messageId) return m
-            const idx = m.blocks.findIndex(
-              (b) => b.type === 'tool_call' && b.id === e.block.id && b.status === 'writing'
-            )
-            if (idx < 0) return { ...m, blocks: [...m.blocks, e.block] }
-            const blocks = [...m.blocks]
-            blocks[idx] = e.block
-            return { ...m, blocks }
-          })
-          return { ...t, messages }
+        const tabs = updateMessage(state.tabs, e.tabId, e.messageId, (m) => {
+          const idx = m.blocks.findIndex(
+            (b) => b.type === 'tool_call' && b.id === e.block.id && b.status === 'writing'
+          )
+          if (idx < 0) return { ...m, blocks: [...m.blocks, e.block] }
+          const blocks = [...m.blocks]
+          blocks[idx] = e.block
+          return { ...m, blocks }
         })
-        set({ tabs })
+        if (tabs !== state.tabs) set({ tabs })
         break
       }
       // Lifecycle transition with no result yet ('queued' -> 'running'). Guarded on `!b.result` so
       // it can never overwrite an already-finished call if events arrive out of order.
       case 'tool_call_status': {
-        const tabs = state.tabs.map((t) => {
-          if (t.id !== e.tabId) return t
-          const messages = t.messages.map((m) => {
-            if (m.id !== e.messageId) return m
-            const blocks = m.blocks.map((b) =>
-              b.type === 'tool_call' && b.id === e.toolCallId && !b.result
-                ? ({ ...b, status: e.status } as ToolCallBlock)
-                : b
-            )
-            return { ...m, blocks }
-          })
-          return { ...t, messages }
+        const tabs = updateMessage(state.tabs, e.tabId, e.messageId, (m) => {
+          const blocks = m.blocks.map((b) =>
+            b.type === 'tool_call' && b.id === e.toolCallId && !b.result
+              ? ({ ...b, status: e.status } as ToolCallBlock)
+              : b
+          )
+          return { ...m, blocks }
         })
-        set({ tabs })
+        if (tabs !== state.tabs) set({ tabs })
         break
       }
       case 'tool_call_progress': {
-        const tabs = state.tabs.map((t) => {
-          if (t.id !== e.tabId) return t
-          const messages = t.messages.map((m) => {
-            if (m.id !== e.messageId) return m
-            const blocks = m.blocks.map((b) =>
-              b.type === 'tool_call' && b.id === e.toolCallId ? { ...b, progressMessage: e.message } : b
-            )
-            return { ...m, blocks }
-          })
-          return { ...t, messages }
+        const tabs = updateMessage(state.tabs, e.tabId, e.messageId, (m) => {
+          const blocks = m.blocks.map((b) =>
+            b.type === 'tool_call' && b.id === e.toolCallId ? { ...b, progressMessage: e.message } : b
+          )
+          return { ...m, blocks }
         })
-        set({ tabs })
+        if (tabs !== state.tabs) set({ tabs })
         break
       }
       case 'tool_call_result': {
@@ -363,21 +423,16 @@ export const useAppStore = create<AppState>((set, get) => ({
           (b): b is ToolCallBlock => b.type === 'tool_call' && b.id === e.toolCallId
         )
 
-        const tabs = state.tabs.map((t) => {
-          if (t.id !== e.tabId) return t
-          const messages = t.messages.map((m) => {
-            if (m.id !== e.messageId) return m
-            const blocks = m.blocks.map((b) => {
-              if (b.type === 'tool_call' && b.id === e.toolCallId) {
-                return { ...b, status: e.status, result: e.result } as ToolCallBlock
-              }
-              return b
-            })
-            return { ...m, blocks }
+        const tabs = updateMessage(state.tabs, e.tabId, e.messageId, (m) => {
+          const blocks = m.blocks.map((b) => {
+            if (b.type === 'tool_call' && b.id === e.toolCallId) {
+              return { ...b, status: e.status, result: e.result } as ToolCallBlock
+            }
+            return b
           })
-          return { ...t, messages }
+          return { ...m, blocks }
         })
-        set({ tabs })
+        if (tabs !== state.tabs) set({ tabs })
 
         if (sourceBlock?.toolName === 'save_plan' && e.status === 'success') {
           const plan = (e.result?.data as { plan?: PlanArtifact } | undefined)?.plan
@@ -389,29 +444,31 @@ export const useAppStore = create<AppState>((set, get) => ({
         break
       }
       case 'message_end': {
-        const tabs = state.tabs.map((t) => {
-          if (t.id !== e.tabId) return t
-          const messages = t.messages.map((m) =>
-            m.id === e.messageId ? { ...m, usage: e.usage ?? m.usage } : m
-          )
-          // A stream that ended mid-arguments (truncation, provider error) leaves a placeholder
-          // standing; drop it rather than leave a card pulsing "writing…" forever.
-          return { ...t, messages: dropWritingPlaceholders(messages) }
-        })
+        let tabs = updateMessage(state.tabs, e.tabId, e.messageId, (m) => ({ ...m, usage: e.usage ?? m.usage }))
+        // A stream that ended mid-arguments (truncation, provider error) leaves a placeholder
+        // standing; drop it rather than leave a card pulsing "writing…" forever.
+        const tabIdx = tabs.findIndex((t) => t.id === e.tabId)
+        if (tabIdx >= 0) {
+          const t = tabs[tabIdx]
+          const messages = dropWritingPlaceholders(t.messages)
+          if (messages !== t.messages) {
+            // updateMessage already returned a fresh array if it changed anything; only copy when
+            // we would otherwise mutate the store's current array.
+            if (tabs === state.tabs) tabs = tabs.slice()
+            tabs[tabIdx] = { ...t, messages }
+          }
+        }
         set({ tabs, ...clearModelWaiting(state.modelWaiting, e.tabId) })
         break
       }
       // The guard flags the message rather than removing it — the user still needs to see exactly
       // what was claimed in order to judge it (see MessageBubble's verification badge).
       case 'fabrication_flagged': {
-        const tabs = state.tabs.map((t) => {
-          if (t.id !== e.tabId) return t
-          const messages = t.messages.map((m) =>
-            m.id === e.messageId ? { ...m, verification: { status: e.status, findings: e.findings } } : m
-          )
-          return { ...t, messages }
-        })
-        set({ tabs })
+        const tabs = updateMessage(state.tabs, e.tabId, e.messageId, (m) => ({
+          ...m,
+          verification: { status: e.status, findings: e.findings }
+        }))
+        if (tabs !== state.tabs) set({ tabs })
         break
       }
       case 'error': {

@@ -561,6 +561,12 @@ export function createMainWindow(): BrowserWindow {
     console.error('Renderer process gone:', details)
   })
 
+  // The renderer's console is not part of the main-process log. Forward only its `[perf]` lines
+  // (long-task reports from App.tsx), so read_app_log shows renderer-side freezes too.
+  win.webContents.on('console-message', (_e, _level, message) => {
+    if (message.startsWith('[perf]')) console.log(`[renderer] ${message}`)
+  })
+
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
     win.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {

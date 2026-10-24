@@ -14,7 +14,7 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
     own stdout/stderr + `console.*` capture behind `read_app_log`), `settings.ts`, `ipc.ts`,
     `scheduler/` (cron), `openrouter/` (`client.ts` streaming + summarization, `caching.ts`
     breakpoints, `cacheDiag.ts` prefix fingerprints, `images.ts`), `codeindex/` (optional
-    semantic search, embeddings + vectra/Pinecone)
+    semantic search, embeddings + sqlite-vec in a worker thread / Pinecone)
   - `src/main/agent/orchestrator/` — the core loop, split up: `system-prompt.ts`, `prompt-snapshot.ts` (frozen cached prefix), `loop.ts` (turn
     loop + `dispatchTool()`), `state.ts` (per-tab bookkeeping), `turn-lifecycle.ts` (checkpoints,
     compaction hooks, streaming), `checklist.ts`, `ledger.ts`, `approval-previews.ts`,
@@ -123,7 +123,11 @@ Assistant tabs) with a user-editable personality (`SOUL.md`) under hardcoded rig
   recorded through the shared `recordMediaSpend()` in `loop.ts`, with images and video sharing
   the `MediaGenDispatch` settings slice.
 - **Codebase semantic search** (`codebase_search`): optional, off-by-default vector index over the
-  workspace, incremental via a manifest.
+  workspace, incremental via a manifest. The local backend is **sqlite-vec** (`vectors.sqlite`,
+  better-sqlite3) running in a `worker_threads` worker (`codeindexWorker.js`), replacing Vectra,
+  whose whole-file JSON rewrite on the main process froze the UI (a 532 MB `index.json`). Watcher
+  events go through one serial queue per session; there is a 50k-chunk cap, a hot-file backoff,
+  a pause after repeated failures, and orphans are reconciled on full scans — see the code-index gotcha.
 - **Skill/subagent authoring**: the agent writes and reads its own Cursor-style `SKILL.md` skills
   and custom subagent types (`write_skill`/`read_skill`, `write_subagent`/`read_subagent`).
 - **Bundled default skills**: `browser-automation`, `pawprint-authoring`, `website-replica` ship

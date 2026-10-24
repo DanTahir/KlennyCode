@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 const SUMMARY_PREVIEW_CHARS = 400
@@ -8,7 +9,14 @@ function formatCost(usd: number): string {
 }
 
 export function SubagentPanel() {
-  const { subagentRuns, activeTabId, hideSubagentRun, clearFinishedSubagentRuns } = useAppStore()
+  const { subagentRuns, activeTabId, hideSubagentRun, clearFinishedSubagentRuns } = useAppStore(
+    useShallow((s) => ({
+      subagentRuns: s.subagentRuns,
+      activeTabId: s.activeTabId,
+      hideSubagentRun: s.hideSubagentRun,
+      clearFinishedSubagentRuns: s.clearFinishedSubagentRuns
+    }))
+  )
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   // Tracked across the whole tab regardless of hidden/cleared state, so the running total
   // doesn't shrink just because the user hid a finished card — it only resets when the tab closes.

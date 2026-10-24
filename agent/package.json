@@ -8,12 +8,8 @@
   "license": "MIT",
   "private": true,
   "type": "module",
-  "overrides": {
-    "vectra": {
-      "uuid": "11.1.0"
-    }
-  },
   "scripts": {
+    "postinstall": "node scripts/install-sqlite-electron.cjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "build:tsc": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
@@ -31,6 +27,7 @@
     "@xterm/xterm": "^5.5.0",
     "acorn": "^8.18.0",
     "acorn-walk": "^8.3.5",
+    "better-sqlite3": "^12.11.1",
     "cron-parser": "^5.6.2",
     "diff": "^7.0.0",
     "discord.js": "^14.27.0",
@@ -53,12 +50,13 @@
     "remark-gfm": "^4.0.0",
     "semver": "^7.8.5",
     "simple-git": "^3.27.0",
+    "sqlite-vec": "^0.1.9",
     "tar": "^7.5.22",
-    "vectra": "^0.15.0",
     "zustand": "^5.0.2"
   },
   "devDependencies": {
     "@tailwindcss/typography": "^0.5.20",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/diff": "^7.0.2",
     "@types/node": "^22.10.2",
     "@types/react": "^18.3.17",
@@ -102,7 +100,10 @@
       "**/node_modules/react/**",
       "**/node_modules/react-dom/**",
       "**/node_modules/scheduler/**",
-      "**/node_modules/nanoid/**"
+      "**/node_modules/nanoid/**",
+      "**/node_modules/better-sqlite3/**",
+      "**/node_modules/sqlite-vec/**",
+      "**/node_modules/sqlite-vec-*/**"
     ],
     "publish": {
       "provider": "github",

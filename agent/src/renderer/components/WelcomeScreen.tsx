@@ -1,5 +1,6 @@
 import klennyImg from '../assets/klenny.jpg'
 import { DEFAULT_BRAND_NAME } from '@shared/types'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 interface WelcomeScreenProps {
@@ -8,7 +9,9 @@ interface WelcomeScreenProps {
 }
 
 export function WelcomeScreen({ onOpenWorkspace, onOpenSettings }: WelcomeScreenProps) {
-  const { workspace, settings, customIconUrl } = useAppStore()
+  const { workspace, settings, customIconUrl } = useAppStore(
+    useShallow((s) => ({ workspace: s.workspace, settings: s.settings, customIconUrl: s.customIconUrl }))
+  )
   const needsApiKey = !settings?.hasApiKey
   const needsWorkspace = !workspace
   const brandName = settings?.brandName || DEFAULT_BRAND_NAME

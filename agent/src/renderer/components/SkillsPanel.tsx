@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 export function SkillsPanel() {
-  const { skills, setSkills } = useAppStore()
+  const { skills, setSkills } = useAppStore(useShallow((s) => ({ skills: s.skills, setSkills: s.setSkills })))
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [body, setBody] = useState('')

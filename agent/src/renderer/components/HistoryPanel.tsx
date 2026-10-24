@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { ArchivedTabSession } from '@shared/types'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 function firstUserText(tab: ArchivedTabSession): string {
@@ -15,7 +16,17 @@ type Section = 'chats' | 'assistant'
 
 export function HistoryPanel() {
   const { history, setHistory, assistantHistory, setAssistantHistory, setTabs, setActiveTab, setPanel } =
-    useAppStore()
+    useAppStore(
+      useShallow((s) => ({
+        history: s.history,
+        setHistory: s.setHistory,
+        assistantHistory: s.assistantHistory,
+        setAssistantHistory: s.setAssistantHistory,
+        setTabs: s.setTabs,
+        setActiveTab: s.setActiveTab,
+        setPanel: s.setPanel
+      }))
+    )
   const [section, setSection] = useState<Section>('chats')
   const [busyId, setBusyId] = useState<string | null>(null)
 

@@ -174,6 +174,8 @@ describe('SessionStore Assistant tabs (workspace-independent, persisted)', () =>
     const tab = await store.createAssistantTab()
     tab.title = 'Updated title'
     await store.updateTab(tab)
+    // updateTab() debounces the disk write; flush() makes it durable.
+    await store.flush()
 
     const sessionFile = join(electronMockState.userDataDir, 'sessions', `${slugFor(workspace)}.json`)
     const raw = await readFile(sessionFile, 'utf8')
@@ -191,6 +193,7 @@ describe('SessionStore Assistant tabs (workspace-independent, persisted)', () =>
     const tab = await store1.createAssistantTab()
     tab.title = 'Reminder chat'
     await store1.updateTab(tab)
+    await store1.flush()
 
     // Simulate an app restart: brand-new SessionStore instance, load assistant tabs before any
     // workspace load, exactly like main/index.ts does at startup.

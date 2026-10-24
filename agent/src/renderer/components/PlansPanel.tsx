@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 /** Strips Markdown syntax down to plain text for a short preview snippet. */
@@ -13,7 +14,15 @@ function excerpt(markdown: string, maxLen = 160): string {
 }
 
 export function PlansPanel() {
-  const { plans, setPlans, activeTabId, openPlanTabs, openPlanTab } = useAppStore()
+  const { plans, setPlans, activeTabId, openPlanTabs, openPlanTab } = useAppStore(
+    useShallow((s) => ({
+      plans: s.plans,
+      setPlans: s.setPlans,
+      activeTabId: s.activeTabId,
+      openPlanTabs: s.openPlanTabs,
+      openPlanTab: s.openPlanTab
+    }))
+  )
 
   useEffect(() => {
     void window.klenny.listPlans().then(setPlans)

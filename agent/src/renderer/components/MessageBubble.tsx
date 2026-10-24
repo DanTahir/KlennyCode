@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { ChatMessage, ChecklistBlock, MessageVerification, ToolCallBlock } from '@shared/types'
@@ -10,10 +11,23 @@ import { ChecklistWidget } from './ChecklistWidget'
 import klennyGif from '../assets/klenny.gif'
 import { useAppStore } from '../store/useAppStore'
 
+/** Module-scope so ReactMarkdown receives a stable plugin array instead of a new one per render. */
+const REMARK_PLUGINS = [remarkGfm]
+
+/** Memoized on the text itself so a finished text block doesn't re-parse its markdown whenever
+ *  another block of the same message (e.g. a tool card) updates. */
+const MarkdownText = memo(function MarkdownText({ text }: { text: string }) {
+  return (
+    <div className="markdown prose prose-invert prose-sm max-w-none">
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>{text}</ReactMarkdown>
+    </div>
+  )
+})
+
 /** Fabrication-guard verdict banner. Deliberately states what the harness actually checked rather
  *  than a bare "unverified" label, so the user can judge the claim themselves — the findings are
  *  advisory evidence, never proof that the underlying work is wrong. */
-function VerificationBadge({ verification }: { verification: MessageVerification }) {
+const VerificationBadge = memo(function VerificationBadge({ verification }: { verification: MessageVerification }) {
   const disputed = verification.status === 'disputed'
   return (
     <div
@@ -36,9 +50,11 @@ function VerificationBadge({ verification }: { verification: MessageVerification
       </ul>
     </div>
   )
-}
+})
 
-export function MessageBubble({ message }: { message: ChatMessage }) {
+/** Memoized with the default shallow compare: the store replaces only the message objects that
+ *  actually changed, so every other bubble in a long transcript skips re-rendering. */
+export const MessageBubble = memo(function MessageBubble({ message }: { message: ChatMessage }) {
   // Audit notes ride on role:'user' purely because of how toORMessages() works — they are written
   // by the harness, not the user, so they must never be styled as something the user said.
   const isAuditNote = Boolean(message.isAuditNote)
@@ -105,11 +121,7 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
         {message.verification && <VerificationBadge verification={message.verification} />}
         {message.blocks.map((block, i) => {
           if (block.type === 'text') {
-            return (
-              <div key={i} className="markdown prose prose-invert prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{block.text}</ReactMarkdown>
-              </div>
-            )
+            return <MarkdownText key={i} text={block.text} />
           }
           if (block.type === 'thinking') return <ThinkingBlock key={i} text={block.text} />
           if (block.type === 'image') {
@@ -187,4 +199,4 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
       </div>
     </div>
   )
-}
+})

@@ -19,26 +19,13 @@ import { SubagentPanel } from './components/SubagentPanel'
 import { TerminalPanel } from './components/TerminalPanel'
 
 export default function App() {
-  const {
-    settings,
-    workspace,
-    tabs,
-    activeTabId,
-    panel,
-    activePlanSlug,
-    setSettings,
-    setWorkspace,
-    setModels,
-    setTabs,
-    setActiveTab,
-    applyStreamEvent,
-    setSkills,
-    setPlans,
-    setUpdateStatus,
-    setUpdateSupported,
-    setCustomIconUrl,
-    setCustomRunningGifUrl
-  } = useAppStore()
+  // Fine-grained selectors: subscribing to the whole store (or `tabs`) would re-render the entire
+  // app shell on every streamed token. Actions are stable and read via getState() where used.
+  const settings = useAppStore((s) => s.settings)
+  const workspace = useAppStore((s) => s.workspace)
+  const activeTabId = useAppStore((s) => s.activeTabId)
+  const panel = useAppStore((s) => s.panel)
+  const activePlanSlug = useAppStore((s) => s.activePlanSlug)
 
   const { openWorkspace } = useWorkspaceActions()
   const [ready, setReady] = useState(false)
@@ -72,16 +59,17 @@ export default function App() {
         window.klenny.getCustomIcon().catch(() => null),
         window.klenny.getCustomRunningGif().catch(() => null)
       ])
-      setSettings(s)
-      setWorkspace(ws)
-      setModels(modelList)
-      setTabs(tabList)
-      if (tabList[0]) setActiveTab(tabList[0].id)
-      setSkills(skills)
-      setPlans(plans)
-      setUpdateSupported(updateSupported)
-      setCustomIconUrl(customIcon)
-      setCustomRunningGifUrl(customGif)
+      const st = useAppStore.getState()
+      st.setSettings(s)
+      st.setWorkspace(ws)
+      st.setModels(modelList)
+      st.setTabs(tabList)
+      if (tabList[0]) st.setActiveTab(tabList[0].id)
+      st.setSkills(skills)
+      st.setPlans(plans)
+      st.setUpdateSupported(updateSupported)
+      st.setCustomIconUrl(customIcon)
+      st.setCustomRunningGifUrl(customGif)
       setReady(true)
 
       if (!ws && !s.hasApiKey) {
@@ -89,16 +77,32 @@ export default function App() {
       }
     })()
 
-    const unsub = window.klenny.onStreamEvent((e) => applyStreamEvent(e as never))
-    const unsubUpdate = window.klenny.onUpdateStatus((e) => setUpdateStatus(e))
+    const unsub = window.klenny.onStreamEvent((e) => useAppStore.getState().applyStreamEvent(e as never))
+    const unsubUpdate = window.klenny.onUpdateStatus((e) => useAppStore.getState().setUpdateStatus(e))
     const unsubSettingsNav = window.klenny.onSettingsNavigate((section) => {
       useAppStore.getState().setPanel('settings')
       useAppStore.getState().setSettingsFocusSection(section)
     })
+    // Surface main-thread stalls in the log so freezes during long sessions can be diagnosed
+    // after the fact. Long-task support varies across Chromium builds, hence the guard.
+    let longTaskObserver: PerformanceObserver | null = null
+    try {
+      longTaskObserver = new PerformanceObserver((list) => {
+        for (const entry of list.getEntries()) {
+          if (entry.duration >= 200) {
+            console.warn(`[perf] renderer long task ${Math.round(entry.duration)}ms`)
+          }
+        }
+      })
+      longTaskObserver.observe({ entryTypes: ['longtask'] })
+    } catch {
+      longTaskObserver = null
+    }
     return () => {
       unsub()
       unsubUpdate()
       unsubSettingsNav()
+      longTaskObserver?.disconnect()
     }
   }, [])
 
@@ -108,7 +112,10 @@ export default function App() {
   useEffect(() => {
     const refreshModels = () => {
       if (!window.klenny) return
-      void window.klenny.listModels(true).then(setModels).catch(() => {})
+      void window.klenny
+        .listModels(true)
+        .then((m) => useAppStore.getState().setModels(m))
+        .catch(() => {})
     }
     const intervalId = setInterval(refreshModels, 30 * 60_000)
     window.addEventListener('focus', refreshModels)
@@ -123,13 +130,14 @@ export default function App() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 't') {
         e.preventDefault()
         void window.klenny.createTab().then(async (tab) => {
-          setTabs(await window.klenny.listTabs())
-          setActiveTab(tab.id)
+          const list = await window.klenny.listTabs()
+          useAppStore.getState().setTabs(list)
+          useAppStore.getState().setActiveTab(tab.id)
         })
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'w' && activeTabId) {
         e.preventDefault()
-        void window.klenny.closeTab(activeTabId).then(setTabs)
+        void window.klenny.closeTab(activeTabId).then((list) => useAppStore.getState().setTabs(list))
       }
       if ((e.ctrlKey || e.metaKey) && e.key === '`') {
         e.preventDefault()

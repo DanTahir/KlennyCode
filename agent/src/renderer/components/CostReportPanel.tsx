@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { CostReport, CostReportRow } from '@shared/types'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 function formatCost(usd: number): string {
@@ -62,7 +63,7 @@ function CostTable({
 }
 
 export function CostReportPanel() {
-  const { models, setPanel } = useAppStore()
+  const { models, setPanel } = useAppStore(useShallow((s) => ({ models: s.models, setPanel: s.setPanel })))
   const [report, setReport] = useState<CostReport | null>(null)
   const [resetting, setResetting] = useState(false)
 

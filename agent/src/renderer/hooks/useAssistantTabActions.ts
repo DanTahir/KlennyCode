@@ -1,4 +1,5 @@
 import { useCallback } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 /** Sidebar "Open Assistant" button action — always creates a brand-new Assistant tab (no
@@ -6,7 +7,9 @@ import { useAppStore } from '../store/useAppStore'
  *  tabs persist across app restarts and, once closed (with messages), are archived to the
  *  "Assistant" section of the History panel rather than being discarded. */
 export function useAssistantTabActions() {
-  const { setTabs, setActiveTab, setPanel } = useAppStore()
+  const { setTabs, setActiveTab, setPanel } = useAppStore(
+    useShallow((s) => ({ setTabs: s.setTabs, setActiveTab: s.setActiveTab, setPanel: s.setPanel }))
+  )
 
   const openAssistantTab = useCallback(async () => {
     const tab = await window.klenny.createAssistantTab()

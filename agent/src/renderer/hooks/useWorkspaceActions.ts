@@ -1,8 +1,18 @@
 import { useCallback } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 export function useWorkspaceActions() {
-  const { setWorkspace, setTabs, setActiveTab, setSkills, setPlans, setModels } = useAppStore()
+  const { setWorkspace, setTabs, setActiveTab, setSkills, setPlans, setModels } = useAppStore(
+    useShallow((s) => ({
+      setWorkspace: s.setWorkspace,
+      setTabs: s.setTabs,
+      setActiveTab: s.setActiveTab,
+      setSkills: s.setSkills,
+      setPlans: s.setPlans,
+      setModels: s.setModels
+    }))
+  )
 
   const openWorkspace = useCallback(async () => {
     const path = await window.klenny.openWorkspace()

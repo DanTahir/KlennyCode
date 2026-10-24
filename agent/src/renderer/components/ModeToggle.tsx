@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 export function ModeToggle({
@@ -11,7 +12,7 @@ export function ModeToggle({
   model: string
   kind?: 'project' | 'assistant'
 }) {
-  const { models, setTabs } = useAppStore()
+  const { models, setTabs } = useAppStore(useShallow((s) => ({ models: s.models, setTabs: s.setTabs })))
 
   return (
     <div className="flex items-center gap-3 text-sm">

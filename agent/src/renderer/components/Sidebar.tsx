@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import klennyImg from '../assets/klenny.jpg'
 import { DEFAULT_BRAND_NAME } from '@shared/types'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 import { useWorkspaceActions } from '../hooks/useWorkspaceActions'
 import { useAssistantTabActions } from '../hooks/useAssistantTabActions'
@@ -18,7 +19,17 @@ const items = [
 ] as const
 
 export function Sidebar() {
-  const { panel, setPanel, workspace, updateStatus, updateSupported, settings, customIconUrl } = useAppStore()
+  const { panel, setPanel, workspace, updateStatus, updateSupported, settings, customIconUrl } = useAppStore(
+    useShallow((s) => ({
+      panel: s.panel,
+      setPanel: s.setPanel,
+      workspace: s.workspace,
+      updateStatus: s.updateStatus,
+      updateSupported: s.updateSupported,
+      settings: s.settings,
+      customIconUrl: s.customIconUrl
+    }))
+  )
   const { openWorkspace } = useWorkspaceActions()
   const { openAssistantTab } = useAssistantTabActions()
   const { openCodeTab } = useCodeTabActions()

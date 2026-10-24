@@ -488,6 +488,23 @@ When `KLENNY.md` says "see the caching gotcha", "see the stall gotchas", "see th
   bracketed-paste mode is preserved. Template content lives in pure `menuTemplates.ts` (unit-tested);
   the shared `tests/testElectronMock.ts` must export `Menu`/`clipboard`, or every test that loads
   `menus.ts` fails at link time with "Export named 'clipboard' not found".
+- **Code index: never let index writes touch the main process, and keep watcher and full-scan rules
+  identical.** The FinanceBrain UI freeze was Vectra re-stringifying a 532 MB `index.json` (6k
+  chunks × 4096-dim) on Electron's main thread for *every* watcher event. Weaker watcher ignore
+  rules (prefix-only, no dot-dirs, root-only `.gitignore`) fed it churn from build output, and
+  unqueued events raced the manifest. The fix is sqlite-vec in a `worker_threads` worker
+  (`codeindex/worker.ts` ↔ `workerStore.ts`), one serial queue plus one in-memory manifest per
+  session, and one shared `isIgnoredPath`. Driver details: Electron 33 is Node 20 (ABI 130, no
+  `node:sqlite`), so better-sqlite3 is pinned and its `electron-v130` prebuild is fetched by
+  `scripts/install-sqlite-electron.cjs` in postinstall, and sqlite modules are `asarUnpack`ed
+  (`toUnpackedPath` redirects the extension path). **Bun crashes on better-sqlite3**, so
+  `sqliteDriver.ts` picks `bun:sqlite` under tests. sqlite-vec rowids must be bound as **BigInt**.
+  Bun test quirk: `expect(p).rejects` hangs forever when the rejection arrives via a worker message,
+  so capture rejections with `.then(() => null, (e) => e)`.
+- **Session saves are debounced; tests must `await sessionStore.flush()` before reading the file.**
+  `updateTab` resolves after the in-memory update (400 ms trailing, 2 s max wait); `load()` flushes
+  before switching workspace and `before-quit` calls `flushSync()`. Don't make `updateTab` await the
+  write again — 2–3 full-workspace pretty-printed saves per agent step were a second freeze source.
 - **Global workspace singleton**: `getWorkspace()`/`setWorkspace()` is one process-wide value, not
   per-tab — a scheduled task targeting another workspace can transiently affect a live tab's
   workspace-scoped tool resolution if timings collide (accepted limitation, see follow-ups).

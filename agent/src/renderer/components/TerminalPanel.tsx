@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 
 const XTERM_THEME = {
@@ -34,7 +35,15 @@ const HEADER_HEIGHT = 32
  *  selected in Settings. A single interactive PTY session persists across collapse/expand — it's
  *  only torn down when the workspace changes or the app closes. */
 export function TerminalPanel() {
-  const { workspace, terminalOpen, terminalHeight, toggleTerminal, setTerminalHeight } = useAppStore()
+  const { workspace, terminalOpen, terminalHeight, toggleTerminal, setTerminalHeight } = useAppStore(
+    useShallow((s) => ({
+      workspace: s.workspace,
+      terminalOpen: s.terminalOpen,
+      terminalHeight: s.terminalHeight,
+      toggleTerminal: s.toggleTerminal,
+      setTerminalHeight: s.setTerminalHeight
+    }))
+  )
   const containerRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)

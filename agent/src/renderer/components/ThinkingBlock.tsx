@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { memo, useState } from 'react'
 
-export function ThinkingBlock({ text }: { text: string }) {
+/** Memoized so a finished thinking block doesn't re-render while later blocks stream. */
+export const ThinkingBlock = memo(function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="mt-2 border border-klenny-border rounded-md">
@@ -13,4 +14,4 @@ export function ThinkingBlock({ text }: { text: string }) {
       {open && <pre className="p-2 text-xs whitespace-pre-wrap text-klenny-muted">{text}</pre>}
     </div>
   )
-}
+})

@@ -1,33 +1,61 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { join, relative, sep } from 'node:path'
-import { isFileIndexable, ALWAYS_IGNORE_DIRS } from './filewalker'
+import { isGitignoreFile, isIgnoredPath, isInIgnoredDir } from './filewalker'
 
-export type FileChangeHandler = (relPath: string, kind: 'change' | 'delete') => void
+export interface WatcherCallbacks {
+  /** A debounced batch of changed relative paths (deduplicated). The receiver decides change vs delete. */
+  onBatch(relPaths: string[]): void
+  /** A .gitignore changed: eligibility rules changed, so cached rules must be dropped and a rescan run. */
+  onGitignoreChanged(): void
+  /** Too many paths changed at once (branch switch, mass codegen). A full rescan is cheaper than per-file work. */
+  onOverflow(): void
+}
+
+export interface WatcherOptions {
+  /** Quiet period after the last event before a batch is emitted. */
+  debounceMs?: number
+  /** Upper bound on how long a continuously-busy tree can delay a batch. */
+  maxWaitMs?: number
+  /** Pending paths beyond this collapse into a single onOverflow() call. */
+  maxPending?: number
+}
+
+const DEFAULTS: Required<WatcherOptions> = { debounceMs: 500, maxWaitMs: 3000, maxPending: 2000 }
 
 /**
- * Lightweight recursive file watcher used to keep the codebase index fresh during a session.
- * Uses Node's built-in `fs.watch` with `recursive: true` (supported on Windows/macOS natively;
- * on Linux it's emulated by Node itself since Node 20) rather than pulling in chokidar or
- * Vectra's FolderWatcher — avoids an extra dependency for what's fundamentally "tell me when
- * something under this folder changed", and we already have our own ignore-list logic in
- * filewalker.ts that a generic watcher wouldn't know about.
+ * Recursive file watcher that keeps the codebase index fresh. Uses Node's built-in `fs.watch`
+ * with `recursive: true` (native on Windows/macOS; on Linux emulated by Node itself since
+ * Node 20) rather than chokidar.
+ *
+ * Events are filtered with the same rules as the full scan (`isIgnoredPath`) and coalesced into
+ * debounced batches. Before this, each raw event started its own independent re-index, so a
+ * tool writing many files (or a constantly rewritten log) ran many overlapping index updates.
  */
 export class CodeIndexWatcher {
   private fsWatcher: FSWatcher | null = null
-  private debounceTimers = new Map<string, NodeJS.Timeout>()
+  private readonly pending = new Set<string>()
+  private overflowed = false
+  private gitignoreChanged = false
+  private timer: NodeJS.Timeout | null = null
+  private firstPendingAt = 0
+  private readonly opts: Required<WatcherOptions>
 
   constructor(
-    private root: string,
-    private onFileChanged: FileChangeHandler
-  ) {}
+    private readonly root: string,
+    private readonly callbacks: WatcherCallbacks,
+    opts: WatcherOptions = {}
+  ) {
+    this.opts = { ...DEFAULTS, ...opts }
+  }
 
   start(): void {
     if (this.fsWatcher) return
     try {
       this.fsWatcher = watch(this.root, { recursive: true }, (_event, filename) => {
         if (!filename) return
-        this.handleRawEvent(filename)
+        this.ingest(filename.toString())
       })
+      this.fsWatcher.on('error', (e) => console.error('[codeindex] watcher error', e))
     } catch (e) {
       // fs.watch with recursive:true can throw on some platforms/filesystems (e.g. certain
       // network drives) — fail soft, the feature just degrades to "re-scan on next workspace
@@ -39,36 +67,58 @@ export class CodeIndexWatcher {
   stop(): void {
     this.fsWatcher?.close()
     this.fsWatcher = null
-    for (const t of this.debounceTimers.values()) clearTimeout(t)
-    this.debounceTimers.clear()
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = null
+    this.pending.clear()
+    this.overflowed = false
+    this.gitignoreChanged = false
   }
 
-  private handleRawEvent(filename: string): void {
-    const relPath = filename.split(sep).join('/')
-    if (ALWAYS_IGNORE_DIRS.some((d) => relPath === d || relPath.startsWith(`${d}/`))) return
-
-    // Debounce per-file: editors often emit several write events in quick succession for a
-    // single logical save. 400ms is enough to coalesce those without feeling stale.
-    const existing = this.debounceTimers.get(relPath)
-    if (existing) clearTimeout(existing)
-    this.debounceTimers.set(
-      relPath,
-      setTimeout(() => {
-        this.debounceTimers.delete(relPath)
-        void this.resolveAndEmit(relPath)
-      }, 400)
-    )
+  /** Feeds one raw watcher filename (relative to root, any separator). Public for tests. */
+  ingest(filename: string): void {
+    const relPath = filename.split(sep).join('/').split('\\').join('/')
+    if (isGitignoreFile(relPath)) {
+      // .gitignore is a dot-file, so it must be checked before isIgnoredPath drops it.
+      if (!isInIgnoredDir(relPath)) {
+        this.gitignoreChanged = true
+        this.schedule()
+      }
+      return
+    }
+    if (isIgnoredPath(relPath)) return
+    if (this.overflowed) return
+    this.pending.add(relPath)
+    if (this.pending.size > this.opts.maxPending) {
+      this.pending.clear()
+      this.overflowed = true
+    }
+    this.schedule()
   }
 
-  private async resolveAndEmit(relPath: string): Promise<void> {
-    // fs.watch doesn't tell us whether this was a change or a delete — check eligibility
-    // directly (same ignore/binary/size rules as the full scan, just scoped to one path)
-    // rather than re-listing the whole workspace on every keystroke-adjacent save.
+  private schedule(): void {
+    const now = Date.now()
+    if (!this.timer) this.firstPendingAt = now
+    else clearTimeout(this.timer)
+    const waited = now - this.firstPendingAt
+    const delay = Math.max(0, Math.min(this.opts.debounceMs, this.opts.maxWaitMs - waited))
+    this.timer = setTimeout(() => this.flush(), delay)
+    this.timer.unref?.()
+  }
+
+  private flush(): void {
+    this.timer = null
+    const gitignoreChanged = this.gitignoreChanged
+    const overflowed = this.overflowed
+    const paths = [...this.pending]
+    this.pending.clear()
+    this.gitignoreChanged = false
+    this.overflowed = false
     try {
-      const stillEligible = await isFileIndexable(this.root, relPath)
-      this.onFileChanged(relPath, stillEligible ? 'change' : 'delete')
+      if (gitignoreChanged) this.callbacks.onGitignoreChanged()
+      if (overflowed) this.callbacks.onOverflow()
+      else if (paths.length) this.callbacks.onBatch(paths)
     } catch (e) {
-      console.error('CodeIndexWatcher: failed to resolve change for', relPath, e)
+      console.error('[codeindex] watcher callback failed', e)
     }
   }
 }

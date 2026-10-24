@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../store/useAppStore'
 import type { PawprintListEntry } from '@shared/ipc'
 
@@ -8,7 +9,9 @@ import type { PawprintListEntry } from '@shared/ipc'
  *  and domain approval always stays read-only here — changing either goes back through the
  *  approval-gated update_pawprint flow in chat, never a silent panel edit (see plan section 10). */
 export function PawprintsPanel() {
-  const { setTabs, setActiveTab, setPanel } = useAppStore()
+  const { setTabs, setActiveTab, setPanel } = useAppStore(
+    useShallow((s) => ({ setTabs: s.setTabs, setActiveTab: s.setActiveTab, setPanel: s.setPanel }))
+  )
   const [entries, setEntries] = useState<PawprintListEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [busyInstanceIds, setBusyInstanceIds] = useState<Set<string>>(new Set())
